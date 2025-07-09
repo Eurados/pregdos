@@ -2,7 +2,7 @@ import numpy as np
 from pathlib import Path
 import logging
 import datetime
-import os
+import getpass  # used for recording the user who generated the file
 
 from pregdos.__version__ import __version__
 from pregdos.plan_model import Field
@@ -313,7 +313,7 @@ def _topas_footer() -> str:
 
     lines = [
         "\n",
-        f"# Generated {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by user '{os.getlogin()}'" +
+        f"# Generated {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by user '{getpass.getuser()}'" +
         f" using dicomfix {__version__}",
         "# https://github.com/nbassler/dicomfix"]
 
