@@ -93,7 +93,7 @@ class Topas:
         logger.info(f"Scaling factor:          {1 / nstat_scale:.4e}")
         logger.info(f"Number of spots:         {n_spots}")
         logger.info(f"Number of energy layers: {_nlayer}")
-        logger.info(f"Beam Meterset Weight:    {myfield.meterset_weight_final:.2f}")
+        logger.debug(f"Beam Meterset Weight:    {myfield.meterset_weight_final:.2f}")
         logger.info(f"Beam Meterset:           {myfield.cum_mu:.2f} MU")
 
         # open output file for writing
