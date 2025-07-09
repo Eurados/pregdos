@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field as dc_field
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import numpy as np
 import logging
@@ -55,6 +55,7 @@ class Layer:
     energy_measured: float = 0.0
     espread: float = 0.0
     cum_mu: float = 0.0
+    cum_particles: float = 0.0
     repaint: int = 0
     mu_to_part_coef: float = 0.0
     is_empty: bool = True
@@ -184,7 +185,7 @@ class Plan:
     patient_initials: str = ""
     patient_firstname: str = ""
     plan_label: str = ""
-    beam_model: Optional[BeamModel] = None  # optional beam model class
+    beam_model: BeamModel = None  # optional beam model class
     beam_name: str = ""
     scaling: float = 1.0
     uid: str = ""
@@ -208,12 +209,17 @@ class Plan:
                 for layer in myfield.layers:
                     # calculate number of particles
                     layer.mu_to_part_coef = self.beam_model.f_ppmu(layer.energy_nominal)
+                    logger.debug(
+                        f"Layer {layer.energy_nominal} MeV, MU to particles conversion factor = {layer.mu_to_part_coef:.2f}")
                     logger.debug(f"Layer {layer.energy_nominal} MeV, mu_to_part_coef = {layer.mu_to_part_coef:.2f}")
                     layer.energy_measured = self.beam_model.f_e(layer.energy_nominal)
                     layer.espread = self.beam_model.f_espread(layer.energy_nominal)
                     layer.spotsize = np.array(
                         [self.beam_model.f_sx(layer.energy_nominal),
                             self.beam_model.f_sy(layer.energy_nominal)]) * get_fwhm(1.0)
+        else:
+            logger.error("No beam model set, cannot apply beam model to plan.")
+            raise ValueError("No beam model set for plan.")
 
         # set cumulative sums
         for myfield in self.fields:
