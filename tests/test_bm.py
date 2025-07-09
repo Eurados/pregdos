@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 import numpy as np
-from beam_model import BeamModel, get_fwhm
+from pregdos.beam_model import BeamModel, get_fwhm
 
 beam_models_dir = Path("res") / "beam_models"
 
