@@ -10,23 +10,25 @@ from pregdos.model_rtstruct import RTStruct
 
 logger = logging.getLogger(__name__)
 
-# TODO: implement CT setup and Water phantom setup.
+
+def export_geo(ct: CTModel, rs: RTStruct, output_path: Path) -> None:
+    content = TopasGeo.generate(ct, rs)
+    output_path.write_text(content)
+    logger.info(f"Wrote Topas geometry file: {output_path.resolve()}")
 
 
 class TopasGeo:
     @staticmethod
-    def export(ct: CTModel, rs: RTStruct, fout: Path):
+    def generate(ct: CTModel, rs: RTStruct):
         """
         Export the CT and RTStruct models to a Topas-compatible geometry file.
         """
+        lines = []
+        lines.append("# Topas geometry file\n")
+        lines.append(_topas_footer())
 
-        logger.info(f"Exporting geometry to {fout}")
-
-        with open(fout, 'w') as f:
-            # Write header
-            f.write("# Topas geometry file\n")
-            f.write(_topas_footer())
-        logger.info(f"Topas input file written to '{fout}'")
+        topas_string = "\n".join(lines)
+        return topas_string
 
 
 def _topas_footer() -> str:

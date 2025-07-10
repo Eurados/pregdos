@@ -12,31 +12,35 @@ logger = logging.getLogger(__name__)
 
 
 # export_plan is a workflow function, not a core method of the TopasPlan abstraction
-def export_plan(
-        pln: Plan,
-        bm: BeamModel,
-        fout_base: Path,
-        field_nr: int = -1,
-        nominal: bool = True,
-        nstat: int = int(1e6)) -> None:
+def export_plan(pln: Plan, bm: BeamModel, output_base_path: Path,
+                field_nr: int = -1, nominal: bool = True,
+                nstat: int = int(1e6)) -> None:
     """
     Export one or all fields from a Plan to Topas .txt files.
     If field_nr >= 1, export only that field.
     If field_nr < 0, export all fields with field number appended.
     """
+
     if field_nr >= 1:
-        fout = fout_base.with_name(f"{fout_base.stem}_field{field_nr}{fout_base.suffix}")
-        TopasPlan.export(fout, pln.fields[field_nr - 1], bm, nominal=nominal, nstat=nstat)
+        field = pln.fields[field_nr - 1]
+        output_path = output_base_path.with_name(
+            f"{output_base_path.stem}_field{field_nr}{output_base_path.suffix}"
+        )
+        topas_text = TopasPlan.generate(field, bm, nominal=nominal, nstat=nstat)
+        output_path.write_text(topas_text)
     else:
         for i, field in enumerate(pln.fields, start=1):
-            fout = fout_base.with_name(f"{fout_base.stem}_field{i}{fout_base.suffix}")
-            TopasPlan.export(fout, field, bm, nominal=nominal, nstat=nstat)
+            output_path = output_base_path.with_name(
+                f"{output_base_path.stem}_field{i}{output_base_path.suffix}"
+            )
+            topas_text = TopasPlan.generate(field, bm, nominal=nominal, nstat=nstat)
+            output_path.write_text(topas_text)
 
 
 class TopasPlan:
     @staticmethod
-    def export(fn: Path, myfield: Field, bm: BeamModel, nominal: bool,
-               nstat=100000):
+    def generate(myfield: Field, bm: BeamModel, nominal: bool,
+                 nstat=100000):
         """
         Export the field to a topas input file.
         """
@@ -116,46 +120,48 @@ class TopasPlan:
         logger.debug(f"Beam Meterset Weight:    {myfield.meterset_weight_final:.2f}")
         logger.info(f"Beam Meterset:           {myfield.cum_mu:.2f} MU")
 
-        # open output file for writing
-        with open(fn, "w") as f:
-            f.write(f"#PARTICLE_SCALING = {1 / nstat_scale:.0f}\n")
-            f.write(f"#SOPInstanceUID = {myfield.sop_instance_uid}\n")
-            f.write(_topas_variables(myfield))
-            f.write(_topas_setup())
-            f.write(_topas_world_setup())
-            f.write(_topas_geometry())
-            f.write(_topas_beam())
+        # build output lines instead of writing to file
+        lines = []
+        lines.append(f"#PARTICLE_SCALING = {1 / nstat_scale:.0f}\n")
+        lines.append(f"#SOPInstanceUID = {myfield.sop_instance_uid}\n")
+        lines.append(_topas_variables(myfield))
+        lines.append(_topas_setup())
+        lines.append(_topas_world_setup())
+        lines.append(_topas_geometry())
+        lines.append(_topas_beam())
 
-            f.write("##############################################\n")
-            f.write("###  T  I  M  E    F  E  A  T  U  R  E  S  ###\n")
-            f.write("##############################################\n")
-            f.write("\n")
+        lines.append("##############################################\n")
+        lines.append("###  T  I  M  E    F  E  A  T  U  R  E  S  ###\n")
+        lines.append("##############################################\n")
+        lines.append("\n")
 
-            f.write(f"i:Tf/NumberOfSequentialTimes         = {n_spots}\n")
-            f.write(f"d:Tf/TimelineStart                   = {1} s\n")
-            f.write(f"d:Tf/TimelineEnd                     = {n_spots+1} s\n")
-            f.write("\n")
+        lines.append(f"i:Tf/NumberOfSequentialTimes         = {n_spots}\n")
+        lines.append(f"d:Tf/TimelineStart                   = {1} s\n")
+        lines.append(f"d:Tf/TimelineEnd                     = {n_spots+1} s\n")
+        lines.append("\n")
 
-            f.write(_topas_array(times, energies, "Energy", "f", 3, "MeV"))
-            f.write(_topas_array(times, espreads, "EnergySpread", "f", 5, ""))
-            f.write(_topas_array(times, posx, "spotPositionX", "f", 2, "mm"))
-            f.write(_topas_array(times, angx, "spotAngleX", "f", 3, "deg"))
-            f.write(_topas_array(times, posy, "spotPositionY", "f", 2, "mm"))
-            f.write(_topas_array(times, angy, "spotAngleY", "f", 3, "deg"))
-            f.write(_topas_array(times, sigx, "SigmaX", "f", 5, "mm"))
-            f.write(_topas_array(times, sigy, "SigmaY", "f", 5, "mm"))
-            f.write(_topas_array(times, sigxp, "SigmaXprime", "f", 5, ""))
-            f.write(_topas_array(times, sigyp, "SigmaYprime", "f", 5, ""))
-            f.write(_topas_array(times, corx, "CorrelationX", "f", 5, ""))
-            f.write(_topas_array(times, cory, "CorrelationY", "f", 5, ""))
-            f.write(_topas_array(times, nparts * nstat_scale, "spotWeight", "f", 0, ""))
+        lines.append(_topas_array(times, energies, "Energy", "f", 3, "MeV"))
+        lines.append(_topas_array(times, espreads, "EnergySpread", "f", 5, ""))
+        lines.append(_topas_array(times, posx, "spotPositionX", "f", 2, "mm"))
+        lines.append(_topas_array(times, angx, "spotAngleX", "f", 3, "deg"))
+        lines.append(_topas_array(times, posy, "spotPositionY", "f", 2, "mm"))
+        lines.append(_topas_array(times, angy, "spotAngleY", "f", 3, "deg"))
+        lines.append(_topas_array(times, sigx, "SigmaX", "f", 5, "mm"))
+        lines.append(_topas_array(times, sigy, "SigmaY", "f", 5, "mm"))
+        lines.append(_topas_array(times, sigxp, "SigmaXprime", "f", 5, ""))
+        lines.append(_topas_array(times, sigyp, "SigmaYprime", "f", 5, ""))
+        lines.append(_topas_array(times, corx, "CorrelationX", "f", 5, ""))
+        lines.append(_topas_array(times, cory, "CorrelationY", "f", 5, ""))
+        lines.append(_topas_array(times, nparts * nstat_scale, "spotWeight", "f", 0, ""))
 
-            f.write(f"#Total number of particles: {total_number_of_particles * nstat_scale:.0f}\n")
-            f.write(f"#Total number of particles scaled down by {1 / nstat_scale:.0f}\n")
-            f.write(f"#Total MU in field: {myfield.cum_mu:.2f}\n")
+        lines.append(f"#Total number of particles: {total_number_of_particles * nstat_scale:.0f}\n")
+        lines.append(f"#Total number of particles scaled down by {1 / nstat_scale:.0f}\n")
+        lines.append(f"#Total MU in field: {myfield.cum_mu:.2f}\n")
 
-            f.write(_topas_footer())
-        logger.info(f"Topas input file written to '{fn}'")
+        lines.append(_topas_footer())
+
+        topas_text = "".join(lines)
+        return topas_text
 
 
 def _topas_array(time_arr: np.array, arr: np.array, name: str, fmt: str = "f", precision: int = 0, unit=""):

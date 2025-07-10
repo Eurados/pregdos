@@ -1,19 +1,13 @@
 # placeholder for geometry export functionality
 import sys
 import logging
-from pathlib import Path
 
 from parser_geo_export import create_parser
 from pregdos.import_ct import load_ct
 from pregdos.import_rtstruct import load_rs
-from pregdos.export_geo_topas import TopasGeo
+from pregdos.export_geo_topas import export_geo
 
 logger = logging.getLogger(__name__)
-
-
-def export_geo(ct, rs, fout: Path) -> None:
-    TopasGeo.export(ct, rs, fout)
-    return None
 
 
 def main(args=None) -> int:
