@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 
 from pregdos.model_rtstruct import RTStruct
-from pregdos.import_rtstruct import import_rtstruct
+from pregdos.import_rtstruct import load_rs
 
 # paths to test RS file
 CT_TEST_DIR = Path("res") / "test_studies" / "DCPT_headphantom"
@@ -25,7 +25,7 @@ class TestRTStruct(unittest.TestCase):
 
     def test_rts_load_file(self):
         # Load the RTSTRUCT file
-        rts = import_rtstruct(CT_TEST_FILE)
+        rts = load_rs(CT_TEST_FILE)
         self.assertIsInstance(rts, RTStruct)
         self.assertEqual(rts.patient_name, PT_NAME)
         self.assertEqual(rts.patient_id, PT_ID)
@@ -34,7 +34,7 @@ class TestRTStruct(unittest.TestCase):
 
     def test_rts_load_directory(self):
         # Load the RTSTRUCT from a directory
-        rts = import_rtstruct(CT_TEST_DIR)
+        rts = load_rs(CT_TEST_DIR)
         self.assertIsInstance(rts, RTStruct)
         self.assertEqual(rts.patient_name, PT_NAME)
         self.assertEqual(rts.patient_id, PT_ID)

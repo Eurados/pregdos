@@ -30,7 +30,10 @@ def get_ct_files_sorted_by_instance_number(directory: Path) -> List[Path]:
     return files
 
 
-def load_ct_series(mydir: Path) -> CTModel:
+def load_ct(mydir: Path) -> CTModel:
+    """
+    Load a series of CT DICOM files from a directory and return a CTModel.
+    """
     if not mydir.is_dir():
         raise ValueError(f"{mydir} is not a directory")
 

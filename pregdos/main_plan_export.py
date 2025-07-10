@@ -1,31 +1,12 @@
 import sys
 import logging
-from pathlib import Path
 
 from parser_plan_export import create_parser
 from pregdos.beam_model import BeamModel
-from pregdos.model_plan import Plan
 from pregdos.import_plan import load_plan
-from pregdos.export_plan_topas import TopasPlan
+from pregdos.export_plan_topas import export_plan
 
 logger = logging.getLogger(__name__)
-
-
-def export_plan(p: Plan,
-                fbm: BeamModel,
-                fout: Path,
-                field_nr: int = 0,
-                nominal: bool = True,
-                nstat: int = int(1e6)) -> None:
-    """
-    Export a plan to a Topas-compatible format.
-    """
-    if field_nr < 1 or field_nr > p.n_fields:
-        raise ValueError(f"Invalid field number: {field_nr}. Valid range is 1 to {p.n_fields}.")
-
-    # append field number to output file name
-    fout = fout.with_name(f"{fout.stem}_field{field_nr}{fout.suffix}")
-    TopasPlan.export(fout, p.fields[field_nr-1], fbm, nominal=nominal, nstat=nstat)
 
 
 def main(args=None) -> int:
@@ -71,16 +52,11 @@ def main(args=None) -> int:
     logger.debug("Applying beam model to plan...")
     pln.apply_beammodel()
 
-    # If field number is specified, export only that field.
-    if parsed_args.field_nr >= 0:
-        field_idx = parsed_args.field_nr
-        logger.info(f"Exporting field number {field_idx} of {pln.n_fields} fields.")
-        export_plan(pln, pln.beam_model, parsed_args.fout, field_nr=field_idx, nominal=param_nominal, nstat=parsed_args.nstat)
-    else:
-        logger.info("Exporting all fields.")
-        for i in range(pln.n_fields):
-            logger.info(f"Exporting field number {i} of {pln.n_fields} fields.")
-            export_plan(pln, pln.beam_model, parsed_args.fout, field_nr=i, nominal=param_nominal, nstat=parsed_args.nstat)
+    logger.debug("Exporting plan to Topas format...")
+    export_plan(pln, pln.beam_model, parsed_args.fout,
+                field_nr=parsed_args.field_nr,
+                nominal=param_nominal,
+                nstat=parsed_args.nstat)
 
     return 0
 

@@ -9,7 +9,7 @@ from pregdos.model_rtstruct import RTStruct, RTStructROI
 logger = logging.getLogger(__name__)
 
 
-def import_rtstruct(rtstruct_path: Path) -> RTStruct:
+def load_rs(rtstruct_path: Path) -> RTStruct:
     """
     Import an RT Structure Set (RTSTRUCT) from a DICOM file and return a RTStruct.
     Path may also be a directory containing an RS*.dcm files.

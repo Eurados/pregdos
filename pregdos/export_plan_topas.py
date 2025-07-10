@@ -5,12 +5,32 @@ import numpy as np
 from pathlib import Path
 
 from pregdos.__version__ import __version__
-from pregdos.model_plan import Field
+from pregdos.model_plan import Plan, Field
 from pregdos.beam_model import BeamModel
 
 logger = logging.getLogger(__name__)
 
-# TODO: implement CT setup and Water phantom setup.
+
+# export_plan is a workflow function, not a core method of the TopasPlan abstraction
+def export_plan(
+        pln: Plan,
+        bm: BeamModel,
+        fout_base: Path,
+        field_nr: int = -1,
+        nominal: bool = True,
+        nstat: int = int(1e6)) -> None:
+    """
+    Export one or all fields from a Plan to Topas .txt files.
+    If field_nr >= 1, export only that field.
+    If field_nr < 0, export all fields with field number appended.
+    """
+    if field_nr >= 1:
+        fout = fout_base.with_name(f"{fout_base.stem}_field{field_nr}{fout_base.suffix}")
+        TopasPlan.export(fout, pln.fields[field_nr - 1], bm, nominal=nominal, nstat=nstat)
+    else:
+        for i, field in enumerate(pln.fields, start=1):
+            fout = fout_base.with_name(f"{fout_base.stem}_field{i}{fout_base.suffix}")
+            TopasPlan.export(fout, field, bm, nominal=nominal, nstat=nstat)
 
 
 class TopasPlan:
