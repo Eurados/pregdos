@@ -1,4 +1,40 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List, Tuple
+
+
+@dataclass
+class Image:
+    """
+    A single image in a CT scan.
+
+    Attributes:
+        pixel_data: The pixel data of the image.
+        instance_number: The instance number of the image.
+        sop_instance_uid: The SOP Instance UID of the image.
+        sop_class_uid: The SOP Class UID of the image.
+    """
+    pixel_data: bytes = b""
+
+    sop_class_uid: str = ""
+    sop_instance_uid: str = ""
+    modality: str = ""
+    series_description: str = ""
+
+    pixel_spacing: Tuple[float, float] = (0.0, 0.0)
+    slice_thickness: float = 0.0
+    slice_location: float = 0.0
+    image_orientation: Tuple[int, int, int, int, int, int] = (0, 0, 0, 0, 0, 0)
+    image_position_patient: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    instance_number: int = 0
+
+    patient_id: str = ""
+    patient_name: str = ""
+    patient_initials: str = ""
+    patient_firstname: str = ""
+    patient_position: str = ""
+    rows: int = 0
+    columns: int = 0
 
 
 @dataclass
@@ -7,29 +43,52 @@ class CTModel:
     A model for CT data in a proton treatment plan.
 
     Attributes:
-        patient_id: Unique identifier for the patient.
-        patient_name: Full name of the patient.
-        patient_initials: Initials of the patient.
-        patient_firstname: First name of the patient.
-        plan_label: Label for the treatment plan.
-        beam_name: Name of the beam used in the treatment.
-        cmu: Total amount of MUs in this field.
-        pld_csetweight: Weighting factor for the PLD.
-        n_layers: Number of layers in the treatment plan.
-    """
-    patient_id: str = ""
-    patient_name: str = ""
-    patient_initials: str = ""
-    patient_firstname: str = ""
-    patient_position: str = ""
-    pixel_spacing: float = 0.0
-    slice_thickness: float = 0.0
-    image_orientation: str = ""
-    image_position: str = ""
-    rows: int = 0
-    columns: int = 0
-    sop_instance_uid: str = ""
+        todo
+"""
+    images: List[Image] = field(default_factory=list)
+
+    # In dicom format, the following data are per image, and could in princple be different
+    # from image to image, but we assume they are the same for all images in this model
+    # therefore we store them in the CTModel class as well.
+    # Topas is not able to handle varying data per image, so it is legit here, but
+    # but should this change in the future, we can still adapt the code.
+    @property
+    def patient_id(self) -> str:
+        return self.images[0].patient_id if self.images else ""
+
+    @property
+    def patient_name(self) -> str:
+        return self.images[0].patient_name if self.images else ""
+
+    @property
+    def patient_position(self) -> str:
+        return self.images[0].patient_position if self.images else ""
+
+    @property
+    def rows(self) -> int:
+        return self.images[0].rows if self.images else 0
+
+    @property
+    def columns(self) -> int:
+        return self.images[0].columns if self.images else 0
+
+    @property
+    def n_slices(self) -> int:
+        """Number of slices in the CT model."""
+        return len(self.images)
+
+    @property
+    def slice_thickness(self) -> float:
+        """Slice thickness of the CT model."""
+        if len(self.images) > 1:
+            return self.images[1].slice_location - self.images[0].slice_location
+        else:
+            return 0.0
 
     def __repr__(self):
-        """Return a string representation of the CT model."""
-        pass
+        return (
+            f"<CTModel patient_id='{self.patient_id}', "
+            f"name='{self.patient_name}', "
+            f"position='{self.patient_position}', "
+            f"slices={len(self.images)}>"
+        )
