@@ -3,7 +3,7 @@ import sys
 import logging
 from pathlib import Path
 
-from parser_main import create_parser
+from pregdos.parser_main import create_parser
 from pregdos.beam_model import BeamModel
 from pregdos.import_ct import load_ct
 from pregdos.import_rtstruct import load_rs

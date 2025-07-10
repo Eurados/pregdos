@@ -2,7 +2,7 @@
 import sys
 import logging
 
-from parser_geo_export import create_parser
+from pregdos.parser_geo_export import create_parser
 from pregdos.import_ct import load_ct
 from pregdos.import_rtstruct import load_rs
 from pregdos.export_geo_topas import export_geo

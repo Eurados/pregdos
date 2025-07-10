@@ -1,7 +1,7 @@
 import sys
 import logging
 
-from parser_plan_export import create_parser
+from pregdos.parser_plan_export import create_parser
 from pregdos.beam_model import BeamModel
 from pregdos.import_plan import load_plan
 from pregdos.export_plan_topas import export_plan
