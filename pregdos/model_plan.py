@@ -130,11 +130,13 @@ class Field:
     lateral_spreading_device_distanceX: float = 0.0
     lateral_spreading_device_distanceY: float = 0.0
     sop_instance_uid: str = ""
+    number: int = 0
 
     @property
     def n_layers(self) -> int:
         return len(self.layers)
 
+    @property
     def n_particles(self) -> float:
         """Total number of particles in this field.
         Will only be meaningful after beam model application."""

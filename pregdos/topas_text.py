@@ -261,7 +261,8 @@ class TopasText:
         ]
         return "\n".join(lines)
 
-    def scorer_setup_DICOM(dose_to_water: bool, topas_output_path: str) -> str:
+    @staticmethod
+    def scorer_setup_dicom(dose_to_water: bool = True, topas_output_path: str = "") -> str:
         lines = [
             "##############################################",
             "###       S C O R E R    S E T U P         ###",

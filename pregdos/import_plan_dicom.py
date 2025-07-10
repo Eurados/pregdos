@@ -48,6 +48,7 @@ def load_plan_dicom(file_dcm: Path) -> Plan:
     for i, rb in enumerate(rbs):
         myfield = Field()
         field_nr = i + 1
+        myfield.field_number = field_nr
         logger.debug("Appending field number %d...", field_nr)
         p.fields.append(myfield)
         myfield.sop_instance_uid = p.sop_instance_uid

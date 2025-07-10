@@ -22,7 +22,8 @@ def get_path_dicom_dose(study_dir: Path) -> Path:
     if not dose_files:
         raise FileNotFoundError("No DICOM RTDOSE file found in the study directory.")
     if len(dose_files) > 1:
-        raise ValueError("Multiple DICOM RTDOSE files found, expected only one.")
+        # we will use the first one found
+        logger.warning("Multiple DICOM RTDOSE files found, using the first one.")
     return dose_files[0]
 
 
@@ -60,7 +61,8 @@ def main(args=None) -> int:
     export_study_topas(ct, rs, pn,
                        parsed_args.output_base_path,
                        field_nr=parsed_args.field_nr,
-                       dose_path=rd_path)
+                       dose_path=rd_path,
+                       nstat=parsed_args.nstat)
 
     return 0
 

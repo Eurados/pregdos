@@ -26,7 +26,7 @@ class TopasGeo:
         lines.append(TopasText.setup())
         lines.append(TopasText.world_setup())
         lines.append(TopasText.geometry())
-        lines.append(TopasText.scorer_setup_DICOM())
+        lines.append(TopasText.scorer_setup_dicom())
         lines.append(TopasText.footer())
         topas_string = "\n".join(lines)
         return topas_string
