@@ -2,11 +2,11 @@ import sys
 import logging
 from pathlib import Path
 
-from plan_export_parser import create_parser
+from parser_plan_export import create_parser
 from pregdos.beam_model import BeamModel
 from pregdos.model_plan import Plan
 from pregdos.import_plan import load_plan
-from pregdos.export_plan_topas import Topas
+from pregdos.export_plan_topas import TopasPlan
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ def export_plan(p: Plan,
 
     # append field number to output file name
     fout = fout.with_name(f"{fout.stem}_field{field_nr}{fout.suffix}")
-    Topas.export(fout, p.fields[field_nr-1], fbm, nominal=nominal, nstat=nstat)
+    TopasPlan.export(fout, p.fields[field_nr-1], fbm, nominal=nominal, nstat=nstat)
 
 
 def main(args=None) -> int:

@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 # TODO: implement CT setup and Water phantom setup.
 
 
-class Topas:
+class TopasPlan:
     @staticmethod
     def export(fn: Path, myfield: Field, bm: BeamModel, nominal: bool,
                nstat=100000):
