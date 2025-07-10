@@ -6,7 +6,7 @@ from pathlib import Path
 
 from pregdos.config_parser import create_parser
 from pregdos.beam_model import BeamModel
-from pregdos.plan_model import Plan
+from model_plan import Plan
 from pregdos.import_plan import load_plan
 from pregdos.export_plan_topas import Topas
 

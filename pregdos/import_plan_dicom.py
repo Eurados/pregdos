@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 
 
-from pregdos.plan_model import Plan, Field, Layer, Spot
+from model_plan import Plan, Field, Layer, Spot
 
 logger = logging.getLogger(__name__)
 

@@ -45,7 +45,7 @@ class TestPregdosCLI(unittest.TestCase):
             "-f1",
             "-vv",
             "-b=res/beam_models/DCPT_beam_model__v2.csv",
-            f"res/plans/{dicom_file_name}"
+            f"res/test_plans/{dicom_file_name}"
         ]
 
         retcode = main.main(test_args)

@@ -3,7 +3,7 @@
 # this is just an example to not have an empty test file
 
 import unittest
-from pregdos.plan_model import Plan
+from model_plan import Plan
 
 
 class TestPlan(unittest.TestCase):

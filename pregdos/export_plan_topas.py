@@ -5,7 +5,7 @@ import datetime
 import getpass  # used for recording the user who generated the file
 
 from pregdos.__version__ import __version__
-from pregdos.plan_model import Field
+from model_plan import Field
 from pregdos.beam_model import BeamModel
 
 logger = logging.getLogger(__name__)
