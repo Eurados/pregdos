@@ -1,12 +1,10 @@
 import logging
-import datetime
-import getpass  # used for recording the user who generated the file
 import numpy as np
 from pathlib import Path
 
-from pregdos.__version__ import __version__
 from pregdos.model_plan import Plan, Field
 from pregdos.beam_model import BeamModel
+from pregdos.topas_text import TopasText
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +38,7 @@ def export_plan(pln: Plan, bm: BeamModel, output_base_path: Path,
 class TopasPlan:
     @staticmethod
     def generate(myfield: Field, bm: BeamModel, nominal: bool,
-                 nstat=100000):
+                 nstat=100000, test_mode=False, add_footer=True) -> str:
         """
         Export the field to a topas input file.
         """
@@ -124,11 +122,16 @@ class TopasPlan:
         lines = []
         lines.append(f"#PARTICLE_SCALING = {1 / nstat_scale:.0f}\n")
         lines.append(f"#SOPInstanceUID = {myfield.sop_instance_uid}\n")
-        lines.append(_topas_variables(myfield))
-        lines.append(_topas_setup())
-        lines.append(_topas_world_setup())
-        lines.append(_topas_geometry())
-        lines.append(_topas_beam())
+        lines.append(TopasText.variables(myfield))
+        if test_mode:
+            lines.append(TopasText.setup())
+            lines.append(TopasText.world_setup())
+            lines.append(TopasText.geometry_gantry())
+            lines.append(TopasText.geometry_couch())
+            lines.append(TopasText.geometry_dcm_to_iec())
+
+        lines.append(TopasText.geometry_beam_position_timefeature())
+        lines.append(TopasText.field_beam_timefeature())
 
         lines.append("##############################################\n")
         lines.append("###  T  I  M  E    F  E  A  T  U  R  E  S  ###\n")
@@ -154,11 +157,12 @@ class TopasPlan:
         lines.append(_topas_array(times, cory, "CorrelationY", "f", 5, ""))
         lines.append(_topas_array(times, nparts * nstat_scale, "spotWeight", "f", 0, ""))
 
-        lines.append(f"#Total number of particles: {total_number_of_particles * nstat_scale:.0f}\n")
-        lines.append(f"#Total number of particles scaled down by {1 / nstat_scale:.0f}\n")
-        lines.append(f"#Total MU in field: {myfield.cum_mu:.2f}\n")
+        lines.append(f"# Total number of particles: {total_number_of_particles * nstat_scale:.0f}\n")
+        lines.append(f"# Total number of particles scaled down by {1 / nstat_scale:.0f}\n")
+        lines.append(f"# Total MU in field: {myfield.cum_mu:.2f}\n")
 
-        lines.append(_topas_footer())
+        if add_footer:
+            lines.append(TopasText.footer())
 
         topas_text = "".join(lines)
         return topas_text
@@ -180,167 +184,3 @@ def _topas_array(time_arr: np.array, arr: np.array, name: str, fmt: str = "f", p
     s += f"{_pre}:Tf/{name}/Values                   = {arr.size} {_fa} {unit}\n"
     s += "\n\n"
     return s
-
-
-def _topas_variables(myfield: Field) -> str:
-    # Extract isocenter, gantry, couch, and snout_position from the first layer
-    layer = myfield.layers[0]  # varying isocenter, gantry, couch, snout_position per controlpoint is not supported.
-    isocenter = getattr(layer, "isocenter", [0.0, 0.0, 0.0])
-    gantry_angle = getattr(layer, "gantry_angle", 0.0)
-    couch_angle = getattr(layer, "couch_angle", 0.0)
-    dicom_origin = getattr(layer, "dicom_origin", [0.0, 0.0, 0.0])
-    snout_position = getattr(layer, "snout_position", 421.0)
-
-    lines = [
-        "##############################################",
-        "###           V A R I A B L E S            ###",
-        "##############################################",
-        "",
-        f"d:Rt/Plan/IsoCenterX                 = {isocenter[0]:.2f} mm",
-        f"d:Rt/Plan/IsoCenterY                 = {isocenter[1]:.2f} mm",
-        f"d:Rt/Plan/IsoCenterZ                 = {isocenter[2]:.2f} mm",
-        f"d:Ge/snoutPosition                   = {snout_position:.2f} mm",
-        f"d:Ge/gantryAngle                     = {gantry_angle:.2f} deg",
-        f"d:Ge/couchAngle                      = {couch_angle:.2f} deg",
-        f"dc:Ge/Patient/DicomOriginX           = {dicom_origin[0]:.2f} mm",
-        f"dc:Ge/Patient/DicomOriginY           = {dicom_origin[1]:.2f} mm",
-        f"dc:Ge/Patient/DicomOriginZ           = {dicom_origin[2]:.2f} mm",
-        "\n"
-    ]
-    return "\n".join(lines)
-
-
-def _topas_setup() -> str:
-    lines = [
-        "##############################################",
-        "###         T O P A S    S E T U P         ###",
-        "##############################################",
-        "# sv:Ph/Default/Modules                = 6 \"g4em-standard_opt3\" "
-        "\"g4h-phy_QGSP_BIC_HP\" \"g4decay\" \"g4ion-binarycascade\" "
-        "\"g4h-elastic_HP\" \"g4stopping\"",
-        "i:Ts/ShowHistoryCountAtInterval         = 100000",
-        "i:Ts/NumberOfThreads                    = 0 # 0 for using all cores, -1 for all but one",
-        "b:Ts/DumpParameters                     = \"False\"",
-        "b:Ge/Patient/IgnoreInconsistentFrameOfReferenceUID = \"True\"",
-        "\n"
-    ]
-    return "\n".join(lines)
-
-
-def _topas_world_setup() -> str:
-    lines = [
-        "##############################################",
-        "###         W O R L D    S E T U P         ###",
-        "##############################################",
-        's:Ge/World/Type            = "TsBox"',
-        's:Ge/World/Material        = "Air"',
-        "d:Ge/World/HLX             = 90. cm",
-        "d:Ge/World/HLY             = 90. cm",
-        "d:Ge/World/HLZ             = 90. cm",
-        'b:Ge/World/Invisible       = "True"',
-        "\n"
-    ]
-    return "\n".join(lines)
-
-
-def _topas_geometry() -> str:
-    lines = [
-        "##############################################",
-        "###            G E O M E T R Y             ###",
-        "##############################################",
-        's:Ge/Gantry/Parent                   = "DCM_to_IEC"',
-        's:Ge/Gantry/Type                     = "Group"',
-        "d:Ge/Gantry/TransX                   = 0.00 mm",
-        "d:Ge/Gantry/TransY                   = 0.00 mm",
-        "d:Ge/Gantry/TransZ                   = 0.00 mm",
-        "d:Ge/Gantry/RotX                     = 0.00 deg",
-        "d:Ge/Gantry/RotY                     = Ge/gantryAngle deg",
-        "d:Ge/Gantry/RotZ                     = 0.00 deg",
-        "",
-        's:Ge/Couch/Parent                  = "World"',
-        's:Ge/Couch/Type                    = "Group"',
-        "d:Ge/Couch/RotX                    = 0. deg",
-        "d:Ge/Couch/RotY                    = -1.0 * Ge/couchAngle deg",
-        "d:Ge/Couch/RotZ                    = 0. deg",
-        "d:Ge/Couch/TransX                  = 0.0 mm",
-        "d:Ge/Couch/TransY                  = 0.0 mm",
-        "d:Ge/Couch/TransZ                  = 0.0 mm",
-        "",
-        's:Ge/DCM_to_IEC/Parent               = "Couch"',
-        's:Ge/DCM_to_IEC/Type                 = "Group"',
-        "d:Ge/DCM_to_IEC/TransX               = 0.0 mm",
-        "d:Ge/DCM_to_IEC/TransY               = 0.0 mm",
-        "d:Ge/DCM_to_IEC/TransZ               = 0.0 mm",
-        "d:Ge/DCM_to_IEC/RotX                 = 90.00 deg",
-        "d:Ge/DCM_to_IEC/RotY                 = 0.0 deg",
-        "d:Ge/DCM_to_IEC/RotZ                 = 0.0 deg",
-        "",
-        's:Ge/BeamPosition/Parent             = "Gantry"',
-        's:Ge/BeamPosition/Type               = "Group"',
-        "d:Ge/BeamPosition/TransZ             = -500.0 mm",
-        "d:Ge/BeamPosition/TransX             = Tf/spotPositionX/Value mm",
-        "d:Ge/BeamPosition/TransY             = -1.0 * Tf/spotPositionY/Value mm",
-        "d:Ge/BeamPosition/RotX               = -1.0 * Tf/spotAngleY/Value deg",
-        "d:Ge/BeamPosition/RotY               = -1.0 * Tf/spotAngleX/Value deg",
-        "d:Ge/BeamPosition/RotZ               = 0.00 deg",
-        "\n"
-    ]
-    return "\n".join(lines)
-
-
-def _topas_beam() -> str:
-    lines = [
-        "##############################################",
-        "###               B  E  A  M               ###",
-        "##############################################",
-        's:So/Field/Type                      = "Emittance"',
-        's:So/Field/Component                 = "BeamPosition"',
-        's:So/Field/BeamParticle              = "proton"',
-        "d:So/Field/BeamEnergy                = Tf/Energy/Value MeV",
-        "u:So/Field/BeamEnergySpread          = Tf/EnergySpread/Value",
-        's:So/Field/Distribution              = "BiGaussian"',
-        "d:So/Field/SigmaX                    = Tf/SigmaX/Value mm",
-        "d:So/Field/SigmaY                    = Tf/SigmaY/Value mm",
-        "u:So/Field/SigmaXprime               = Tf/SigmaXprime/Value",
-        "u:So/Field/SigmaYprime               = Tf/SigmaYprime/Value",
-        "u:So/Field/CorrelationX              = Tf/CorrelationX/Value",
-        "u:So/Field/CorrelationY              = Tf/CorrelationY/Value",
-        "",
-        "i:So/Field/NumberOfHistoriesInRun    = Tf/spotWeight/Value",
-        "\n"
-    ]
-    return "\n".join(lines)
-
-
-def _topas_range_shifter(myfield: Field) -> str:
-    if Field.range_shifter_thickness is None:
-        return ""
-
-    lines = [
-        "##############################################",
-        "###         R A N G E   S H I F T E R       ###",
-        "##############################################",
-        's:Ge/RangeShifter/Parent             = "Gantry"',
-        's:Ge/RangeShifter/Type               = "TsBox"',
-        's:Ge/RangeShifter/Material           = "Lexan"',
-        'b:Ge/RangeShifter/Isparallel         = "True"',
-        f"d:Ge/RangeShifter/HLX                = {200:.2f} mm",
-        f"d:Ge/RangeShifter/HLY                = {200:.2f} mm",
-        f"d:Ge/RangeShifter/HLZ                = {myfield.range_shifter_thickness/2:.2f} mm",
-        's:Ge/RangeShifter/Color              = "Orange"',
-        f'd:Ge/RangeShifter/TransZ            = {-myfield.range_shifter_distance:.2f} mm\n',  # TODO: not to center of RS.
-        "\n"
-    ]
-    return "\n".join(lines)
-
-
-def _topas_footer() -> str:
-    "Add a footer to the topas file with generation date and username."
-
-    lines = [
-        "\n",
-        f"# Generated {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by user '{getpass.getuser()}'" +
-        f" using dicomfix {__version__}",
-        "# https://github.com/nbassler/dicomfix"]
-
-    return "\n".join(lines)
