@@ -2,7 +2,7 @@ import sys
 import logging
 from pathlib import Path
 
-from pregdos.config_parser import create_parser
+from plan_export_parser import create_parser
 from pregdos.beam_model import BeamModel
 from pregdos.model_plan import Plan
 from pregdos.import_plan import load_plan

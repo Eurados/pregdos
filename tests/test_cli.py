@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 from io import StringIO
 
-from pregdos import main
+import pregdos.main_plan_export as main_plan_export
 
 
 class TestPregdosCLI(unittest.TestCase):
@@ -14,7 +14,7 @@ class TestPregdosCLI(unittest.TestCase):
         try:
             sys.stdout = StringIO()
             with self.assertRaises(SystemExit) as cm:
-                main.main(["-h"])
+                main_plan_export.main(["-h"])
             output = sys.stdout.getvalue()
             self.assertIn("usage", output.lower())
             self.assertEqual(cm.exception.code, 0)
@@ -27,7 +27,7 @@ class TestPregdosCLI(unittest.TestCase):
         try:
             sys.stdout = StringIO()
             with self.assertRaises(SystemExit) as cm:
-                main.main(["-V"])
+                main_plan_export.main(["-V"])
             output = sys.stdout.getvalue()
             # Match versions like 0.0.post2+g3e1d4d2
             self.assertRegex(output, r"\d+\.\d+(\.\d+)?([a-z0-9\.\+\-]+)?")
@@ -48,7 +48,7 @@ class TestPregdosCLI(unittest.TestCase):
             f"res/test_plans/{dicom_file_name}"
         ]
 
-        retcode = main.main(test_args)
+        retcode = main_plan_export.main(test_args)
         self.assertEqual(retcode, 0, f"CLI execution failed for {dicom_file_name}")
 
         self.assertTrue(test_output_file.exists(), f"Output file was not created for {dicom_file_name}.")
