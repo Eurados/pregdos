@@ -1,5 +1,6 @@
+from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 
 @dataclass
@@ -48,6 +49,7 @@ class CTModel:
         images: List of images in the CT model.
 """
     images: List[Image] = field(default_factory=list)
+    spr_to_material_path: Optional[Path] = None  # in fact mandatory as long we depend on the dose cube
 
     # In dicom format, the following data are per image, and could in princple be different
     # from image to image, but we assume they are the same for all images in this model

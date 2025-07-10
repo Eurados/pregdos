@@ -97,6 +97,30 @@ class TopasText:
         return "\n".join(lines)
 
     @staticmethod
+    def geometry_patient_dicom(rd_path: Path) -> str:
+        dicom_dir = str(rd_path.parent)
+        rtdose_file = rd_path.name
+        lines = [
+            "##############################################",
+            "###            G E O M E T R Y             ###",
+            "##############################################",
+            's:Ge/Patient/Parent                  = "World"',
+            's:Ge/Patient/Type                    = "TsDicomPatient"',
+            f's:Ge/Patient/DicomDirectory          = "{dicom_dir}"',
+            'sv:Ge/Patient/DicomModalityTags      = 1 "CT"',
+            f's:Ge/Patient/CloneRTDoseGridFrom     = Ge/Patient/DicomDirectory + "/{rtdose_file}"',
+            'd:Ge/Patient/TransX                  = Ge/Patient/DicomOriginX - Rt/Plan/IsoCenterX mm',
+            'd:Ge/Patient/TransY                  = Ge/Patient/DicomOriginY - Rt/Plan/IsoCenterY mm',
+            'd:Ge/Patient/TransZ                  = Ge/Patient/DicomOriginZ - Rt/Plan/IsoCenterZ mm',
+            'd:Ge/Patient/RotX                    = 0.00 deg',
+            'd:Ge/Patient/RotY                    = 0.00 deg',
+            'd:Ge/Patient/RotZ                    = 0.00 deg',
+            's:Ge/Patient/Color                   = "Red"',
+            "\n"
+        ]
+        return "\n".join(lines)
+
+    @staticmethod
     def geometry_patient(ct: CTModel, rs: RTStruct) -> str:
         """
         Generate the geometry section for the patient.

@@ -72,6 +72,15 @@ class Layer:
         return len(self.spots)
 
     @property
+    def n_particles(self) -> float:
+        """Number of particles in this layer.
+           will only be meaningful after beam model application."""
+        if self.mu_to_part_coef > 0.0:
+            return self.cum_mu * self.mu_to_part_coef
+        else:
+            return 0.0
+
+    @property
     def xmin(self) -> float:
         return min((spot.x for spot in self.spots), default=0.0)
 
@@ -125,6 +134,11 @@ class Field:
     @property
     def n_layers(self) -> int:
         return len(self.layers)
+
+    def n_particles(self) -> float:
+        """Total number of particles in this field.
+        Will only be meaningful after beam model application."""
+        return sum(layer.n_particles for layer in self.layers)
 
     @property
     def n_spots(self) -> int:
