@@ -34,18 +34,13 @@ def load_ct_series(mydir: Path) -> CTModel:
     if not mydir.is_dir():
         raise ValueError(f"{mydir} is not a directory")
 
-    files = mydir.glob("*.dcm")
-
-    if not files:
-        raise FileNotFoundError(f"No DICOM files found in {mydir}")
-
     ct_files = get_ct_files_sorted_by_instance_number(mydir)
 
     ct_model = CTModel()
 
     for file in ct_files:
         ds = pydicom.dcmread(file, stop_before_pixels=False)
-        logger.debug(f"Processing DICOM file: {file}")
+        logger.debug(f"Loading CT slice: {file.name}")
 
         img = Image(
             sop_class_uid=str(ds.SOPClassUID),

@@ -13,7 +13,9 @@ class Image:
         sop_instance_uid: The SOP Instance UID of the image.
         sop_class_uid: The SOP Class UID of the image.
     """
-    pixel_data: bytes = b""
+    modality: str = "CT"
+
+    pixel_data: bytes = b""  # pixel data are not needed for the pipeline, but a placeholder is just provided for future use
 
     sop_class_uid: str = ""
     sop_instance_uid: str = ""
@@ -43,7 +45,7 @@ class CTModel:
     A model for CT data in a proton treatment plan.
 
     Attributes:
-        todo
+        images: List of images in the CT model.
 """
     images: List[Image] = field(default_factory=list)
 

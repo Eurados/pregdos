@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 def load_plan_dicom(file_dcm: Path) -> Plan:
     """Load DICOM RTPLAN."""
-    logger.warning("DICOM reader not tested yet.")
+
     p = Plan()
     try:
         import pydicom as dicom
@@ -18,20 +18,26 @@ def load_plan_dicom(file_dcm: Path) -> Plan:
         logger.error("Please install pymchelper[dicom] or pymchelper[all] to us this feature.")
         return p
     d = dicom.dcmread(file_dcm)
-    # Total number of energy layers used to produce SOBP
 
-    # DICOM SOP Class UID for RT Ion Plan Storage
-    # 1.2.840.10008.5.1.4.1.1.481.8
+    # Check if the file is an RTPLAN
+    if d.Modality != "RTPLAN":
+        logger.error("File %s is not a valid RTPLAN file (Modality: %s)", file_dcm, d.Modality)
+        raise ValueError("File is not a valid RTPLAN DICOM file.")
+
+    # Check also the SOP Class UID
     if d.SOPClassUID != '1.2.840.10008.5.1.4.1.1.481.8':
-        logger.error("Unsupported DICOM SOP Class UID: %s", d.SOPClassUID)
-        raise ValueError("Unsupported DICOM SOP Class UID for RT Ion Plan Storage.")
+        logger.error("File %s is not a valid RTPLAN file (SOP Class UID: %s)", file_dcm, d.SOPClassUID)
+        raise ValueError("File is not a valid RTPLAN DICOM file.")
 
-    p.patient_id = d['PatientID'].value
-    p.patient_name = d['PatientName'].value
-    p.patient_initals = ""
-    p.patient_firstname = ""
-    p.plan_label = d['RTPlanLabel'].value
-    p.plan_date = d['RTPlanDate'].value
+    # optional attributes that may not be present in all RTPLAN files and can default to empty strings
+    p.patient_id = getattr(d, 'PatientID', '')
+    p.patient_name = getattr(d, 'PatientName', '')
+    p.patient_initials = getattr(d, 'PatientInitials', '')
+    p.patient_firstname = getattr(d, 'PatientFirstName', '')
+    p.plan_label = getattr(d, 'RTPlanLabel', '')
+    p.plan_date = getattr(d, 'RTPlanDate', '')
+
+    # mandatory attributes, code will raise an error if they are not present
     p.sop_instance_uid = d['SOPInstanceUID'].value
 
     espread = 0.0  # will be set by beam model

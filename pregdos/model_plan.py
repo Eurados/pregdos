@@ -107,6 +107,8 @@ class Layer:
 class Field:
     """A field consisting of multiple energy layers."""
 
+    modality: str = "RTPLAN"
+
     layers: List[Layer] = dc_field(default_factory=list)
     dose: float = 0.0
     cum_mu: float = 0.0
