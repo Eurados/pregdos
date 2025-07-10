@@ -1,11 +1,11 @@
-import numpy as np
-from pathlib import Path
 import logging
 import datetime
 import getpass  # used for recording the user who generated the file
+import numpy as np
+from pathlib import Path
 
 from pregdos.__version__ import __version__
-from model_plan import Field
+from pregdos.model_plan import Field
 from pregdos.beam_model import BeamModel
 
 logger = logging.getLogger(__name__)

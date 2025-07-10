@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 
 from pregdos.beam_model import get_fwhm
-from model_plan import Plan, Field, Layer, Spot
+from pregdos.model_plan import Plan, Field, Layer, Spot
 
 logger = logging.getLogger(__name__)
 

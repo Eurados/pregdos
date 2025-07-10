@@ -1,9 +1,5 @@
-# tests/test_plan.py
-
-# this is just an example to not have an empty test file
-
 import unittest
-from model_plan import Plan
+from pregdos.model_plan import Plan
 
 
 class TestPlan(unittest.TestCase):

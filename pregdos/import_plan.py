@@ -1,15 +1,12 @@
 import logging
 from pathlib import Path
 
-from model_plan import Plan
+from pregdos.model_plan import Plan
 from pregdos.import_plan_pld import load_plan_pld
 from pregdos.import_plan_dicom import load_plan_dicom
 from pregdos.import_plan_rst import load_plan_rst
 
 logger = logging.getLogger(__name__)
-
-
-# from .import_plan_rst import load_plan_rst
 
 
 def load_plan(path: Path, **kwargs) -> Plan:

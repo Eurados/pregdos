@@ -1,10 +1,8 @@
 import logging
+import numpy as np
 from pathlib import Path
 
-import numpy as np
-
-
-from model_plan import Plan, Field, Layer, Spot
+from pregdos.model_plan import Plan, Field, Layer, Spot
 
 logger = logging.getLogger(__name__)
 

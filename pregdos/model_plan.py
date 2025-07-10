@@ -1,12 +1,11 @@
-from dataclasses import dataclass, field as dc_field
-from typing import List, Tuple
-
+import sys
 import numpy as np
 import logging
+from dataclasses import dataclass, field as dc_field
+from typing import List, Tuple
+from io import StringIO
 
 from pregdos.beam_model import BeamModel, get_fwhm
-from io import StringIO
-import sys
 
 logger = logging.getLogger(__name__)
 

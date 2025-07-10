@@ -2,11 +2,9 @@ import sys
 import logging
 from pathlib import Path
 
-# from pregdos.__version__ import __version__
-
 from pregdos.config_parser import create_parser
 from pregdos.beam_model import BeamModel
-from model_plan import Plan
+from pregdos.model_plan import Plan
 from pregdos.import_plan import load_plan
 from pregdos.export_plan_topas import Topas
 
