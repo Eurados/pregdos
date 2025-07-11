@@ -50,6 +50,8 @@ def _export_study_field_topas(ct: CTModel, rs: RTStruct, fld: Field, bm: BeamMod
     lines.append(TopasText.geometry_gantry())
     lines.append(TopasText.geometry_couch())
     lines.append(TopasText.geometry_dcm_to_iec())
+    lines.append(TopasText.geometry_beam_position_timefeature(bm.beam_model_position))
+    lines.append(TopasText.geometry_range_shifter(fld))
     lines.append(TopasText.field_beam_timefeature())
     lines.append(TopasText.scorer_setup_dicom(topas_output_path=topas_output_file_str_no_suffix))
     lines.append(TopasPlan.time_features_string(fld, bm, nominal=True, nstat=1000000))

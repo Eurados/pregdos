@@ -1,8 +1,9 @@
+import copy
 import logging
 import numpy as np
 from pathlib import Path
 
-from pregdos.model_plan import Plan, Field, Layer, Spot
+from pregdos.model_plan import Plan, Field, Layer, Spot, RangeShifter
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +14,7 @@ def load_plan_dicom(file_dcm: Path) -> Plan:
     p = Plan()
     try:
         import pydicom as dicom
+
     except ImportError:
         logger.error("pydicom is not installed, cannot read DICOM files.")
         logger.error("Please install pymchelper[dicom] or pymchelper[all] to us this feature.")
@@ -73,6 +75,33 @@ def load_plan_dicom(file_dcm: Path) -> Plan:
 
         cmu = 0.0
 
+        # If range shifters are present, build the RS lookup dictionary
+        logger.debug("Checking for Range Shifter Sequence in field number %i", field_nr)
+        if 'RangeShifterSequence' in ib:
+            rs_dict = {}
+            for rs_item in ib['RangeShifterSequence']:
+                rs = RangeShifter()
+                if 'RangeShifterNumber' in rs_item:
+                    rs.number = int(rs_item['RangeShifterNumber'].value)  # Use DICOM tag value
+                else:
+                    logger.error("RangeShifterNumber not found in DICOM plan.")
+                    continue
+                if 'RangeShifterID' in rs_item:
+                    rs.type = rs_item['RangeShifterType'].value
+                    rs.id = rs_item['RangeShifterID'].value
+                    logger.debug("Found range shifter ID: %s", rs.id)
+                    if rs.id == 'None':
+                        rs.thickness = 0.0
+                    elif rs.id == 'RS_3CM':
+                        rs.thickness = 30.0
+                    elif rs.id == 'RS_5CM':
+                        rs.thickness = 50.0
+                else:
+                    logger.error("Unknown range shifter ID in DICOM plan.")
+                logger.debug("Found range shifter number %d with type %s and thickness %.2f mm",
+                             rs.number, rs.type, rs.thickness)
+                rs_dict[rs.number] = rs  # Store by DICOM number for lookup
+
         for j, icp in enumerate(icps):
             layer_nr = j + 1
             # Several attributes are only set once at the first ion control point.
@@ -96,22 +125,17 @@ def load_plan_dicom(file_dcm: Path) -> Plan:
             if 'SnoutPosition' in icp:
                 snout_position = float(icp['SnoutPosition'].value)
 
-            # check if a range shifter is used
-            logging.debug("Checking for range shifter in layer %i", layer_nr)
-            if 'RangeShifterSequence' in icp:
-                for rs in icp['RangeShifterSequence']:
-                    if 'RangeShifterID' in rs:
-                        rsid = rs['RangeShifterID'].value
-                        logger.debug("Found range shifter ID: %s", rsid)
-                        if rsid == 'None':
-                            myfield.range_shifter_thickness = 0.0
-                        elif rsid == 'RS_3CM':
-                            myfield.range_shifter_thickness = 30.0
-                        elif rsid == 'RS_5CM':
-                            myfield.range_shifter_thickness = 50.0
-                    else:
-                        logger.warning("Unknown range shifter ID in DICOM plan: %s", rsid)
-                myfield.range_shifter_thickness = float(ib['RangeShifterSequence'].value)
+            if 'RangeShifterSettingsSequence' in icp:
+                for rss in icp['RangeShifterSettingsSequence']:
+                    if getattr(rss, 'RangeShifterSetting', None) == "IN":
+                        # lookup range shifter by number, and make a copy of it
+                        _rs_number = rss['ReferencedRangeShifterNumber'].value
+                        _rs = rs_dict[_rs_number]
+                        myfield.range_shifter = copy.deepcopy(_rs)
+                        # set remaining attributes
+                        myfield.range_shifter.has_range_shifter = True
+                        myfield.range_shifter.water_equivalent_thickness = rss.get('WaterEquivalentThickness', 0.0)
+                        myfield.range_shifter.isocenter_distance = rss.get('IsocenterToRangeShifterDistance', 0.0)
 
             # isocenter position and gantry counch angles are stored in each layer,
             # for now we assume they are the same for all layers in a field,

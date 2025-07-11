@@ -65,13 +65,31 @@ class TopasText:
         show_history_interval: Interval at which the history count is shown.
         nr_threads: 0 for using all cores, -1 for all but one.
         """
+
+        # model1 = (
+        #     'sv:Ph/Default/Modules                = 6 '
+        #     '"g4em-standard_opt3" '
+        #     '"g4h-phy_QGSP_BIC_HP" '
+        #     '"g4decay" '
+        #     '"g4ion-binarycascade" '
+        #     '"g4h-elastic_HP" '
+        #     '"g4stopping"'
+        # )
+        model2 = (
+            'sv:Ph/Default/Modules                = 6 '
+            '"g4em-standard_opt4" '
+            '"g4h-phy_QGSP_BIC_AllHP" '
+            '"g4decay" '
+            '"g4ion-binarycascade" '
+            '"g4h-elastic_HP" '
+            '"g4stopping"'
+        )
+
         lines = [
             "##############################################",
             "###         T O P A S    S E T U P         ###",
             "##############################################",
-            "# sv:Ph/Default/Modules                = 6 \"g4em-standard_opt3\" "
-            "\"g4h-phy_QGSP_BIC_HP\" \"g4decay\" \"g4ion-binarycascade\" "
-            "\"g4h-elastic_HP\" \"g4stopping\"",
+            f"# {model2}",
             f"i:Ts/ShowHistoryCountAtInterval         = {show_history_interval}",
             f"i:Ts/NumberOfThreads                    = {nr_threads}",
             "b:Ts/DumpParameters                     = \"False\"",
@@ -233,6 +251,32 @@ class TopasText:
             "d:Ge/BeamPosition/RotX               = -1.0 * Tf/spotAngleY/Value deg",
             "d:Ge/BeamPosition/RotY               = -1.0 * Tf/spotAngleX/Value deg",
             "d:Ge/BeamPosition/RotZ               = 0.00 deg",
+            "\n"
+        ]
+        return "\n".join(lines)
+
+    @staticmethod
+    def geometry_range_shifter(myfield: Field) -> str:
+        if myfield.range_shifter is None:
+            return ""
+
+        rs = myfield.range_shifter
+
+        lines = [
+            "##############################################",
+            "###        R A N G E   S H I F T E R       ###",
+            "##############################################",
+            's:Ge/RangeShifter/Parent             = "Gantry"',
+            's:Ge/RangeShifter/Type               = "TsBox"',
+            f's:Ge/RangeShifter/Material           = {rs.material}',
+            'b:Ge/RangeShifter/Isparallel         = "True"',
+            'sv:Ph/Default/LayeredMassGeometryWorlds = 2 "Patient/RTDoseGrid" "RS"',
+            f"d:Ge/RangeShifter/HLX                = {200:.2f} mm",
+            f"d:Ge/RangeShifter/HLY                = {200:.2f} mm",
+            f"d:Ge/RangeShifter/HLZ                = {rs.thickness*0.5:.2f} mm",
+            's:Ge/RangeShifter/Color              = "Orange"',
+            # TODO: not to center of RS?
+            f'd:Ge/RangeShifter/TransZ            = {-(rs.isocenter_distance+rs.thickness*0.5):.2f} mm\n',
             "\n"
         ]
         return "\n".join(lines)
@@ -433,28 +477,6 @@ class TopasText:
             's:Sc/Scoring_WaterPhantom/IfOutputFileAlreadyExists  = "Overwrite"',
             's:Sc/Scoring_WaterPhantom/PropagateToChildren        = "True"',
             f's:Sc/Scoring_WaterPhantom/OutputFile                 = "{outpath}"',
-            "\n"
-        ]
-        return "\n".join(lines)
-
-    @staticmethod
-    def range_shifter(myfield: Field) -> str:
-        if Field.range_shifter_thickness is None:
-            return ""
-
-        lines = [
-            "##############################################",
-            "###         R A N G E   S H I F T E R       ###",
-            "##############################################",
-            's:Ge/RangeShifter/Parent             = "Gantry"',
-            's:Ge/RangeShifter/Type               = "TsBox"',
-            's:Ge/RangeShifter/Material           = "Lexan"',
-            'b:Ge/RangeShifter/Isparallel         = "True"',
-            f"d:Ge/RangeShifter/HLX                = {200:.2f} mm",
-            f"d:Ge/RangeShifter/HLY                = {200:.2f} mm",
-            f"d:Ge/RangeShifter/HLZ                = {myfield.range_shifter_thickness/2:.2f} mm",
-            's:Ge/RangeShifter/Color              = "Orange"',
-            f'd:Ge/RangeShifter/TransZ            = {-myfield.range_shifter_distance:.2f} mm\n',  # TODO: not to center of RS.
             "\n"
         ]
         return "\n".join(lines)

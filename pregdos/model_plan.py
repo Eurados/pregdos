@@ -14,6 +14,19 @@ INDENT = "    "
 
 
 @dataclass
+class RangeShifter:
+    """Range shifter data."""
+    id: str = ""
+    number: int = 0
+    type: str = ""
+    thickness: float = 0.0  # in mm
+    water_equivalent_thickness: float = 0.0  # in mm
+    isocenter_distance: float = 0.0  # distance from isocenter to downstream edge of range shifter [mm]
+    material: str = "Lexan"
+    is_inserted: bool = False  # True if range shifter is inserted
+
+
+@dataclass
 class Spot:
     """Single scanned spot in a proton layer."""
     x: float
@@ -131,6 +144,8 @@ class Field:
     lateral_spreading_device_distanceY: float = 0.0
     sop_instance_uid: str = ""
     number: int = 0
+
+    range_shifter: RangeShifter = None  # optional range shifter data
 
     @property
     def n_layers(self) -> int:
