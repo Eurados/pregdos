@@ -173,7 +173,7 @@ class TopasPlan:
 
         # show some information about the field
         logger.info(f"Beam model position:          {bm.beam_model_position} mm upstream of isocenter")
-        logger.info(f"SAD X: {sad_x:.2f} mm, SAD Y:     {sad_y:.2f} mm")
+        logger.info(f"SAD X/Y:                      {sad_x:.2f} mm / {sad_y:.2f} mm")
         logger.info(f"Proton budget for this plan:  {myfield.n_particles:.3e} protons")
         logger.info(f"Requested histories:          {nstat:.3e}")
         logger.info(f"Scaling factor:               {nstat_scale:.4e}")
