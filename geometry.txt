@@ -1,5 +1,0 @@
-# Topas geometry file
-
-
-# Generated 2025-07-10 18:42:36 by user 'bassler' using dicomfix 0.0.1.post3+gcd51d38.d20250710
-# https://github.com/nbassler/dicomfix
