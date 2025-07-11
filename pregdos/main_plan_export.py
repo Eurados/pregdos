@@ -44,8 +44,6 @@ def main(args=None) -> int:
         logger.error("No beam model provided. Use -b to specify a beam model CSV file.")
         raise ValueError("Beam model file is required.")
 
-    logger.info(f"beam model position: {parsed_args.beam_model_position} mm")
-
     pln.beam_model = BeamModel(parsed_args.fbm,
                                nominal=not parsed_args.actual,
                                beam_model_position=parsed_args.beam_model_position)

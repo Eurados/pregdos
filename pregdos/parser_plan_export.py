@@ -15,7 +15,7 @@ def create_parser():
                         "appended automatically to the name before the extension.")
     parser.add_argument('-b', '--beam-model', type=Path, dest='fbm', help="Beam model CSV path", default=None)
     parser.add_argument('-p', '--beam-model-position', type=float, dest='beam_model_position',
-                        help="Beam model position in mm", default=500.0)
+                        help="Beam model position in mm, relative to isocenter, positive upstream.", default=500.0)
     parser.add_argument('-f', '--field', type=int, dest='field_nr', default=0,
                         help="Field number to export. If not specified, all fields will be exported.")
     parser.add_argument('-d', '--diag', action='store_true', dest="diag",

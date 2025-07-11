@@ -91,13 +91,16 @@ def load_plan_dicom(file_dcm: Path) -> Plan:
                     rs.id = rs_item['RangeShifterID'].value
                     logger.debug("Found range shifter ID: %s", rs.id)
                     if rs.id == 'None':
-                        rs.thickness = 0.0
-                    elif rs.id == 'RS_3CM':
+                        rs.thickness = 0.0   # thickness always in mm
+                    elif rs.id == 'RS_3CM':  # Varian range shifter
                         rs.thickness = 30.0
-                    elif rs.id == 'RS_5CM':
+                    elif rs.id == 'RS_5CM':  # Varian range shifter
                         rs.thickness = 50.0
+                    elif rs.id == 'RS_Block':  # IBA range shifter
+                        rs.thickness = 36.0
                 else:
                     logger.error("Unknown range shifter ID in DICOM plan.")
+                logger.info(f"Range shifter '{rs.id}', thickness: {rs.thickness} mm")
                 logger.debug("Found range shifter number %d with type %s and thickness %.2f mm",
                              rs.number, rs.type, rs.thickness)
                 rs_dict[rs.number] = rs  # Store by DICOM number for lookup

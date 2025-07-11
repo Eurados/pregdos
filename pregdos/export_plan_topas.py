@@ -38,32 +38,35 @@ def export_plan(pln: Plan, bm: BeamModel, output_base_path: Path,
 class TopasPlan:
     @staticmethod
     def generate(myfield: Field, bm: BeamModel, nominal: bool,
-                 nstat=100000, test_mode=False, add_footer=True) -> str:
+                 nstat=100000, test_mode=False) -> str:
         """
         Export the field to a topas input file.
         """
         logger.debug(f"Generating Topas input for field {myfield.field_number} with nominal={nominal} and nstat={nstat}")
 
-        sad_x = myfield.layers[0].sad[0]
-        sad_y = myfield.layers[0].sad[1]
+        # sad_x = myfield.layers[0].sad[0]
+        # sad_y = myfield.layers[0].sad[1]
 
-        # show sad_x and sad_y
-        logger.info(f"SAD X: {sad_x:.2f} mm, SAD Y: {sad_y:.2f} mm")
+        # calculate scaling factor for number of particles
+        nstat_scale = TopasPlan.calculate_scaling_factor(myfield, nstat)
 
-        total_number_of_particles = myfield.n_particles
-        nstat_scale = (nstat / total_number_of_particles) * myfield.scaling
-        logger.info(f"Proton budget for this plan: {total_number_of_particles:.3e} protons")
-        logger.info(f"Requested number of simulated particles: {nstat:.3e}")
-        logger.info(f"Scaling factor:          {1 / nstat_scale:.4e}")
-        logger.info(f"Number of spots:         {myfield.n_spots}")
-        logger.info(f"Number of energy layers: {myfield.n_layers}")
-        logger.debug(f"Beam Meterset Weight:    {myfield.meterset_weight_final:.2f}")
-        logger.info(f"Beam Meterset:           {myfield.cum_mu:.2f} MU")
+        # show some information about the field
+        TopasPlan.show_plan_data(myfield, bm, nstat=nstat)
+        # logger.info(f"Beam model position:          {bm.beam_model_position} mm upstream of isocenter")
+        # logger.info(f"SAD X: {sad_x:.2f} mm, SAD Y:     {sad_y:.2f} mm")
+        # logger.info(f"Proton budget for this plan:  {myfield.n_particles:.3e} protons")
+        # logger.info(f"Requested histories:          {nstat:.3e}")
+        # logger.info(f"Scaling factor:               {nstat_scale:.4e}")
+        # logger.info(f"Number of spots:              {myfield.n_spots}")
+        # logger.info(f"Number of energy layers:      {myfield.n_layers}")
+        # logger.debug(f"Beam Meterset Weight:         {myfield.meterset_weight_final:.2f}")
+        # logger.info(f"Beam Meterset:                {myfield.cum_mu:.2f} MU")
 
         # build output lines instead of writing to file
         lines = []
-        lines.append(f"#PARTICLE_SCALING = {1 / nstat_scale:.0f}\n")
-        lines.append(f"#SOPInstanceUID = {myfield.sop_instance_uid}\n")
+        lines.append(TopasText.header(myfield, nstat_scale, nstat))
+        lines.append(TopasText.header2())
+
         lines.append(TopasText.variables(myfield))
         if test_mode:
             lines.append(TopasText.setup())
@@ -71,14 +74,11 @@ class TopasPlan:
             lines.append(TopasText.geometry_gantry())
             lines.append(TopasText.geometry_couch())
             lines.append(TopasText.geometry_dcm_to_iec())
-
-        lines.append(TopasText.geometry_beam_position_timefeature())
+        lines.append(TopasText.geometry_beam_position_timefeature(bm.beam_model_position))
+        lines.append(TopasText.geometry_range_shifter(myfield))
         lines.append(TopasText.field_beam_timefeature())
 
         lines.append(TopasPlan.time_features_string(myfield, bm, nominal, nstat))
-
-        if add_footer:
-            lines.append(TopasText.footer())
 
         topas_text = "".join(lines)
         return topas_text
@@ -128,8 +128,7 @@ class TopasPlan:
                 nparts[_spot_index] = spot.mu * mylayer.mu_to_part_coef
                 _spot_index += 1
 
-        total_particles = nparts.sum()
-        nstat_scale = (nstat / total_particles) * myfield.scaling
+        nstat_scale = TopasPlan.calculate_scaling_factor(myfield, nstat)
 
         lines = []
         lines.append("##############################################\n")
@@ -154,11 +153,33 @@ class TopasPlan:
         lines.append(_topas_array(times, cory, "CorrelationY", "f", 5, ""))
         lines.append(_topas_array(times, nparts * nstat_scale, "spotWeight", "f", 0, ""))
 
-        lines.append(f"# Total number of particles: {total_particles * nstat_scale:.0f}\n")
-        lines.append(f"# Total number of particles scaled down by {1 / nstat_scale:.0f}\n")
-        lines.append(f"# Total MU in field: {myfield.cum_mu:.2f}\n")
-
         return "".join(lines)
+
+    @staticmethod
+    def calculate_scaling_factor(myfield: Field, nstat: int = int(1e6)) -> float:
+        """
+        Calculate the scaling factor for the number of particles in the field.
+        """
+        total_particles = myfield.n_particles
+        nstat_scale = 1.0 / (nstat / total_particles) * myfield.scaling
+        return nstat_scale
+
+    @staticmethod
+    def show_plan_data(myfield: Field, bm: BeamModel, nstat: int = int(1e6)) -> None:
+        sad_x = myfield.layers[0].sad[0]
+        sad_y = myfield.layers[0].sad[1]
+        nstat_scale = TopasPlan.calculate_scaling_factor(myfield, nstat)
+
+        # show some information about the field
+        logger.info(f"Beam model position:          {bm.beam_model_position} mm upstream of isocenter")
+        logger.info(f"SAD X: {sad_x:.2f} mm, SAD Y:     {sad_y:.2f} mm")
+        logger.info(f"Proton budget for this plan:  {myfield.n_particles:.3e} protons")
+        logger.info(f"Requested histories:          {nstat:.3e}")
+        logger.info(f"Scaling factor:               {nstat_scale:.4e}")
+        logger.info(f"Number of spots:              {myfield.n_spots}")
+        logger.info(f"Number of energy layers:      {myfield.n_layers}")
+        logger.debug(f"Beam Meterset Weight:         {myfield.meterset_weight_final:.2f}")
+        logger.info(f"Beam Meterset:                {myfield.cum_mu:.2f} MU")
 
 
 def _topas_array(time_arr: np.array, arr: np.array, name: str, fmt: str = "f", precision: int = 0, unit=""):

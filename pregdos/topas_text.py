@@ -10,12 +10,31 @@ from pregdos.__version__ import __version__
 
 class TopasText:
     @staticmethod
-    def header(particle_scaling: float, sop_instance_uid: str) -> str:
+    def header(field: Field, nstat_scale: float, nstat: int) -> str:
         lines = [
-            f"# PATICLE_SCALING {particle_scaling:.0f}",
-            f"# SOP_INSTANCE_UID {sop_instance_uid}",
-            "\n"
+            f"# Topas input file for field {field.field_number}",
+            '# ' + '-' * 40,
+            f"# SOP_INSTANCE_UID {field.sop_instance_uid}",
+            "# ",
+            f"# TOTAL_NUMBER_OF_PARTICLES: {field.n_particles:.0f}",
+            f"# TOTAL_MU: {field.cum_mu:.2f}",
+            f"# REQUESTED_HISTORIES: {nstat:.0f}",
+            f"# PARTICLE_SCALING: {nstat_scale:.2f}",
+            "#\n"
         ]
+        return "\n".join(lines)
+
+    @staticmethod
+    def header2() -> str:
+        "Add a footer to the topas file with generation date and username."
+
+        lines = [
+            f"# Generated {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by user '{getpass.getuser()}'",
+            f"# using pregdos {__version__}",
+            "# https://github.com/Eurados/pregdos",
+            "#\n"
+        ]
+
         return "\n".join(lines)
 
     @staticmethod
@@ -270,7 +289,7 @@ class TopasText:
             's:Ge/RangeShifter/Type               = "TsBox"',
             f's:Ge/RangeShifter/Material           = "{rs.material}"',
             'b:Ge/RangeShifter/Isparallel         = "True"',
-            'sv:Ph/Default/LayeredMassGeometryWorlds = 2 "Patient/RTDoseGrid" "RS"',
+            'sv:Ph/Default/LayeredMassGeometryWorlds = 2 "Patient/RTDoseGrid" "RangeShifter"',
             f"d:Ge/RangeShifter/HLX                = {200:.2f} mm",
             f"d:Ge/RangeShifter/HLY                = {200:.2f} mm",
             f"d:Ge/RangeShifter/HLZ                = {rs.thickness*0.5:.2f} mm",
@@ -323,6 +342,7 @@ class TopasText:
         lines.append('s:Sc/Dose/OutputType                 = "DICOM"')
         lines.append(f's:Sc/Dose/OutputFile                 = "{topas_output_path}"')
         lines.append('b:Sc/Dose/DICOMOutput32BitsPerPixel  = "F"')
+        lines.append('\n')
         return "\n".join(lines)
 
     @staticmethod
@@ -480,14 +500,3 @@ class TopasText:
             "\n"
         ]
         return "\n".join(lines)
-
-    @staticmethod
-    def footer() -> str:
-        "Add a footer to the topas file with generation date and username."
-
-        lines = [
-            f"# Generated {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by user '{getpass.getuser()}'" +
-            f" using pregdos {__version__}",
-            "# https://github.com/Eurados/pregdos"]
-
-        return "# \n".join(lines)
