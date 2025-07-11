@@ -33,6 +33,38 @@ INFO:pregdos.export_study_topas:Wrote Topas geometry file for field 2: /home/bas
 INFO:pregdos.export_study_topas:Wrote Topas geometry file for field 3: /home/bassler/Projects/pregdos/topas_field3.txt
 ```
 
+Command line options and usage:
+```
+$ PYTHONPATH=. python3 pregdos/main.py --help
+usage: main.py [-h] [-b BM] [-s SPR_TO_MATERIAL_PATH] [-p BEAM_MODEL_POSITION] [-f FIELD_NR] [-N NSTAT] [-v] [-V]
+               study_dir [output_base_path]
+
+Convert DICOM CT and RTSTRUCT files to geometry needed for TOPAS.
+
+positional arguments:
+  study_dir             (required) Path to folder containing the study.The folder should contain a) DICOM CT series(CT*.dcm) and b) one
+                        DICOM RTSTRUCT file (RS*.dcm) and c) one DICOM RTPLAN file (RN*.dcm) and d) at least one DICOM RTDOSE file
+                        (RD*.dcm) where the resulting dose distribution will be stored.
+  output_base_path      Output TOPAS geometry file (default: topas.txt). Field number will be appended automatically to the name before
+                        the extension.
+
+options:
+  -h, --help            show this help message and exit
+  -b BM, --beam-model BM
+                        (required) Beam model CSV path
+  -s SPR_TO_MATERIAL_PATH, --spr-to-material SPR_TO_MATERIAL_PATH
+                        (required) SPR to material mapping CSV path
+  -p BEAM_MODEL_POSITION, --beam-model-position BEAM_MODEL_POSITION
+                        Beam model position in mm, relative to isocenter, positive upstream.
+  -f FIELD_NR, --field FIELD_NR
+                        Field number to export. If not specified, all fields will be exported.
+  -N NSTAT, --nstat NSTAT
+                        Target protons for simulation
+  -v, --verbosity       Increase verbosity (can use -v, -vv, etc.).
+  -V, --version         Show version and exit.
+  ```
+
+
 
 ## Acknowledgements
 This work is part of the SONORA project, which has received funding from the European Union’s EURATOM research and innovation programme under grant agreement No 101061037 (PIANOFORTE – European Partnership for Radiation Protection Research).
