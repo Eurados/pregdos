@@ -129,6 +129,7 @@ class TopasPlan:
                 _spot_index += 1
 
         nstat_scale = TopasPlan.calculate_scaling_factor(myfield, nstat)
+        inv_nstat_scale = 1.0 / nstat_scale
 
         lines = []
         lines.append("##############################################\n")
@@ -151,7 +152,7 @@ class TopasPlan:
         lines.append(_topas_array(times, sigyp, "SigmaYprime", "f", 5, ""))
         lines.append(_topas_array(times, corx, "CorrelationX", "f", 5, ""))
         lines.append(_topas_array(times, cory, "CorrelationY", "f", 5, ""))
-        lines.append(_topas_array(times, nparts * nstat_scale, "spotWeight", "f", 0, ""))
+        lines.append(_topas_array(times, nparts * inv_nstat_scale, "spotWeight", "f", 0, ""))
 
         return "".join(lines)
 

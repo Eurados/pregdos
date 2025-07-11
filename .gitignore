@@ -1,4 +1,6 @@
 __version__.py
+# avoid committing results from runs
+*_field[0-9]*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
