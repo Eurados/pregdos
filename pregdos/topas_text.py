@@ -24,7 +24,7 @@ class TopasText:
             "##############################################",
             "###        SPR TO MATERIAL PATH            ###",
             "##############################################",
-            f'includeFile                          = {spr_path}"',
+            f'includeFile                          = {spr_path}',
             "\n"
         ]
         return "\n".join(lines)
@@ -268,7 +268,7 @@ class TopasText:
             "##############################################",
             's:Ge/RangeShifter/Parent             = "Gantry"',
             's:Ge/RangeShifter/Type               = "TsBox"',
-            f's:Ge/RangeShifter/Material           = {rs.material}',
+            f's:Ge/RangeShifter/Material           = "{rs.material}"',
             'b:Ge/RangeShifter/Isparallel         = "True"',
             'sv:Ph/Default/LayeredMassGeometryWorlds = 2 "Patient/RTDoseGrid" "RS"',
             f"d:Ge/RangeShifter/HLX                = {200:.2f} mm",
