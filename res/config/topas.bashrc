@@ -5,5 +5,4 @@
     export LD_LIBRARY_PATH=$HOME/Applications/TOPAS/OpenTOPAS-install/lib:$LD_LIBRARY_PATH
     export LD_LIBRARY_PATH=$HOME/Applications/GEANT4/geant4-install/lib:$LD_LIBRARY_PATH
 
-
     export PATH=$HOME/Applications/TOPAS/OpenTOPAS-install/bin/topas:$PATH

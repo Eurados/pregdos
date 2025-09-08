@@ -29,6 +29,9 @@ apt install -y libexpat1-dev libgl1-mesa-dev libglu1-mesa-dev libxt-dev xorg-dev
 apt install -y cmake git-all wget
 
 apt install -y qtbase5-dev qtchooser qt5-qmake qtbase5-dev-tools
+
+apt install -y nano
+
 ```
 
 Geant4:
@@ -120,20 +123,43 @@ export TOPAS_G4_DATA_DIR=/opt/G4DATA
 
 # MUNGE and SLURM
 
-
 ```bash
 apt-get install -y slurm-wlm slurmctld slurmd munge libmunge2 curl ca-certificates
-
-```
-
-munged does not like to work from /var/lib/munge, due to some docker filesystem overlay shenenigans. Therefore this has to be moved to a tempfs dir:
-
-```bash
 install -d -m 0755 -o munge -g munge /var/run/munge
 su -s /bin/bash munge -c "munged --foreground --verbose" &
 ```
 
+quick test if things are running:
+```bash
+# munge -n | unmunge | head
+STATUS:          Success (0)
+ENCODE_HOST:     pregdos-ubuntu (172.17.0.3)
+ENCODE_TIME:     2025-09-08 18:00:25 +0000 (1757354425)
+DECODE_TIME:     2025-09-08 18:00:25 +0000 (1757354425)
+TTL:             300
+CIPHER:          aes128 (4)
+MAC:             sha256 (5)
+ZIP:             none (0)
+UID:             root (0)
+GID:             root (0)
+```
+
+slurm:
+
+```bash
 install -d -o slurm -g slurm -m 0755 /var/spool/slurm/ctld
 install -d -o slurm -g slurm -m 0755 /var/spool/slurm/d
-install -d -o slurm -g slurm -m 0755 /var/log/slurm
-install -d -o slurm -g slurm -m 0755 /var/run/slurm
+usermod -a -G munge slurm
+```
+
+
+
+
+copy the slurm.conf file
+
+```bash
+su -s /bin/bash slurm -c "slurmd -Dv"
+
+slurmctld -Dvvv &
+slurmd    -Dvvv &
+```
