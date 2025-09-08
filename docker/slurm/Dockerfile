@@ -1,5 +1,13 @@
 # Use the smallest Debian Trixie image with systemd/cgroups support
-FROM debian:13-slim
+FROM debian:trixie
+ENV DEBIAN_FRONTEND=noninteractive
+
+
+# RUN apt-get update && apt-get install -y --no-install-recommends \
+#     systemd systemd-sysv dbus dbus-user-session \
+#     openssh-server sudo \
+#     slurm-wlm slurmctld slurmd munge libmunge2 \
+#     && rm -rf /var/lib/apt/lists/*
 
 # Install SSH server and sudo
 RUN apt-get update && \
@@ -34,18 +42,18 @@ RUN install -d -m 0755 -o munge -g munge /var/run/munge && \
     usermod -a -G munge slurm
 
 # Configure Slurm
-RUN install -d -o slurm -g slurm -m 0755 /var/spool/slurm/ctld && \
-    install -d -o slurm -g slurm -m 0755 /var/spool/slurm/d
+RUN install -d -o slurm -g slurm -m 0755 /var/spool/slurm && \
+    install -d -o slurm -g slurm -m 0755 /var/spool/slurm/ctld && \
+    install -d -o slurm -g slurm -m 0755 /var/spool/slurm/d && \
+    install -d -o slurm -g slurm -m 0755 /var/spool/slurmd
 
 COPY slurm.conf /etc/slurm/slurm.conf
 COPY cgroup.conf /etc/slurm/cgroup.conf
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Start SSH server
-RUN service ssh start
 
-#start munge and slurm services
-RUN /etc/init.d/munge start && \
-    /etc/init.d/slurmctld start && \
-    /etc/init.d/slurmd start
+# RUN systemctl enable munge slurmctld slurmd ssh
+ENTRYPOINT [ "/usr/local/bin/entrypoint.sh" ]
 
 CMD [ "/bin/bash" ]
