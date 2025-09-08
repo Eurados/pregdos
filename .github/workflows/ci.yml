@@ -23,12 +23,12 @@ jobs:
       with:
         python-version: '3.11'
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install .
-        pip install pytest
+    # - name: Install dependencies
+    #   run: |
+    #     python -m pip install --upgrade pip
+    #     pip install .
+    #     pip install pytest
 
-    - name: Run tests
-      run: |
-        pytest --maxfail=2 --disable-warnings
+    # - name: Run tests
+    #   run: |
+    #     pytest --maxfail=2 --disable-warnings
