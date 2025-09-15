@@ -27,7 +27,7 @@ RUN wget -4 https://geant4-data.web.cern.ch/geant4-data/datasets/G4NDL.4.6.tar.g
     https://geant4-data.web.cern.ch/geant4-data/datasets/G4RealSurface.2.2.tar.gz \
     https://geant4-data.web.cern.ch/geant4-data/datasets/G4TENDL.1.3.2.tar.gz && \
     for d in $(ls G4*); do tar -zxf $d; done; \
-    rm *.tar.gz"
+    rm *.tar.gz
 
 
 # Set working directory for GDCM
