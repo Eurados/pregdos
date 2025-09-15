@@ -1,0 +1,3 @@
+flask
+werkzeug
+git+https://github.com/nbassler/dicomexport.git

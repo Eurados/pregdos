@@ -8,6 +8,7 @@ from flask import (
     flash,
 )
 
+import zipfile
 import os
 from werkzeug.utils import secure_filename
 from pathlib import Path
@@ -70,7 +71,6 @@ def upload_files():
         study_zip.save(study_zip_path)
         beam_model.save(beam_model_path)
         spr_table.save(spr_table_path)
-        import zipfile
 
         study_dir = os.path.join(
             app.config["UPLOAD_FOLDER"], Path(study_zip.filename).stem
