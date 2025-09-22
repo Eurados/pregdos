@@ -10,6 +10,8 @@ ENV Geant4_DIR=${APPDIR}/GEANT4/geant4-install
 ENV GDCM_DIR=${APPDIR}/GDCM/gdcm-install
 ENV QT_QPA_PLATFORM_PLUGIN_PATH=${APPDIR}/TOPAS/OpenTOPAS-install/Frameworks
 
+
+
 # Create a non-root user
 RUN useradd -m user
 
@@ -34,7 +36,7 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Create directories
-RUN mkdir -p /opt/G4DATA \
+RUN mkdir -p ${APPDIR}/G4DATA \
     && mkdir -p ${APPDIR}/GEANT4 \
     && mkdir -p ${APPDIR}/TOPAS \
     && mkdir -p ${APPDIR}/GDCM
@@ -96,6 +98,9 @@ RUN cd ${APPDIR}/TOPAS && \
     cmake ../OpenTOPAS \
     -DCMAKE_INSTALL_PREFIX=../OpenTOPAS-install && \
     make -j20 install
+
+ENV LD_LIBRARY_PATH=${APPDIR}/TOPAS/OpenTOPAS-install/lib:$LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=${APPDIR}/GEANT4/geant4-install/lib:$LD_LIBRARY_PATH
 
 # Install Munge and Slurm
 RUN apt-get update && \
