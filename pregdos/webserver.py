@@ -1,12 +1,14 @@
 from flask import (
     Flask,
     request,
-    render_template_string,
+    render_template,
     send_from_directory,
     redirect,
     url_for,
     flash,
 )
+import pydicom
+import glob
 
 import zipfile
 import os
@@ -14,6 +16,9 @@ from werkzeug.utils import secure_filename
 from pathlib import Path
 import subprocess
 import sys
+import shutil
+import tempfile
+import copy
 
 UPLOAD_FOLDER = "/tmp/pregdos_uploads"
 ALLOWED_EXTENSIONS = {"dcm", "csv", "txt"}
@@ -24,30 +29,103 @@ app.secret_key = "pregdos_secret_key"
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-HTML_FORM = """
-<!doctype html>
-<title>PregDos DICOM to TOPAS Converter</title>
-<h1>Upload DICOM Study Folder, Beam Model, and SPR Table</h1>
-<form method=post enctype=multipart/form-data>
-  DICOM Study (zip): <input type=file name=study_zip required><br>
-  Beam Model CSV: <input type=file name=beam_model required><br>
-  SPR-to-Material Table: <input type=file name=spr_table required><br>
-  <input type=submit value=Upload>
-</form>
-{% with messages = get_flashed_messages() %}
-  {% if messages %}
-    <ul>
-    {% for message in messages %}
-      <li>{{ message }}</li>
-    {% endfor %}
-    </ul>
-  {% endif %}
-{% endwith %}
-"""
+# HTML form moved to templates/upload.html
+def get_structures(study_dir):
+    rs_files = glob.glob(os.path.join(study_dir, "RS*.dcm"))
+    if not rs_files:
+        return []
+    ds = pydicom.dcmread(rs_files[0])
+    return [roi.ROIName for roi in ds.StructureSetROISequence]
+
+
+def filter_rtstruct_keep_rois(orig_study_dir, selected_rois):
+    """Copy orig_study_dir to a temp dir and rewrite the RTSTRUCT to keep only selected_rois.
+
+    Returns the path to the filtered study dir (a copy).
+    """
+    # make a temp dir sibling to original for easier cleanup and predictable location
+    parent = Path(orig_study_dir).parent
+    tmpdir = tempfile.mkdtemp(prefix=Path(orig_study_dir).name + "_filtered_", dir=str(parent))
+    # copy all files into tmpdir
+    shutil.copytree(orig_study_dir, tmpdir, dirs_exist_ok=True)
+
+    # find RTSTRUCT in copy
+    rs_files = glob.glob(os.path.join(tmpdir, "RS*.dcm"))
+    if not rs_files:
+        return tmpdir
+    rs_path = rs_files[0]
+    ds = pydicom.dcmread(rs_path)
+
+    # map ROIName -> ROINumber
+    name_to_number = {}
+    if hasattr(ds, 'StructureSetROISequence'):
+        for roi in ds.StructureSetROISequence:
+            name = getattr(roi, 'ROIName', None)
+            number = getattr(roi, 'ROINumber', None)
+            if name is not None and number is not None:
+                name_to_number[str(name)] = int(number)
+
+    keep_numbers = set()
+    for sel in selected_rois:
+        if sel in name_to_number:
+            keep_numbers.add(name_to_number[sel])
+
+    # If nothing matched, keep everything
+    if not keep_numbers:
+        return tmpdir
+
+    # Deep copy dataset and prune sequences
+    new_ds = copy.deepcopy(ds)
+
+    def filter_seq(seq, attr_name):
+        if not hasattr(seq, '__iter__'):
+            return seq
+        out = []
+        for item in seq:
+            val = getattr(item, attr_name, None)
+            if val in keep_numbers:
+                out.append(item)
+        return out
+
+    # StructureSetROISequence: keep by ROINumber
+    if hasattr(new_ds, 'StructureSetROISequence'):
+        new_ds.StructureSetROISequence = [item for item in new_ds.StructureSetROISequence if getattr(item, 'ROINumber', None) in keep_numbers]
+
+    # ROIContourSequence: keep by ReferencedROINumber
+    if hasattr(new_ds, 'ROIContourSequence'):
+        new_ds.ROIContourSequence = [item for item in new_ds.ROIContourSequence if getattr(item, 'ReferencedROINumber', None) in keep_numbers]
+
+    # RTROIObservationsSequence: keep by ReferencedROINumber
+    if hasattr(new_ds, 'RTROIObservationsSequence'):
+        new_ds.RTROIObservationsSequence = [item for item in new_ds.RTROIObservationsSequence if getattr(item, 'ReferencedROINumber', None) in keep_numbers]
+
+    # write modified RTSTRUCT back to file
+    try:
+        new_ds.save_as(rs_path)
+    except Exception:
+        # if saving fails, return the unmodified copy
+        return tmpdir
+
+    return tmpdir
+
+
+def _dicomexport_cmd_prefix():
+    """Return command prefix to invoke dicomexport.
+
+    Prefer the console script installed alongside the current Python executable
+    (e.g., venv/bin/dicomexport). Fall back to `python -m dicomexport.main`.
+    """
+    py_bin = os.path.dirname(sys.executable)
+    console = os.path.join(py_bin, "dicomexport")
+    if os.path.exists(console) and os.access(console, os.X_OK):
+        return [console]
+    # fallback
+    return [sys.executable, "-m", "dicomexport.main"]
 
 
 def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -59,57 +137,79 @@ def upload_files():
         if not (study_zip and beam_model and spr_table):
             flash("All files are required!")
             return redirect(request.url)
-        study_zip_path = os.path.join(
-            app.config["UPLOAD_FOLDER"], secure_filename(study_zip.filename)
-        )
-        beam_model_path = os.path.join(
-            app.config["UPLOAD_FOLDER"], secure_filename(beam_model.filename)
-        )
-        spr_table_path = os.path.join(
-            app.config["UPLOAD_FOLDER"], secure_filename(spr_table.filename)
-        )
+        study_zip_path = os.path.join(app.config["UPLOAD_FOLDER"], secure_filename(study_zip.filename))
+        beam_model_path = os.path.join(app.config["UPLOAD_FOLDER"], secure_filename(beam_model.filename))
+        spr_table_path = os.path.join(app.config["UPLOAD_FOLDER"], secure_filename(spr_table.filename))
         study_zip.save(study_zip_path)
         beam_model.save(beam_model_path)
         spr_table.save(spr_table_path)
 
-        study_dir = os.path.join(
-            app.config["UPLOAD_FOLDER"], Path(study_zip.filename).stem
-        )
+        study_dir = os.path.join(app.config["UPLOAD_FOLDER"], Path(study_zip.filename).stem)
         os.makedirs(study_dir, exist_ok=True)
         with zipfile.ZipFile(study_zip_path, "r") as zip_ref:
             zip_ref.extractall(study_dir)
-        output_base = os.path.join(study_dir, "topas")
-        cmd = [
-            sys.executable,
-            "-m",
-            "dicomexport.main",
-            "-b",
-            beam_model_path,
-            "-s",
-            spr_table_path,
-            study_dir,
-            output_base,
-        ]
-        try:
-            subprocess.run(cmd, check=True)
-        except Exception as e:
-            flash(f"Error running conversion: {e}")
-            return redirect(request.url)
 
-        out_files = [
-            f
-            for f in os.listdir(study_dir)
-            if f.startswith("topas") and f.endswith(".txt")
-        ]
-        if not out_files:
-            flash("No output files generated.")
+        # Udtræk strukturer fra RS-fil
+        structures = get_structures(study_dir)
+        if not structures:
+            flash("Ingen RS-fil eller strukturer fundet!")
             return redirect(request.url)
-        links = "".join(
-            f'<li><a href="/download/{Path(study_dir).name}/{f}">{f}</a></li>'
-            for f in out_files
-        )
-        return f"<h2>Conversion complete. Download your files:</h2><ul>{links}</ul>"
-    return render_template_string(HTML_FORM)
+        # Simpel dropdown-form
+        dropdown_html = "<h2>Vælg strukturer:</h2>"
+        dropdown_html += "<p>Hold Ctrl (Cmd på Mac) for at vælge flere.</p>"
+        dropdown_html += "<form method='post' action='/convert'>"
+        dropdown_html += "<select name='structures' multiple size='8'>"
+        for s in structures:
+            dropdown_html += f"<option value='{s}'>{s}</option>"
+        dropdown_html += "</select>"
+        dropdown_html += f"<input type='hidden' name='study_dir' value='{study_dir}'>"
+        dropdown_html += f"<input type='hidden' name='beam_model_path' value='{beam_model_path}'>"
+        dropdown_html += f"<input type='hidden' name='spr_table_path' value='{spr_table_path}'>"
+        dropdown_html += "<input type='submit' value='Konverter'></form>"
+        return dropdown_html
+    return render_template('upload.html')
+
+@app.route("/convert", methods=["POST"])
+def convert():
+    study_dir = request.form["study_dir"]
+    beam_model_path = request.form["beam_model_path"]
+    spr_table_path = request.form["spr_table_path"]
+    selected_structures = request.form.getlist("structures")
+    # create a filtered copy of the study which only contains the selected structures
+    filtered_dir = filter_rtstruct_keep_rois(study_dir, selected_structures)
+    study_to_use = filtered_dir
+    output_base = os.path.join(study_to_use, "topas")
+    # Build a python -c command that inserts repo root into sys.path and sets sys.argv so dicomexport's argparse receives it
+    repo_root = str(Path(__file__).resolve().parents[3])
+    py = sys.executable
+    python_call = (
+        "import sys;"
+        f"sys.path.insert(0, {repr(repo_root)});"
+        f"sys.argv = ['dicomexport.main', '-b', {repr(beam_model_path)}, '-s', {repr(spr_table_path)}, {repr(study_dir)}, {repr(output_base)}];"
+        "from dicomexport.main import main; main()"
+    )
+    cmd = [py, "-c", python_call]
+    env = os.environ.copy()
+    # Run and capture output
+    try:
+        proc = subprocess.run(cmd, check=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except subprocess.CalledProcessError as e:
+        err = e.stderr.strip() if e.stderr else str(e)
+        flash(f"Error running conversion: {err}")
+        return redirect("/")
+    out_files = [
+        f for f in os.listdir(study_to_use)
+        if f.startswith("topas") and f.endswith(".txt")
+    ]
+    if not out_files:
+        flash("No output files generated.")
+        return redirect("/")
+    links = "".join(
+        f'<li><a href="/download/{Path(study_to_use).name}/{f}">{f}</a></li>'
+        for f in out_files
+    )
+    selected_html = "<p>Valgte strukturer: " + ", ".join(selected_structures) + "</p>"
+    return f"<h2>Conversion complete. Download your files:</h2>{selected_html}<ul>{links}</ul>"
 
 
 @app.route("/download/<study>/<filename>")

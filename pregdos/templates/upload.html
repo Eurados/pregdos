@@ -1,0 +1,18 @@
+<!doctype html>
+<title>PregDos DICOM to TOPAS Converter</title>
+<h1>Upload DICOM Study Folder, Beam Model, and SPR Table</h1>
+<form method=post enctype=multipart/form-data>
+    DICOM Study (zip): <input type=file name=study_zip required><br>
+    Beam Model CSV: <input type=file name=beam_model required><br>
+    SPR-to-Material Table: <input type=file name=spr_table required><br>
+    <input type=submit value=Upload>
+</form>
+{% with messages = get_flashed_messages() %}
+    {% if messages %}
+        <ul>
+        {% for message in messages %}
+            <li>{{ message }}</li>
+        {% endfor %}
+        </ul>
+    {% endif %}
+{% endwith %}
