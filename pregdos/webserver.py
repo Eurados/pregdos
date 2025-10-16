@@ -43,13 +43,13 @@ def filter_rtstruct_keep_rois(orig_study_dir, selected_rois):
 
     Returns the path to the filtered study dir (a copy).
     """
-    # make a temp dir sibling to original for easier cleanup and predictable location
+    # make a temp dir sibling to original
     parent = Path(orig_study_dir).parent
     tmpdir = tempfile.mkdtemp(prefix=Path(orig_study_dir).name + "_filtered_", dir=str(parent))
     # copy all files into tmpdir
     shutil.copytree(orig_study_dir, tmpdir, dirs_exist_ok=True)
 
-    # find RTSTRUCT in copy
+    # find RTST in copy
     rs_files = glob.glob(os.path.join(tmpdir, "RS*.dcm"))
     if not rs_files:
         return tmpdir
@@ -175,27 +175,27 @@ def convert():
     beam_model_path = request.form["beam_model_path"]
     spr_table_path = request.form["spr_table_path"]
     selected_structures = request.form.getlist("structures")
-    # create a filtered copy of the study which only contains the selected structures
     filtered_dir = filter_rtstruct_keep_rois(study_dir, selected_structures)
     study_to_use = filtered_dir
     output_base = os.path.join(study_to_use, "topas")
-    # Build a python -c command that inserts repo root into sys.path and sets sys.argv so dicomexport's argparse receives it
-    repo_root = str(Path(__file__).resolve().parents[3])
-    py = sys.executable
-    python_call = (
-        "import sys;"
-        f"sys.path.insert(0, {repr(repo_root)});"
-        f"sys.argv = ['dicomexport.main', '-b', {repr(beam_model_path)}, '-s', {repr(spr_table_path)}, {repr(study_dir)}, {repr(output_base)}];"
-        "from dicomexport.main import main; main()"
-    )
-    cmd = [py, "-c", python_call]
+    cmd_prefix = _dicomexport_cmd_prefix()
+    cmd = cmd_prefix + [
+        "-b",
+        beam_model_path,
+        "-s",
+        spr_table_path,
+        study_to_use,
+        output_base,
+    ]
     env = os.environ.copy()
-    # Run and capture output
     try:
         proc = subprocess.run(cmd, check=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     except subprocess.CalledProcessError as e:
-        err = e.stderr.strip() if e.stderr else str(e)
-        flash(f"Error running conversion: {err}")
+        # include both stdout and stderr in the flash to aid debugging
+        out = (e.stdout or "").strip()
+        err = (e.stderr or str(e)).strip()
+        msg = "".join([part for part in (err, out) if part])
+        flash(f"Error running conversion: {msg}")
         return redirect("/")
     out_files = [
         f for f in os.listdir(study_to_use)
