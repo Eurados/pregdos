@@ -1,0 +1,280 @@
+
+
+:root {
+  color-scheme: light dark;
+
+
+  --bg: #f7fafc;               
+  --panel: #ffffff;             
+  --text: #0b1526;              
+  --muted: #52627a;             
+  --brand: #2c7be5;             
+  --brand-600: #1f64c8;         
+  --success: #2fb344;           
+  --warning: #f59f00;           
+  --danger: #d64545;            
+  --ring: rgba(44, 123, 229, 0.28); 
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b0f14;
+    --panel: #121821;
+    --text: #e7ecf3;
+    --muted: #a0a7b4;
+    --brand: #4f8cff;
+    --brand-600: #3f7ae4;
+    --success: #46c260;
+    --warning: #ffb545;
+    --danger: #ff6b6b;
+    --ring: rgba(79, 140, 255, 0.35);
+  }
+}
+
+/* ----------------------------------------------------------
+   Base Styles
+   ---------------------------------------------------------- */
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 17px;        
+  line-height: 1.55;
+}
+
+.container {
+  width: min(960px, 92%);
+  margin-inline: auto;
+}
+
+/* ----------------------------------------------------------
+   Header
+   ---------------------------------------------------------- */
+
+.site-header {
+  padding: 28px 0 16px;
+}
+
+.site-header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.subtitle {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+/* ----------------------------------------------------------
+   Cards
+   ---------------------------------------------------------- */
+
+.card {
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 20px;
+  border: 1px solid rgba(12, 20, 33, 0.06);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+}
+
+/* ----------------------------------------------------------
+   Forms
+   ---------------------------------------------------------- */
+
+.form-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.form-row {
+  display: grid;
+  gap: 8px;
+}
+
+.form-row label {
+  font-weight: 600;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+
+
+input[type="file"],
+select,
+button,
+.btn {
+  appearance: none;
+  border: 1px solid rgba(100, 115, 140, 0.35);
+  background: transparent;
+  color: inherit;
+  padding: 12px 14px;
+  min-height: 44px;
+  border-radius: 10px;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    background 0.15s ease;
+}
+
+input[type="file"],
+select {
+  width: 100%;
+}
+
+.multiselect {
+  min-height: 320px;
+}
+
+/* Buttons */
+
+button,
+.btn {
+  cursor: pointer;
+  font-weight: 600;
+  text-decoration: none;
+  display: inline-block;
+}
+
+.btn.primary,
+button.primary {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+
+.btn.primary:hover,
+button.primary:hover {
+  background: var(--brand-600);
+  border-color: var(--brand-600);
+}
+
+.btn {
+  background: rgba(44, 123, 229, 0.08);
+  color: var(--brand);
+  border-color: rgba(44, 123, 229, 0.25);
+}
+
+.btn:hover {
+  background: rgba(44, 123, 229, 0.14);
+  border-color: rgba(44, 123, 229, 0.35);
+}
+
+/* Focus & Hover States */
+
+input:hover,
+select:hover {
+  border-color: rgba(44, 123, 229, 0.45);
+}
+
+input:focus,
+select:focus,
+button:focus,
+.btn:focus,
+input:focus-visible,
+select:focus-visible,
+button:focus-visible,
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 4px var(--ring);
+}
+
+/* ----------------------------------------------------------
+   Layout Helpers
+   ---------------------------------------------------------- */
+
+.actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+/* ----------------------------------------------------------
+   Alerts & Badges
+   ---------------------------------------------------------- */
+
+.alert {
+  background: rgba(214, 69, 69, 0.08);
+  border: 1px solid rgba(214, 69, 69, 0.35);
+  padding: 12px 14px;
+  border-radius: 10px;
+  margin-bottom: 16px;
+}
+
+.alert ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+
+.badge.success {
+  background: rgba(47, 179, 68, 0.12);
+  color: var(--success);
+  border: 1px solid rgba(47, 179, 68, 0.35);
+}
+
+.badge.warning {
+  background: rgba(245, 159, 0, 0.12);
+  color: var(--warning);
+  border: 1px solid rgba(245, 159, 0, 0.35);
+}
+
+.badge.danger {
+  background: rgba(214, 69, 69, 0.12);
+  color: var(--danger);
+  border: 1px solid rgba(214, 69, 69, 0.35);
+}
+
+/* ----------------------------------------------------------
+   Footer
+   ---------------------------------------------------------- */
+
+.footer {
+  color: var(--muted);
+  text-align: center;
+  margin: 24px 0 8px;
+}
+
+/* ----------------------------------------------------------
+   Accessibility & Print
+   ---------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+@media print {
+  .site-header,
+  .actions,
+  .btn {
+    display: none !important;
+  }
+
+  .card {
+    box-shadow: none;
+    border: 1px solid #ccc;
+  }
+}

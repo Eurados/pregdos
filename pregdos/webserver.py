@@ -74,7 +74,6 @@ def filter_rtstruct_keep_rois(orig_study_dir, selected_rois):
     if not keep_numbers:
         return tmpdir
 
-    # Deep copy dataset and prune sequences
     new_ds = copy.deepcopy(ds)
 
     def filter_seq(seq, attr_name):
@@ -154,19 +153,14 @@ def upload_files():
         if not structures:
             flash("Ingen RS-fil eller strukturer fundet!")
             return redirect(request.url)
-        # Simpel dropdown-form
-        dropdown_html = "<h2>Vælg strukturer:</h2>"
-        dropdown_html += "<p>Hold Ctrl (Cmd på Mac) for at vælge flere.</p>"
-        dropdown_html += "<form method='post' action='/convert'>"
-        dropdown_html += "<select name='structures' multiple size='8'>"
-        for s in structures:
-            dropdown_html += f"<option value='{s}'>{s}</option>"
-        dropdown_html += "</select>"
-        dropdown_html += f"<input type='hidden' name='study_dir' value='{study_dir}'>"
-        dropdown_html += f"<input type='hidden' name='beam_model_path' value='{beam_model_path}'>"
-        dropdown_html += f"<input type='hidden' name='spr_table_path' value='{spr_table_path}'>"
-        dropdown_html += "<input type='submit' value='Konverter'></form>"
-        return dropdown_html
+        # Render structure selection template
+        return render_template(
+            'select_structures.html',
+            structures=structures,
+            study_dir=study_dir,
+            beam_model_path=beam_model_path,
+            spr_table_path=spr_table_path,
+        )
     return render_template('upload.html')
 
 @app.route("/convert", methods=["POST"])
@@ -191,7 +185,6 @@ def convert():
     try:
         proc = subprocess.run(cmd, check=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     except subprocess.CalledProcessError as e:
-        # include both stdout and stderr in the flash to aid debugging
         out = (e.stdout or "").strip()
         err = (e.stderr or str(e)).strip()
         msg = "".join([part for part in (err, out) if part])
@@ -204,12 +197,12 @@ def convert():
     if not out_files:
         flash("No output files generated.")
         return redirect("/")
-    links = "".join(
-        f'<li><a href="/download/{Path(study_to_use).name}/{f}">{f}</a></li>'
-        for f in out_files
+    return render_template(
+        'convert_success.html',
+        out_files=out_files,
+        study_name=Path(study_to_use).name,
+        selected_structures=selected_structures,
     )
-    selected_html = "<p>Valgte strukturer: " + ", ".join(selected_structures) + "</p>"
-    return f"<h2>Conversion complete. Download your files:</h2>{selected_html}<ul>{links}</ul>"
 
 
 @app.route("/download/<study>/<filename>")
