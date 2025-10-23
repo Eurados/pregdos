@@ -30,6 +30,8 @@ app.secret_key = "pregdos_secret_key"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # HTML form moved to templates/upload.html
+
+
 def get_structures(study_dir):
     rs_files = glob.glob(os.path.join(study_dir, "RS*.dcm"))
     if not rs_files:
@@ -88,15 +90,18 @@ def filter_rtstruct_keep_rois(orig_study_dir, selected_rois):
 
     # StructureSetROISequence: keep by ROINumber
     if hasattr(new_ds, 'StructureSetROISequence'):
-        new_ds.StructureSetROISequence = [item for item in new_ds.StructureSetROISequence if getattr(item, 'ROINumber', None) in keep_numbers]
+        new_ds.StructureSetROISequence = [item for item in new_ds.StructureSetROISequence if getattr(
+            item, 'ROINumber', None) in keep_numbers]
 
     # ROIContourSequence: keep by ReferencedROINumber
     if hasattr(new_ds, 'ROIContourSequence'):
-        new_ds.ROIContourSequence = [item for item in new_ds.ROIContourSequence if getattr(item, 'ReferencedROINumber', None) in keep_numbers]
+        new_ds.ROIContourSequence = [item for item in new_ds.ROIContourSequence if getattr(
+            item, 'ReferencedROINumber', None) in keep_numbers]
 
     # RTROIObservationsSequence: keep by ReferencedROINumber
     if hasattr(new_ds, 'RTROIObservationsSequence'):
-        new_ds.RTROIObservationsSequence = [item for item in new_ds.RTROIObservationsSequence if getattr(item, 'ReferencedROINumber', None) in keep_numbers]
+        new_ds.RTROIObservationsSequence = [item for item in new_ds.RTROIObservationsSequence if getattr(
+            item, 'ReferencedROINumber', None) in keep_numbers]
 
     # write modified RTSTRUCT back to file
     try:
@@ -126,7 +131,6 @@ def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-
 @app.route("/", methods=["GET", "POST"])
 def upload_files():
     if request.method == "POST":
@@ -151,7 +155,7 @@ def upload_files():
         # Udtræk strukturer fra RS-fil
         structures = get_structures(study_dir)
         if not structures:
-            flash("Ingen RS-fil eller strukturer fundet!")
+            flash("No RS-file or structures found!")
             return redirect(request.url)
         # Render structure selection template
         return render_template(
@@ -162,6 +166,7 @@ def upload_files():
             spr_table_path=spr_table_path,
         )
     return render_template('upload.html')
+
 
 @app.route("/convert", methods=["POST"])
 def convert():
