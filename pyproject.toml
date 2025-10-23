@@ -19,7 +19,7 @@ dependencies = [
     "requests",
     "tqdm",
     "setuptools-scm",
-    "dicomexport @ git+https://github.com/nbassler/dicomexport@v0.1.2",
+    "dicomexport @ git+https://github.com/nbassler/dicomexport@main",
 ]
 dynamic = ["version"]
 
