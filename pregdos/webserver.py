@@ -188,7 +188,7 @@ def convert():
     ]
     env = os.environ.copy()
     try:
-        proc = subprocess.run(cmd, check=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        subprocess.run(cmd, check=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     except subprocess.CalledProcessError as e:
         out = (e.stdout or "").strip()
         err = (e.stderr or str(e)).strip()
