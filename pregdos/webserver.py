@@ -4,7 +4,6 @@ from flask import (
     render_template,
     send_from_directory,
     redirect,
-    url_for,
     flash,
 )
 import pydicom
