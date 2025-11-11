@@ -20,7 +20,7 @@ import shutil
 import tempfile
 import copy
 
-UPLOAD_FOLDER = "/tmp/pregdos_uploads"
+UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER") or os.path.join(tempfile.gettempdir(), "pregdos_uploads")
 ALLOWED_EXTENSIONS = {"dcm", "csv", "txt"}
 
 app = Flask(__name__)
