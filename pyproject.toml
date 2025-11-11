@@ -11,15 +11,34 @@ authors = [
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.9"
-dependencies = ["pydicom>=2.3.1", "numpy", "scipy"]
+dependencies = [
+    "pydicom>=2.3.1",
+    "numpy",
+    "scipy",
+    "flask>=2.0.0",
+    "requests",
+    "tqdm",
+    "setuptools-scm",
+    "dicomexport @ git+https://github.com/nbassler/dicomexport@main",
+]
 dynamic = ["version"]
 
 [project.optional-dependencies]
-web = ["streamlit>=1.12.0"]
+# web = ["streamlit>=1.12.0"]
 dev = ["flake8>=6.0.0", "pytest>=7.2.1"]
+
+[project.scripts]
+pregdos-web = "pregdos.webserver:main"
+
+[tool.setuptools.package-dir]
+"" = "pregdos"
 
 [tool.setuptools.packages.find]
 where = ["pregdos"]
+include = ["pregdos*"]
+
+[tool.setuptools.package-data]
+pregdos = ["templates/*.html", "static/*"]
 
 [tool.pytest.ini_options]
 log_cli = true
