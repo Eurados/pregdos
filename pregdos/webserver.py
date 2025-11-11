@@ -211,8 +211,20 @@ def convert():
 
 @app.route("/download/<study>/<filename>")
 def download_file(study, filename):
-    dir_path = os.path.join(app.config["UPLOAD_FOLDER"], study)
-    return send_from_directory(dir_path, filename, as_attachment=True)
+    safe_study = secure_filename(study)
+    safe_filename = secure_filename(filename)
+    dir_path = os.path.join(app.config["UPLOAD_FOLDER"], safe_study)
+    # Ensure the resolved path is within the upload folder
+    abs_dir_path = os.path.abspath(dir_path)
+    abs_upload_folder = os.path.abspath(app.config["UPLOAD_FOLDER"])
+    if not abs_dir_path.startswith(abs_upload_folder + os.sep):
+        flash("Invalid study path.")
+        return redirect("/")
+    file_path = os.path.join(abs_dir_path, safe_filename)
+    if not os.path.isfile(file_path):
+        flash("File not found.")
+        return redirect("/")
+    return send_from_directory(abs_dir_path, safe_filename, as_attachment=True)
 
 
 if __name__ == "__main__":
