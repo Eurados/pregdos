@@ -32,6 +32,39 @@ app.secret_key = "pregdos_secret_key"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # HTML form moved to templates/upload.html
+
+def save_single_file(upload, folder):
+    path = os.path.join(folder, secure_filename(upload.filename))
+    upload.save(path)
+    return path
+
+
+def extract_zip(study_zip, folder):
+    zip_path = save_single_file(study_zip, folder)
+    study_dir = os.path.join(folder, Path(study_zip.filename).stem)
+    os.makedirs(study_dir, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(study_dir)
+    return study_dir
+
+
+def save_uploaded_directory(files, base_folder):
+    if not files:
+        raise ValueError("Empty directory upload")
+    # Detect root folder from first file path; browsers include the folder name
+    first = files[0].filename
+    root = secure_filename(first.split("/")[0]) or "study_upload"
+    study_dir = os.path.join(base_folder, root)
+    for file in files:
+        rel_path = file.filename
+        parts = [secure_filename(p) for p in rel_path.split("/") if p]
+        # drop first part (root folder)
+        if parts and parts[0] == root:
+            parts = parts[1:]
+        out_path = os.path.join(study_dir, *parts) if parts else os.path.join(study_dir, secure_filename(Path(file.filename).name))
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        file.save(out_path)
+    return study_dir
 def get_structures(study_dir):
     rs_files = glob.glob(os.path.join(study_dir, "RS*.dcm"))
     if not rs_files:
@@ -132,23 +165,37 @@ def allowed_file(filename):
 @app.route("/", methods=["GET", "POST"])
 def upload_files():
     if request.method == "POST":
-        study_zip = request.files["study_zip"]
-        beam_model = request.files["beam_model"]
-        spr_table = request.files["spr_table"]
-        if not (study_zip and beam_model and spr_table):
-            flash("All files are required!")
-            return redirect(request.url)
-        study_zip_path = os.path.join(app.config["UPLOAD_FOLDER"], secure_filename(study_zip.filename))
-        beam_model_path = os.path.join(app.config["UPLOAD_FOLDER"], secure_filename(beam_model.filename))
-        spr_table_path = os.path.join(app.config["UPLOAD_FOLDER"], secure_filename(spr_table.filename))
-        study_zip.save(study_zip_path)
-        beam_model.save(beam_model_path)
-        spr_table.save(spr_table_path)
+        study_zip = request.files.get("study_zip")
+        study_dir_files = [f for f in (request.files.getlist("study_dir") or []) if f and f.filename]
+        beam_model = request.files.get("beam_model")
+        spr_table = request.files.get("spr_table")
 
-        study_dir = os.path.join(app.config["UPLOAD_FOLDER"], Path(study_zip.filename).stem)
-        os.makedirs(study_dir, exist_ok=True)
-        with zipfile.ZipFile(study_zip_path, "r") as zip_ref:
-            zip_ref.extractall(study_dir)
+        # Validate input
+        if not (beam_model and spr_table):
+            flash("Beam model and SPR table required.")
+            return redirect(request.url)
+        if not study_zip and not study_dir_files:
+            flash("Provide either a ZIP or a folder.")
+            return redirect(request.url)
+
+        if (study_zip and study_zip.filename) and study_dir_files:
+            flash("Please choose either ZIP or Folder, not both.")
+            return redirect(request.url)
+
+        upload_folder = app.config["UPLOAD_FOLDER"]
+
+        beam_model_path = save_single_file(beam_model, upload_folder)
+        spr_table_path = save_single_file(spr_table, upload_folder)
+
+ 
+        if study_zip and study_zip.filename:
+            study_dir = extract_zip(study_zip, upload_folder)
+        else:
+            try:
+                study_dir = save_uploaded_directory(study_dir_files, upload_folder)
+            except ValueError as e:
+                flash(str(e))
+                return redirect(request.url)
 
         # Udtræk strukturer fra RS-fil
         structures = get_structures(study_dir)
