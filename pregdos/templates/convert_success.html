@@ -35,9 +35,10 @@
       {% if selected_structures %}
         <p><strong>Selected structures:</strong> {{ selected_structures|join(', ') }}</p>
       {% endif %}
+      <h2>Generated TOPAS input files</h2>
       <ul>
         {% for f in out_files %}
-          <li><a class="btn" href="{{ url_for('download_file', study=study_name, filename=f) }}">{{ f }}</a></li>
+          <li><a href="{{ url_for('download_file', study=study_name, filename=f) }}">{{ f }}</a></li>
         {% endfor %}
       </ul>
       <div class="actions">
