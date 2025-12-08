@@ -189,7 +189,6 @@ def upload_files():
         beam_model_path = save_single_file(beam_model, upload_folder)
         spr_table_path = save_single_file(spr_table, upload_folder)
 
- 
         if study_zip and study_zip.filename:
             study_dir = extract_zip(study_zip, upload_folder)
         else:
