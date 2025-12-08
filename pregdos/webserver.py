@@ -184,7 +184,7 @@ def upload_files():
         spr_table = request.files.get("spr_table")
 
         # Validate input
-        if not (beam_model and spr_table):
+        if not (beam_model and beam_model.filename and spr_table and spr_table.filename):
             flash("Beam model and SPR table required.")
             return redirect(request.url)
         if not study_zip and not study_dir_files:
