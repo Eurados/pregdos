@@ -44,7 +44,16 @@ def extract_zip(study_zip, folder):
     study_dir = os.path.join(folder, Path(study_zip.filename).stem)
     os.makedirs(study_dir, exist_ok=True)
     with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(study_dir)
+        for member in zf.namelist():
+            member_path = os.path.abspath(os.path.join(study_dir, member))
+            if not member_path.startswith(os.path.abspath(study_dir) + os.sep):
+                raise Exception(f"Unsafe zip entry detected: {member}")
+            if member.endswith('/'):
+                os.makedirs(member_path, exist_ok=True)
+            else:
+                os.makedirs(os.path.dirname(member_path), exist_ok=True)
+                with zf.open(member) as source, open(member_path, "wb") as target:
+                    shutil.copyfileobj(source, target)
     return study_dir
 
 
