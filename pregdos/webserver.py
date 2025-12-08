@@ -65,7 +65,6 @@ def save_uploaded_directory(files, base_folder):
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         file.save(out_path)
     return study_dir
-  
 def get_structures(study_dir):
     rs_files = glob.glob(os.path.join(study_dir, "RS*.dcm"))
     if not rs_files:
