@@ -62,7 +62,9 @@ def save_uploaded_directory(files, base_folder):
         if parts and parts[0] == root:
             parts = parts[1:]
         out_path = os.path.join(study_dir, *parts) if parts else os.path.join(study_dir, secure_filename(Path(file.filename).name))
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        dir_path = os.path.dirname(out_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
         file.save(out_path)
     return study_dir
 def get_structures(study_dir):
