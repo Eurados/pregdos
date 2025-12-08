@@ -22,7 +22,7 @@ from typing import List
 
 from .models import ConversionParameters, ConversionResult
 
-UPLOAD_FOLDER = "/tmp/pregdos_uploads"
+UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER") or os.path.join(tempfile.gettempdir(), "pregdos_uploads")
 ALLOWED_EXTENSIONS = {"dcm", "csv", "txt"}
 
 app = Flask(__name__)
@@ -65,6 +65,7 @@ def save_uploaded_directory(files, base_folder):
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         file.save(out_path)
     return study_dir
+  
 def get_structures(study_dir):
     rs_files = glob.glob(os.path.join(study_dir, "RS*.dcm"))
     if not rs_files:
@@ -123,15 +124,18 @@ def filter_rtstruct_keep_rois(orig_study_dir, selected_rois):
 
     # StructureSetROISequence: keep by ROINumber
     if hasattr(new_ds, 'StructureSetROISequence'):
-        new_ds.StructureSetROISequence = [item for item in new_ds.StructureSetROISequence if getattr(item, 'ROINumber', None) in keep_numbers]
+        new_ds.StructureSetROISequence = [item for item in new_ds.StructureSetROISequence if getattr(
+            item, 'ROINumber', None) in keep_numbers]
 
     # ROIContourSequence: keep by ReferencedROINumber
     if hasattr(new_ds, 'ROIContourSequence'):
-        new_ds.ROIContourSequence = [item for item in new_ds.ROIContourSequence if getattr(item, 'ReferencedROINumber', None) in keep_numbers]
+        new_ds.ROIContourSequence = [item for item in new_ds.ROIContourSequence if getattr(
+            item, 'ReferencedROINumber', None) in keep_numbers]
 
     # RTROIObservationsSequence: keep by ReferencedROINumber
     if hasattr(new_ds, 'RTROIObservationsSequence'):
-        new_ds.RTROIObservationsSequence = [item for item in new_ds.RTROIObservationsSequence if getattr(item, 'ReferencedROINumber', None) in keep_numbers]
+        new_ds.RTROIObservationsSequence = [item for item in new_ds.RTROIObservationsSequence if getattr(
+            item, 'ReferencedROINumber', None) in keep_numbers]
 
     # write modified RTSTRUCT back to file
     try:
@@ -159,7 +163,6 @@ def _dicomexport_cmd_prefix():
 
 def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
-
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -200,7 +203,7 @@ def upload_files():
         # Udtræk strukturer fra RS-fil
         structures = get_structures(study_dir)
         if not structures:
-            flash("Ingen RS-fil eller strukturer fundet!")
+            flash("No RS-file or structures found!")
             return redirect(request.url)
         # Render structure selection template
         return render_template(
@@ -293,8 +296,20 @@ def convert():
 
 @app.route("/download/<study>/<filename>")
 def download_file(study, filename):
-    dir_path = os.path.join(app.config["UPLOAD_FOLDER"], study)
-    return send_from_directory(dir_path, filename, as_attachment=True)
+    safe_study = secure_filename(study)
+    safe_filename = secure_filename(filename)
+    dir_path = os.path.join(app.config["UPLOAD_FOLDER"], safe_study)
+    # Ensure the resolved path is within the upload folder
+    abs_dir_path = os.path.abspath(dir_path)
+    abs_upload_folder = os.path.abspath(app.config["UPLOAD_FOLDER"])
+    if not abs_dir_path.startswith(abs_upload_folder + os.sep):
+        flash("Invalid study path.")
+        return redirect("/")
+    file_path = os.path.join(abs_dir_path, safe_filename)
+    if not os.path.isfile(file_path):
+        flash("File not found.")
+        return redirect("/")
+    return send_from_directory(abs_dir_path, safe_filename, as_attachment=True)
 
 
 if __name__ == "__main__":
