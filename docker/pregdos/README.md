@@ -5,31 +5,59 @@ Single Docker container running the full PregDos pipeline:
 - **SLURM** (job scheduling, compiled without systemd)
 - **Pregdos webserver** (Flask frontend)
 
-## Build
+The pregdos image does **not** recompile Geant4 or OpenTOPAS — it reuses a
+pre-built OpenTOPAS image. Build that first, then build this one.
 
-From the project root:
+## Step 1 — Build the OpenTOPAS base image
+
+```bash
+# Default: OpenTOPAS v4.0.0 on Geant4 11.1.3 (Qt5)
+docker build -t pregdos-opentopas-v4.0.0 -f docker/opentopas/4.0.0/Dockerfile .
+```
+
+This takes ~35 minutes (Geant4 compile + dataset download). Subsequent builds
+use the Docker layer cache unless `GEANT4_VERSION` changes.
+
+## Step 2 — Build the combined pregdos image
 
 ```bash
 docker build -t pregdos -f docker/pregdos/Dockerfile .
 ```
 
-Override versions via build args:
+Override the SLURM version or pregdos package version:
 
 ```bash
 docker build -t pregdos -f docker/pregdos/Dockerfile . \
-    --build-arg GEANT4_VERSION=11.2.0 \
-    --build-arg OPENTOPAS_REF=main \
-    --build-arg SLURM_VERSION=25.11.4
+    --build-arg SLURM_VERSION=25.11.4 \
+    --build-arg PREGDOS_VERSION=1.0.0
 ```
 
-> **Warning:** Geant4 takes ~25 minutes to compile. Subsequent builds use
-> the Docker layer cache unless `GEANT4_VERSION` changes.
+## Switching to OpenTOPAS v4.2.3
+
+Build the v4.2.3 base image first:
+
+```bash
+docker build -t pregdos-opentopas-v4.2.3 -f docker/opentopas/4.2.3/Dockerfile .
+```
+
+Then point the pregdos build at it:
+
+```bash
+docker build -t pregdos -f docker/pregdos/Dockerfile . \
+    --build-arg OPENTOPAS_IMAGE=pregdos-opentopas-v4.2.3
+```
+
+> **Note:** v4.2.3 uses Qt6. The runtime Qt libraries in the Dockerfile
+> are currently Qt5 (matching v4.0.0). When switching to v4.2.3, the Qt
+> runtime packages must be updated accordingly (see TODO in Dockerfile).
 
 ## Run
 
 ```bash
 docker run --rm -it --hostname localhost -p 5000:5000 pregdos
 ```
+
+The webserver starts automatically and is available at http://localhost:5000.
 
 ## Submit jobs
 
@@ -43,14 +71,11 @@ squeue
 
 ## TODO
 
-- [ ] Fix `Geant4_DIR` cmake path — currently hardcodes `Geant4-11.1.3`
-      subfolder; should derive from `GEANT4_VERSION` build arg
-- [ ] Install pregdos webserver in runtime stage (`pip install .`)
-- [ ] Start Flask in entrypoint.sh
+- [ ] Switch Qt5 → Qt6 runtime libs when using `pregdos-opentopas-v4.2.3`
+- [ ] Turn off `debug=True` in `webserver.py` for container use
 - [ ] Wire webserver job submission to `sbatch`
 - [ ] Add job status page (query `squeue`/`sacct`)
 - [ ] Add results/file browser page
 - [ ] Trim runtime apt dependencies — current list is conservative
-- [ ] Test SLURM on Trixie base (currently using Bookworm for SLURM build)
 - [ ] Add post-processing step triggered on SLURM job completion
 - [ ] Consider adding a job working directory convention (one dir per submission)

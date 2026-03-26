@@ -13,7 +13,6 @@ service munge start
 slurmctld
 runuser -u slurm -- slurmd
 
-# TODO: start pregdos webserver
-# flask --app pregdos.webserver run --host 0.0.0.0 --port 5000 &
+pregdos-web &
 
 exec "$@"
