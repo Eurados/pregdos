@@ -40,9 +40,17 @@
           <li><a class="btn" href="{{ url_for('download_file', study=study_name, filename=f) }}">{{ f }}</a></li>
         {% endfor %}
       </ul>
-      <div class="actions">
-        <a class="btn" href="{{ url_for('upload_files') }}">Convert another study</a>
-      </div>
+      <form method="POST" action="{{ url_for('submit_job') }}">
+        <input type="hidden" name="study_dir" value="{{ study_dir }}">
+        <input type="hidden" name="study_name" value="{{ study_name }}">
+        {% for f in out_files %}
+          <input type="hidden" name="out_files" value="{{ f }}">
+        {% endfor %}
+        <div class="actions">
+          <button type="submit" class="btn">Submit Jobs</button>
+          <a class="btn" href="{{ url_for('upload_files') }}">Convert another study</a>
+        </div>
+      </form>
     </section>
   </main>
 </body>

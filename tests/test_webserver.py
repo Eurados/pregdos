@@ -6,10 +6,17 @@ from pregdos.webserver import app, allowed_file
 from pregdos.models import ConversionParameters, ConversionResult, StructureSelection
 
 
+class FakeSbatchResult:
+    returncode = 0
+    stdout = "Submitted batch job 42\n"
+    stderr = ""
+
+
 @pytest.fixture
 def client(tmp_path):
     app.config["TESTING"] = True
     app.config["UPLOAD_FOLDER"] = str(tmp_path)
+    app.config["JOBS_FOLDER"] = str(tmp_path / "jobs")
     with app.test_client() as c:
         yield c
 
@@ -104,6 +111,69 @@ def test_extract_zip_rejects_traversal(tmp_path):
 
     with pytest.raises(Exception, match="Unsafe zip entry"):
         extract_zip(FakeUpload(), str(upload_dir))
+
+
+# --- /submit route ---
+
+def test_submit_rejects_path_outside_upload_folder(client, tmp_path):
+    response = client.post(
+        "/submit",
+        data={"study_dir": "/etc", "study_name": "evil", "out_files": "topas_field1.txt"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Invalid study path" in response.data
+
+
+def test_submit_missing_file_flashes_error(client, tmp_path):
+    study_dir = tmp_path / "mystudy"
+    study_dir.mkdir()
+    response = client.post(
+        "/submit",
+        data={"study_dir": str(study_dir), "study_name": "mystudy", "out_files": "topas_field1.txt"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"not found" in response.data
+
+
+def test_submit_calls_sbatch(client, tmp_path, mocker):
+    study_dir = tmp_path / "mystudy"
+    study_dir.mkdir()
+    (study_dir / "topas_field1.txt").write_text("# topas input")
+
+    mock_run = mocker.patch("pregdos.webserver.subprocess.run", return_value=FakeSbatchResult())
+    response = client.post(
+        "/submit",
+        data={"study_dir": str(study_dir), "study_name": "mystudy", "out_files": "topas_field1.txt"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"42" in response.data
+    mock_run.assert_called_once()
+    cmd = mock_run.call_args[0][0]
+    assert "sbatch" in cmd
+    assert "topas_field1.txt" in cmd[-1]
+
+
+def test_submit_sbatch_failure_flashes_error(client, tmp_path, mocker):
+    study_dir = tmp_path / "mystudy"
+    study_dir.mkdir()
+    (study_dir / "topas_field1.txt").write_text("# topas input")
+
+    failed = FakeSbatchResult()
+    failed.returncode = 1
+    failed.stdout = ""
+    failed.stderr = "slurmctld not running"
+    mocker.patch("pregdos.webserver.subprocess.run", return_value=failed)
+
+    response = client.post(
+        "/submit",
+        data={"study_dir": str(study_dir), "study_name": "mystudy", "out_files": "topas_field1.txt"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"slurmctld not running" in response.data
 
 
 # --- Models smoke tests ---
