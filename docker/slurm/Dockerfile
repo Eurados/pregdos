@@ -1,5 +1,6 @@
 # ── Build stage: compile SLURM without systemd ────────────────────────────────
-FROM debian:bookworm AS builder
+ARG BASE_IMAGE=debian:trixie
+FROM ${BASE_IMAGE} AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 ARG SLURM_VERSION=25.11.4
@@ -31,7 +32,8 @@ RUN wget -q https://download.schedmd.com/slurm/slurm-${SLURM_VERSION}.tar.bz2 &&
 
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-FROM debian:bookworm
+ARG BASE_IMAGE=debian:trixie
+FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 

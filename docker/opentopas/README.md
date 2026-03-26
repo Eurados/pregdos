@@ -6,8 +6,8 @@ Two Dockerfiles are provided for the two actively supported version lines:
 
 | Dockerfile | OpenTOPAS | Geant4 | Qt |
 |---|---|---|---|
-| `Dockerfile` | v4.0.0 | 11.1.3 | Qt5 |
-| `Dockerfile.v4.2` | v4.2.3 | 11.3.2 | Qt6 |
+| `docker/opentopas/4.0.0/Dockerfile` | v4.0.0 | 11.1.3 | Qt5 |
+| `docker/opentopas/4.2.3/Dockerfile` | v4.2.3 | 11.3.2 | Qt6 |
 
 ## Build
 
@@ -39,8 +39,8 @@ docker build -t pregdos-opentopas-v4.2.3 -f docker/opentopas/4.2.3/Dockerfile . 
     --build-arg OPENTOPAS_REF=v4.2.3
 ```
 
-> **Note:** Geant4 takes ~25 minutes to compile. The dataset download adds
-> another ~10 minutes. Subsequent builds use the Docker layer cache unless
+> **Note:** Geant4 takes substantial time to compile. The dataset download adds
+> another ~5-10 minutes. Subsequent builds use the Docker layer cache unless
 > `GEANT4_VERSION` changes.
 
 ## Run

@@ -29,7 +29,7 @@ FROM ${OPENTOPAS_IMAGE} AS topas-builder
 
 
 # ── Stage 2: SLURM (independent) ─────────────────────────────────────────────
-FROM debian:bookworm AS slurm-builder
+FROM debian:trixie AS slurm-builder
 
 ARG SLURM_VERSION=25.11.4
 ENV DEBIAN_FRONTEND=noninteractive
@@ -58,7 +58,7 @@ RUN wget -q https://download.schedmd.com/slurm/slurm-${SLURM_VERSION}.tar.bz2 &&
 
 
 # ── Stage 3: Runtime ──────────────────────────────────────────────────────────
-FROM debian:bookworm
+FROM debian:trixie
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV APPDIR=/opt
