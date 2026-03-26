@@ -13,6 +13,7 @@ import zipfile
 import os
 from werkzeug.utils import secure_filename
 from pathlib import Path
+import datetime
 import subprocess
 import sys
 import shutil
@@ -23,6 +24,7 @@ from typing import List
 from .models import ConversionParameters, ConversionResult
 
 UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER") or os.path.join(tempfile.gettempdir(), "pregdos_uploads")
+TOPAS_BIN = os.environ.get("TOPAS_BIN", "topas")
 ALLOWED_EXTENSIONS = {"dcm", "csv", "txt"}
 
 app = Flask(__name__)
@@ -308,6 +310,7 @@ def convert():
         "convert_success.html",
         out_files=result.out_files,
         study_name=result.study_name,
+        study_dir=params.study_dir,
         selected_structures=result.selected_structures,
     )
 
@@ -328,6 +331,70 @@ def download_file(study, filename):
         flash("File not found.")
         return redirect("/")
     return send_from_directory(abs_dir_path, safe_filename, as_attachment=True)
+
+
+@app.route("/submit", methods=["POST"])
+def submit_job():
+    study_dir = request.form["study_dir"]
+    study_name = request.form["study_name"]
+    out_files = request.form.getlist("out_files")
+
+    # Validate study_dir is within UPLOAD_FOLDER
+    abs_study_dir = os.path.abspath(study_dir)
+    abs_upload_folder = os.path.abspath(app.config["UPLOAD_FOLDER"])
+    if not abs_study_dir.startswith(abs_upload_folder + os.sep):
+        flash("Invalid study path.")
+        return redirect("/")
+
+    # Create timestamped job working directory
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    job_dir = os.path.join(abs_study_dir, f"job_{timestamp}")
+    os.makedirs(job_dir, exist_ok=True)
+
+    # Find each TOPAS file (search study_dir recursively) and copy to job_dir
+    job_ids = []
+    errors = []
+    for fname in out_files:
+        safe_fname = secure_filename(fname)
+        src = None
+        for root, _dirs, files in os.walk(abs_study_dir):
+            if safe_fname in files:
+                candidate = os.path.join(root, safe_fname)
+                # Don't pick up files already inside a job_ subdirectory
+                if os.sep + "job_" not in candidate[len(abs_study_dir):]:
+                    src = candidate
+                    break
+        if src is None:
+            errors.append(f"File not found: {safe_fname}")
+            continue
+        shutil.copy2(src, os.path.join(job_dir, safe_fname))
+
+        result = subprocess.run(
+            [
+                "sbatch",
+                f"--chdir={job_dir}",
+                f"--output={job_dir}/slurm-%j.out",
+                "--wrap", f"{TOPAS_BIN} {safe_fname}",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            job_id = result.stdout.strip().split()[-1]
+            job_ids.append((safe_fname, job_id))
+        else:
+            errors.append(f"sbatch failed for {safe_fname}: {result.stderr.strip()}")
+
+    if errors:
+        for e in errors:
+            flash(e)
+    return render_template(
+        "job_submitted.html",
+        job_ids=job_ids,
+        job_dir=job_dir,
+        study_name=study_name,
+        errors=errors,
+    )
 
 
 def main():

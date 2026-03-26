@@ -66,6 +66,7 @@ ENV TOPAS_G4_DATA_DIR=${APPDIR}/G4DATA
 ENV Geant4_DIR=${APPDIR}/GEANT4/geant4-install
 ENV GDCM_DIR=${APPDIR}/GDCM/gdcm-install
 ENV LD_LIBRARY_PATH=${APPDIR}/TOPAS/OpenTOPAS-install/lib:${APPDIR}/GEANT4/geant4-install/lib
+ENV PATH=${APPDIR}/TOPAS/OpenTOPAS-install/bin:${PATH}
 
 # Runtime deps for TOPAS + SLURM + webserver
 # TODO: trim this list once we know exactly what's needed

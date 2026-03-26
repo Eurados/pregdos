@@ -104,6 +104,7 @@ RUN cd ${APPDIR}/TOPAS && \
     make -j$(nproc) install
 
 ENV LD_LIBRARY_PATH=${APPDIR}/TOPAS/OpenTOPAS-install/lib:${APPDIR}/GEANT4/geant4-install/lib
+ENV PATH=${APPDIR}/TOPAS/OpenTOPAS-install/bin:${PATH}
 
 # NOTE: SLURM will be added in the combined docker/pregdos/Dockerfile
 # using the --without-systemd compiled version from docker/slurm/

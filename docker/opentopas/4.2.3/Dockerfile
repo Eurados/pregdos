@@ -118,6 +118,7 @@ RUN cd ${APPDIR}/TOPAS && \
     rm -rf ../OpenTOPAS-build
 
 ENV LD_LIBRARY_PATH=${APPDIR}/TOPAS/OpenTOPAS-install/lib:${APPDIR}/GEANT4/geant4-install/lib
+ENV PATH=${APPDIR}/TOPAS/OpenTOPAS-install/bin:${PATH}
 
 USER user
 

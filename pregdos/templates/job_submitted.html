@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Conversion Complete · PregDos</title>
+  <title>Jobs Submitted · PregDos</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -13,8 +13,8 @@
 <body>
   <header class="site-header">
     <div class="container">
-      <h1>Conversion complete</h1>
-      <p class="subtitle">Your TOPAS input files are ready to download</p>
+      <h1>Jobs submitted</h1>
+      <p class="subtitle">Jobs have been queued and will run in the background</p>
     </div>
   </header>
 
@@ -32,25 +32,32 @@
     {% endwith %}
 
     <section class="card">
-      {% if selected_structures %}
-        <p><strong>Selected structures:</strong> {{ selected_structures|join(', ') }}</p>
+      <p><strong>Study:</strong> {{ study_name }}</p>
+      <p><strong>Job directory:</strong> <code>{{ job_dir }}</code></p>
+
+      {% if job_ids %}
+        <table>
+          <thead><tr><th>File</th><th>SLURM job ID</th></tr></thead>
+          <tbody>
+            {% for fname, jid in job_ids %}
+              <tr><td>{{ fname }}</td><td>{{ jid }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
       {% endif %}
-      <ul>
-        {% for f in out_files %}
-          <li><a class="btn" href="{{ url_for('download_file', study=study_name, filename=f) }}">{{ f }}</a></li>
-        {% endfor %}
-      </ul>
-      <form method="POST" action="{{ url_for('submit_job') }}">
-        <input type="hidden" name="study_dir" value="{{ study_dir }}">
-        <input type="hidden" name="study_name" value="{{ study_name }}">
-        {% for f in out_files %}
-          <input type="hidden" name="out_files" value="{{ f }}">
-        {% endfor %}
-        <div class="actions">
-          <button type="submit" class="btn">Submit Jobs</button>
-          <a class="btn" href="{{ url_for('upload_files') }}">Convert another study</a>
-        </div>
-      </form>
+
+      {% if errors %}
+        <p><strong>Errors:</strong></p>
+        <ul>
+          {% for e in errors %}
+            <li>{{ e }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+
+      <div class="actions">
+        <a class="btn" href="{{ url_for('upload_files') }}">Convert another study</a>
+      </div>
     </section>
   </main>
 </body>
