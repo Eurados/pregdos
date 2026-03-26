@@ -13,8 +13,6 @@ ENV Geant4_DIR=${APPDIR}/GEANT4/geant4-install
 ENV GDCM_DIR=${APPDIR}/GDCM/gdcm-install
 ENV QT_QPA_PLATFORM_PLUGIN_PATH=${APPDIR}/TOPAS/OpenTOPAS-install/Frameworks
 
-
-
 # Create a non-root user
 RUN useradd -m user
 
