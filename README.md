@@ -69,6 +69,10 @@ docker/
     pregdos/      Combined production image
 ```
 
+## Roadmap / TODO
+
+See [TODO.md](TODO.md) for the full list of open tasks.
+
 ## Acknowledgements
 
 This work is part of the SONORA project, which has received funding from the

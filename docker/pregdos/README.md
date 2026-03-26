@@ -71,11 +71,4 @@ squeue
 
 ## TODO
 
-- [ ] Switch Qt5 → Qt6 runtime libs when using `pregdos-opentopas-v4.2.3`
-- [ ] Turn off `debug=True` in `webserver.py` for container use
-- [ ] Wire webserver job submission to `sbatch`
-- [ ] Add job status page (query `squeue`/`sacct`)
-- [ ] Add results/file browser page
-- [ ] Trim runtime apt dependencies — current list is conservative
-- [ ] Add post-processing step triggered on SLURM job completion
-- [ ] Consider adding a job working directory convention (one dir per submission)
+See [TODO.md](../../TODO.md) at the project root for the full list.
