@@ -33,6 +33,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # HTML form moved to templates/upload.html
 
+
 def save_single_file(upload, folder):
     path = os.path.join(folder, secure_filename(upload.filename))
     upload.save(path)
@@ -48,7 +49,7 @@ def extract_zip(study_zip, folder):
             member_path = os.path.abspath(os.path.join(study_dir, member))
             if not member_path.startswith(os.path.abspath(study_dir) + os.sep):
                 raise Exception(f"Unsafe zip entry detected: {member}")
-            if member.endswith('/'):
+            if member.endswith("/"):
                 os.makedirs(member_path, exist_ok=True)
             else:
                 os.makedirs(os.path.dirname(member_path), exist_ok=True)
@@ -70,12 +71,16 @@ def save_uploaded_directory(files, base_folder):
         # drop first part (root folder)
         if parts and parts[0] == root:
             parts = parts[1:]
-        out_path = os.path.join(study_dir, *parts) if parts else os.path.join(study_dir, secure_filename(Path(file.filename).name))
+        out_path = (
+            os.path.join(study_dir, *parts) if parts else os.path.join(study_dir, secure_filename(Path(file.filename).name))
+        )
         dir_path = os.path.dirname(out_path)
         if dir_path:
             os.makedirs(dir_path, exist_ok=True)
         file.save(out_path)
     return study_dir
+
+
 def get_structures(study_dir):
     rs_files = glob.glob(os.path.join(study_dir, "RS*.dcm"))
     if not rs_files:
@@ -104,10 +109,10 @@ def filter_rtstruct_keep_rois(orig_study_dir, selected_rois):
 
     # map ROIName -> ROINumber
     name_to_number = {}
-    if hasattr(ds, 'StructureSetROISequence'):
+    if hasattr(ds, "StructureSetROISequence"):
         for roi in ds.StructureSetROISequence:
-            name = getattr(roi, 'ROIName', None)
-            number = getattr(roi, 'ROINumber', None)
+            name = getattr(roi, "ROIName", None)
+            number = getattr(roi, "ROINumber", None)
             if name is not None and number is not None:
                 name_to_number[str(name)] = int(number)
 
@@ -123,7 +128,7 @@ def filter_rtstruct_keep_rois(orig_study_dir, selected_rois):
     new_ds = copy.deepcopy(ds)
 
     def filter_seq(seq, attr_name):
-        if not hasattr(seq, '__iter__'):
+        if not hasattr(seq, "__iter__"):
             return seq
         out = []
         for item in seq:
@@ -133,19 +138,22 @@ def filter_rtstruct_keep_rois(orig_study_dir, selected_rois):
         return out
 
     # StructureSetROISequence: keep by ROINumber
-    if hasattr(new_ds, 'StructureSetROISequence'):
-        new_ds.StructureSetROISequence = [item for item in new_ds.StructureSetROISequence if getattr(
-            item, 'ROINumber', None) in keep_numbers]
+    if hasattr(new_ds, "StructureSetROISequence"):
+        new_ds.StructureSetROISequence = [
+            item for item in new_ds.StructureSetROISequence if getattr(item, "ROINumber", None) in keep_numbers
+        ]
 
     # ROIContourSequence: keep by ReferencedROINumber
-    if hasattr(new_ds, 'ROIContourSequence'):
-        new_ds.ROIContourSequence = [item for item in new_ds.ROIContourSequence if getattr(
-            item, 'ReferencedROINumber', None) in keep_numbers]
+    if hasattr(new_ds, "ROIContourSequence"):
+        new_ds.ROIContourSequence = [
+            item for item in new_ds.ROIContourSequence if getattr(item, "ReferencedROINumber", None) in keep_numbers
+        ]
 
     # RTROIObservationsSequence: keep by ReferencedROINumber
-    if hasattr(new_ds, 'RTROIObservationsSequence'):
-        new_ds.RTROIObservationsSequence = [item for item in new_ds.RTROIObservationsSequence if getattr(
-            item, 'ReferencedROINumber', None) in keep_numbers]
+    if hasattr(new_ds, "RTROIObservationsSequence"):
+        new_ds.RTROIObservationsSequence = [
+            item for item in new_ds.RTROIObservationsSequence if getattr(item, "ReferencedROINumber", None) in keep_numbers
+        ]
 
     # write modified RTSTRUCT back to file
     try:
@@ -216,13 +224,14 @@ def upload_files():
             return redirect(request.url)
         # Render structure selection template
         return render_template(
-            'select_structures.html',
+            "select_structures.html",
             structures=structures,
             study_dir=study_dir,
             beam_model_path=beam_model_path,
             spr_table_path=spr_table_path,
         )
-    return render_template('upload.html')
+    return render_template("upload.html")
+
 
 def run_conversion(params: ConversionParameters, selected_structures: List[str]) -> ConversionResult:
     """Filter RTSTRUCT and run dicomexport, returning discovered TOPAS files.
@@ -296,7 +305,7 @@ def convert():
         flash(str(err))
         return redirect("/")
     return render_template(
-        'convert_success.html',
+        "convert_success.html",
         out_files=result.out_files,
         study_name=result.study_name,
         selected_structures=result.selected_structures,

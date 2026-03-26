@@ -31,6 +31,6 @@ jobs:
     - name: Lint with ruff
       run: ruff check .
 
-    # - name: Run tests
-    #   run: |
-    #     pytest --maxfail=2 --disable-warnings
+    - name: Run tests
+      run: |
+        pytest --maxfail=2 --disable-warnings
