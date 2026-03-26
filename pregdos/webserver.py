@@ -27,7 +27,7 @@ ALLOWED_EXTENSIONS = {"dcm", "csv", "txt"}
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-app.secret_key = "pregdos_secret_key"
+app.secret_key = os.environ.get("PREGDOS_SECRET_KEY", "pregdos_secret_key")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
@@ -269,7 +269,7 @@ def run_conversion(params: ConversionParameters, selected_structures: List[str])
 
     return ConversionResult(
         out_files=out_files,
-        study_name=Path(study_to_use).name,
+        study_name=Path(params.study_dir).name,
         selected_structures=list(selected_structures),
         stdout=proc.stdout,
         stderr=proc.stderr,
@@ -321,5 +321,9 @@ def download_file(study, filename):
     return send_from_directory(abs_dir_path, safe_filename, as_attachment=True)
 
 
-if __name__ == "__main__":
+def main():
     app.run(debug=True, host="0.0.0.0", port=5000)
+
+
+if __name__ == "__main__":
+    main()
