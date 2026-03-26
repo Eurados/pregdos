@@ -15,6 +15,7 @@ ENV QT_QPA_PLATFORM_PLUGIN_PATH=${APPDIR}/TOPAS/OpenTOPAS-install/Frameworks
 
 # Create a non-root user
 RUN useradd -m user
+ENV HOME=/home/user
 
 # Install dependencies
 RUN apt-get update && \
@@ -102,8 +103,7 @@ RUN cd ${APPDIR}/TOPAS && \
     -DGDCM_DIR=${APPDIR}/GDCM/gdcm-install && \
     make -j$(nproc) install
 
-ENV LD_LIBRARY_PATH=${APPDIR}/TOPAS/OpenTOPAS-install/lib:$LD_LIBRARY_PATH
-ENV LD_LIBRARY_PATH=${APPDIR}/GEANT4/geant4-install/lib:$LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=${APPDIR}/TOPAS/OpenTOPAS-install/lib:${APPDIR}/GEANT4/geant4-install/lib
 
 # NOTE: SLURM will be added in the combined docker/pregdos/Dockerfile
 # using the --without-systemd compiled version from docker/slurm/

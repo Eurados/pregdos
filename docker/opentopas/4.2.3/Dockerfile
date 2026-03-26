@@ -23,6 +23,7 @@ ENV QT_QPA_PLATFORM_PLUGIN_PATH=${APPDIR}/TOPAS/OpenTOPAS-install/Frameworks
 
 # Create a non-root user
 RUN useradd -m user
+ENV HOME=/home/user
 
 # Install dependencies (Qt6 required for OpenTOPAS >= v4.2)
 RUN apt-get update && \
