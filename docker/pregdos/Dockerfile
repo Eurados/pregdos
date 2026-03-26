@@ -73,15 +73,15 @@ ENV PATH=${APPDIR}/TOPAS/OpenTOPAS-install/bin:${PATH}
 # TODO: switch Qt5 → Qt6 libs when using OPENTOPAS_IMAGE=pregdos-opentopas-v4.2.3
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # TOPAS/Geant4 runtime (Qt5 — matches pregdos-opentopas-v4.0.0)
-    libexpat1 libgl1-mesa-glx libglu1-mesa libxt6 \
+    libexpat1 libgl1 libglu1-mesa libxt6 \
     libqt5core5a libqt5gui5 libqt5opengl5 libqt5widgets5 \
     # SLURM runtime
     munge libmunge2 libssl3 libpam-runtime libhwloc15 libnuma1 \
     libcurl4 libyaml-0-2 libjson-c5 libhttp-parser2.9 \
     # webserver (git needed for dicomexport pip install)
-    python3 python3-pip git \
+    python3 python3-pip python3-venv git \
     # misc
-    sudo curl ca-certificates nano \
+    sudo curl ca-certificates nano openssh-server \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy TOPAS + Geant4 from pre-built opentopas image
@@ -95,8 +95,14 @@ COPY --from=slurm-builder /build /
 
 # Users
 RUN useradd -m -s /bin/bash user && \
+    echo "user:user" | chpasswd && \
     echo "user ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
     useradd -r -m -d /home/slurm -s /bin/bash slurm
+
+# SSH (development only — see TODO)
+RUN mkdir -p /var/run/sshd && \
+    echo "PermitRootLogin prohibit-password" >> /etc/ssh/sshd_config && \
+    echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
 
 # Munge + SLURM directories
 RUN install -d -m 0755 -o munge -g munge /var/run/munge && \
@@ -106,18 +112,21 @@ RUN install -d -m 0755 -o munge -g munge /var/run/munge && \
     install -d -o slurm -g slurm -m 0755 /var/spool/slurm/ctld && \
     install -d -o slurm -g slurm -m 0755 /var/spool/slurm/d && \
     install -d -o slurm -g slurm -m 0755 /var/spool/slurmd && \
-    install -d -o slurm -g slurm -m 0755 /var/log/slurm
+    install -d -o slurm -g slurm -m 0755 /var/log/slurm && \
+    install -d -o slurm -g slurm -m 0755 /home/slurm/jobs
 
 # SLURM config
 COPY docker/pregdos/slurm.conf /etc/slurm/slurm.conf
 COPY docker/pregdos/cgroup.conf /etc/slurm/cgroup.conf
 
-# Install pregdos webserver
+# Install pregdos webserver into a venv
 # .git is excluded via .dockerignore; pass a pretend version for setuptools-scm
 COPY . /app
 ARG PREGDOS_VERSION=0.0.0
-RUN SETUPTOOLS_SCM_PRETEND_VERSION=${PREGDOS_VERSION} \
-    pip install --no-cache-dir /app
+RUN python3 -m venv /app/venv && \
+    SETUPTOOLS_SCM_PRETEND_VERSION=${PREGDOS_VERSION} \
+    /app/venv/bin/pip install --no-cache-dir /app
+ENV PATH=/app/venv/bin:${PATH}
 
 COPY docker/pregdos/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

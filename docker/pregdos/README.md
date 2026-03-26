@@ -54,8 +54,16 @@ docker build -t pregdos -f docker/pregdos/Dockerfile . \
 ## Run
 
 ```bash
-docker run --rm -it --hostname localhost -p 5000:5000 pregdos
+docker run --rm -it --hostname localhost -p 5000:5000 -p 2222:22 pregdos
 ```
+
+SSH into the running container (password: `user`):
+
+```bash
+ssh -p 2222 user@localhost
+```
+
+Job working directories and SLURM logs are under `/home/slurm/jobs/`.
 
 The webserver starts automatically and is available at http://localhost:5000.
 

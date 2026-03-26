@@ -16,6 +16,7 @@ class FakeSbatchResult:
 def client(tmp_path):
     app.config["TESTING"] = True
     app.config["UPLOAD_FOLDER"] = str(tmp_path)
+    app.config["JOBS_FOLDER"] = str(tmp_path / "jobs")
     with app.test_client() as c:
         yield c
 
@@ -151,7 +152,7 @@ def test_submit_calls_sbatch(client, tmp_path, mocker):
     assert b"42" in response.data
     mock_run.assert_called_once()
     cmd = mock_run.call_args[0][0]
-    assert cmd[0] == "sbatch"
+    assert "sbatch" in cmd
     assert "topas_field1.txt" in cmd[-1]
 
 

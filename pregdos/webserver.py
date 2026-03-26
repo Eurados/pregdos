@@ -24,11 +24,13 @@ from typing import List
 from .models import ConversionParameters, ConversionResult
 
 UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER") or os.path.join(tempfile.gettempdir(), "pregdos_uploads")
+JOBS_FOLDER = os.environ.get("JOBS_FOLDER", "/home/slurm/jobs")
 TOPAS_BIN = os.environ.get("TOPAS_BIN", "topas")
 ALLOWED_EXTENSIONS = {"dcm", "csv", "txt"}
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+app.config["JOBS_FOLDER"] = JOBS_FOLDER
 app.secret_key = os.environ.get("PREGDOS_SECRET_KEY", "pregdos_secret_key")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -333,6 +335,12 @@ def download_file(study, filename):
     return send_from_directory(abs_dir_path, safe_filename, as_attachment=True)
 
 
+@app.route("/squeue")
+def squeue():
+    result = subprocess.run(["squeue"], capture_output=True, text=True)
+    return result.stdout or result.stderr
+
+
 @app.route("/submit", methods=["POST"])
 def submit_job():
     study_dir = request.form["study_dir"]
@@ -346,10 +354,14 @@ def submit_job():
         flash("Invalid study path.")
         return redirect("/")
 
-    # Create timestamped job working directory
+    # Create timestamped job working directory under JOBS_FOLDER
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    job_dir = os.path.join(abs_study_dir, f"job_{timestamp}")
+    job_dir = os.path.join(app.config["JOBS_FOLDER"], f"{secure_filename(study_name)}_{timestamp}")
     os.makedirs(job_dir, exist_ok=True)
+    try:
+        shutil.chown(job_dir, user="slurm", group="slurm")
+    except LookupError:
+        pass  # slurm user not present outside container
 
     # Find each TOPAS file (search study_dir recursively) and copy to job_dir
     job_ids = []
@@ -371,6 +383,7 @@ def submit_job():
 
         result = subprocess.run(
             [
+                "runuser", "-u", "slurm", "--",
                 "sbatch",
                 f"--chdir={job_dir}",
                 f"--output={job_dir}/slurm-%j.out",
