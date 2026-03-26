@@ -38,9 +38,15 @@
         <section class="card">
             <form method="post" enctype="multipart/form-data" class="form-grid">
                 <div class="form-row">
-                    <label for="study_zip">DICOM Study (zip)</label>
-                    <input id="study_zip" type="file" name="study_zip" accept=".zip" required />
-                    <small class="hint">Upload a ZIP containing CT, RS, and plan DICOM files.</small>
+                    <label for="study_zip">DICOM Study (ZIP)</label>
+                    <input id="study_zip" type="file" name="study_zip" accept=".zip" />
+                    <small class="hint">Option A: Upload a ZIP containing CT, RS, and plan DICOM files. Use either ZIP or Folder (not both).</small>
+                </div>
+
+                <div class="form-row">
+                    <label for="study_dir">DICOM Study (Folder)</label>
+                    <input id="study_dir" type="file" name="study_dir" webkitdirectory mozdirectory directory multiple />
+                    <small class="hint">Option B: Select the study folder; all files inside will be uploaded. Use either ZIP or Folder (not both).</small>
                 </div>
 
                 <div class="form-row">
