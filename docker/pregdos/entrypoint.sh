@@ -12,7 +12,6 @@ sed -i "s/__REALMEM__/$SLURM_MEM_MB/g" /etc/slurm/slurm.conf
 service munge start
 slurmctld
 runuser -u slurm -- slurmd
-/usr/sbin/sshd
 
 pregdos-web &
 

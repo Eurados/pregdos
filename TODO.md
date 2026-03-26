@@ -4,7 +4,7 @@
 
 - [x] Wire job submission to `sbatch` (Submit Jobs button → `/submit` route)
 - [ ] Wire `StructureSelection` dataclass into the webserver routes (currently unused)
-- [ ] Add job status page (poll `squeue` / `sacct`)
+- [x] Add job status page (live `squeue` view on job_submitted page, auto-refresh every 5s)
 - [ ] Add results/file browser page
 - [ ] Turn off `debug=True` in `webserver.py` for production/container use
 

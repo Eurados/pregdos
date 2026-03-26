@@ -385,6 +385,7 @@ def submit_job():
             [
                 "runuser", "-u", "slurm", "--",
                 "sbatch",
+                "--export=ALL",
                 f"--chdir={job_dir}",
                 f"--output={job_dir}/slurm-%j.out",
                 "--wrap", f"{TOPAS_BIN} {safe_fname}",
