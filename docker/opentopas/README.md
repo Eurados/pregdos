@@ -14,13 +14,13 @@ Two Dockerfiles are provided for the two actively supported version lines:
 ### v4.0.0 (Qt5, Geant4 11.1.3)
 
 ```bash
-docker build -t pregdos-opentopas-v4.0.0 -f docker/opentopas/4.0.0/Dockerfile .
+docker build -t pregdos-base-opentopas-v4.0.0 -f docker/opentopas/4.0.0/Dockerfile .
 ```
 
 Override versions:
 
 ```bash
-docker build -t pregdos-opentopas-v4.0.0 -f docker/opentopas/4.0.0/Dockerfile . \
+docker build -t pregdos-base-opentopas-v4.0.0 -f docker/opentopas/4.0.0/Dockerfile . \
     --build-arg GEANT4_VERSION=11.1.3 \
     --build-arg OPENTOPAS_REF=v4.0.0
 ```
@@ -28,13 +28,13 @@ docker build -t pregdos-opentopas-v4.0.0 -f docker/opentopas/4.0.0/Dockerfile . 
 ### v4.2.3 (Qt6, Geant4 11.3.2)
 
 ```bash
-docker build -t pregdos-opentopas-v4.2.3 -f docker/opentopas/4.2.3/Dockerfile .
+docker build -t pregdos-base-opentopas-v4.2.3 -f docker/opentopas/4.2.3/Dockerfile .
 ```
 
 Override versions:
 
 ```bash
-docker build -t pregdos-opentopas-v4.2.3 -f docker/opentopas/4.2.3/Dockerfile . \
+docker build -t pregdos-base-opentopas-v4.2.3 -f docker/opentopas/4.2.3/Dockerfile . \
     --build-arg GEANT4_VERSION=11.3.2 \
     --build-arg OPENTOPAS_REF=v4.2.3
 ```
@@ -46,15 +46,15 @@ docker build -t pregdos-opentopas-v4.2.3 -f docker/opentopas/4.2.3/Dockerfile . 
 ## Run
 
 ```bash
-docker run -it --rm pregdos-opentopas-v4.0.0
-docker run -it --rm pregdos-opentopas-v4.2.3
+docker run -it --rm pregdos-base-opentopas-v4.0.0
+docker run -it --rm pregdos-base-opentopas-v4.2.3
 ```
 
 ## Verify TOPAS works
 
 ```bash
-docker run --rm pregdos-opentopas-v4.0.0 /opt/TOPAS/OpenTOPAS-install/bin/topas --version
-docker run --rm pregdos-opentopas-v4.2.3 /opt/TOPAS/OpenTOPAS-install/bin/topas --version
+docker run --rm pregdos-base-opentopas-v4.0.0 /opt/TOPAS/OpenTOPAS-install/bin/topas --version
+docker run --rm pregdos-base-opentopas-v4.2.3 /opt/TOPAS/OpenTOPAS-install/bin/topas --version
 ```
 
 ## Notes

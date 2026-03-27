@@ -1,8 +1,8 @@
 name: Build and publish pregdos
-
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Build OpenTOPAS base image"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       run_heavy:
@@ -10,11 +10,28 @@ on:
         type: boolean
         required: true
         default: false
+      topas_version:
+        description: "TOPAS version to build"
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - "4.0.0"
+          - "4.2.3"
 
 jobs:
   build:
-    if: github.event_name == 'release' || inputs.run_heavy == true
+    if: |
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'release') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_heavy == true)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        topas_version: ["4.0.0", "4.2.3"]
     permissions:
       contents: read
       packages: write
@@ -24,7 +41,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Normalize image owner
-        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+        id: owner
+        run: echo "owner_lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
       - name: Free disk space
         uses: jlumbroso/free-disk-space@v1.3.0
@@ -43,29 +61,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ env.OWNER_LC }}/pregdos
-          tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
-            type=raw,value=manual-${{ github.run_number }},enable=${{ github.event_name == 'workflow_dispatch' }}
-
       - name: Build and push
+        if: |
+          github.event_name == 'workflow_run' ||
+          inputs.topas_version == 'all' ||
+          inputs.topas_version == matrix.topas_version
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/pregdos/Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ghcr.io/${{ steps.owner.outputs.owner_lc }}/pregdos:${{ github.event_name == 'workflow_run' && format('{0}-topas{1}', github.event.workflow_run.head_branch, matrix.topas_version) || format('manual-{0}-topas{1}', github.run_number, matrix.topas_version) }}
+            ghcr.io/${{ steps.owner.outputs.owner_lc }}/pregdos:latest-topas${{ matrix.topas_version }}
           build-args: |
-            OPENTOPAS_IMAGE=ghcr.io/${{ env.OWNER_LC }}/pregdos-opentopas-v4.0.0:latest
-            PREGDOS_VERSION=${{ github.event_name == 'release' && github.event.release.tag_name || format('0+manual.{0}', github.run_number) }}
+            OPENTOPAS_IMAGE=ghcr.io/${{ steps.owner.outputs.owner_lc }}/pregdos-base-opentopas-v${{ matrix.topas_version }}:latest
+            PREGDOS_VERSION=${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || format('0+manual.{0}', github.run_number) }}
 
       - name: Delete old package versions
+        if: matrix.topas_version == '4.0.0'
         uses: actions/delete-package-versions@v5
         with:
           package-name: pregdos

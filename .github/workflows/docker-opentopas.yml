@@ -1,5 +1,4 @@
 name: Build OpenTOPAS base image
-
 on:
   release:
     types: [published]
@@ -23,21 +22,24 @@ jobs:
   build:
     if: github.event_name == 'release' || inputs.run_heavy == true
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        opentopas_version: ${{ github.event_name == 'release' && fromJson('["4.0.0","4.2.3"]') || fromJson(format('["{0}"]', inputs.version)) }}
     permissions:
       contents: read
       packages: write
-    env:
-      OPENTOPAS_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '4.0.0' }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Normalize image owner
-        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+        id: owner
+        run: echo "owner_lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
       - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@v1.3.0
         with:
           tool-cache: true
           android: true
@@ -57,6 +59,6 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/opentopas/${{ env.OPENTOPAS_VERSION }}/Dockerfile
+          file: docker/opentopas/${{ matrix.opentopas_version }}/Dockerfile
           push: true
-          tags: ghcr.io/${{ env.OWNER_LC }}/pregdos-opentopas-v${{ env.OPENTOPAS_VERSION }}:latest
+          tags: ghcr.io/${{ steps.owner.outputs.owner_lc }}/pregdos-base-opentopas-v${{ matrix.opentopas_version }}:latest

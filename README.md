@@ -51,7 +51,7 @@ are documented in [docker/opentopas/README.md](docker/opentopas/README.md).
 
 ```bash
 # Build OpenTOPAS base image (~35 min, cached on rebuild)
-docker build -t pregdos-opentopas-v4.0.0 -f docker/opentopas/4.0.0/Dockerfile .
+docker build -t pregdos-base-opentopas-v4.0.0 -f docker/opentopas/4.0.0/Dockerfile .
 
 # Build combined image
 docker build -t pregdos -f docker/pregdos/Dockerfile .

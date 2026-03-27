@@ -1,10 +1,10 @@
 # OpenTOPAS v4.2.3 on Geant4 11.3.2 — Qt6
 #
 # Build from project root:
-#   docker build -t pregdos-opentopas-v4.2.3 -f docker/opentopas/4.2.3/Dockerfile .
+#   docker build -t pregdos-base-opentopas-v4.2.3 -f docker/opentopas/4.2.3/Dockerfile .
 #
 # Override versions:
-#   docker build -t pregdos-opentopas-v4.2.3 -f docker/opentopas/4.2.3/Dockerfile . \
+#   docker build -t pregdos-base-opentopas-v4.2.3 -f docker/opentopas/4.2.3/Dockerfile . \
 #       --build-arg GEANT4_VERSION=11.3.2 \
 #       --build-arg OPENTOPAS_REF=v4.2.3
 

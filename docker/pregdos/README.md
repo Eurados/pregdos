@@ -12,7 +12,7 @@ pre-built OpenTOPAS image. Build that first, then build this one.
 
 ```bash
 # Default: OpenTOPAS v4.0.0 on Geant4 11.1.3 (Qt5)
-docker build -t pregdos-opentopas-v4.0.0 -f docker/opentopas/4.0.0/Dockerfile .
+docker build -t pregdos-base-opentopas-v4.0.0 -f docker/opentopas/4.0.0/Dockerfile .
 ```
 
 This takes ~35 minutes (Geant4 compile + dataset download). Subsequent builds
@@ -37,14 +37,14 @@ docker build -t pregdos -f docker/pregdos/Dockerfile . \
 Build the v4.2.3 base image first:
 
 ```bash
-docker build -t pregdos-opentopas-v4.2.3 -f docker/opentopas/4.2.3/Dockerfile .
+docker build -t pregdos-base-opentopas-v4.2.3 -f docker/opentopas/4.2.3/Dockerfile .
 ```
 
 Then point the pregdos build at it:
 
 ```bash
 docker build -t pregdos -f docker/pregdos/Dockerfile . \
-    --build-arg OPENTOPAS_IMAGE=pregdos-opentopas-v4.2.3
+    --build-arg OPENTOPAS_IMAGE=pregdos-base-opentopas-v4.2.3
 ```
 
 > **Note:** v4.2.3 uses Qt6. The runtime Qt libraries in the Dockerfile
