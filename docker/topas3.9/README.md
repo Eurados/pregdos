@@ -45,15 +45,7 @@ docker run --rm pregdos-base-topas-v3.9 /opt/TOPAS/topas-install/bin/topas --ver
 
 ## Integrating with the pregdos image
 
-If you need to combine TOPAS 3.9 with the pregdos webserver and SLURM, the
-pregdos runtime stage must also use `debian:bookworm` (not trixie) to avoid
-library version mismatches. Pass the image as a build arg:
-
-```bash
-docker build -t pregdos -f docker/pregdos/Dockerfile . \
-    --build-arg OPENTOPAS_IMAGE=pregdos-base-topas-v3.9 \
-    --build-arg DEBIAN_VERSION=bookworm
-```
-
-> **Note:** The pregdos Dockerfile does not yet support `DEBIAN_VERSION` — this
-> would need to be added if integration is required.
+This is not currently supported. The pregdos runtime stage is hardcoded to
+`debian:trixie`, which is incompatible with the bookworm-based TOPAS 3.9 image.
+To support integration, the pregdos Dockerfile would need a `DEBIAN_VERSION`
+build arg and the runtime `FROM` line changed accordingly.
