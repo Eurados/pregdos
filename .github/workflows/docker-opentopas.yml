@@ -5,8 +5,12 @@ on:
     inputs:
       version:
         description: 'OpenTOPAS version to build (e.g. 4.0.0 or 4.2.3)'
+        type: choice
         required: true
         default: '4.0.0'
+        options:
+          - '4.0.0'
+          - '4.2.3'
 
 jobs:
   build:
