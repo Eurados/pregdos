@@ -38,7 +38,29 @@ PREGDOS_SECRET_KEY=mysecret pregdos-web
 pytest
 ```
 
-## Docker
+## Running as Docker
+
+Pre-built images are published to the GitHub Container Registry and work on
+Linux, macOS, and Windows 10/11 (via Docker Desktop + WSL2) — no compilation needed.
+
+```bash
+docker pull ghcr.io/eurados/pregdos:latest-topas4.2.3
+docker run --rm -it --hostname localhost -p 5000:5000 ghcr.io/eurados/pregdos:latest-topas4.2.3
+```
+
+Then open http://localhost:5000 in a browser.
+
+Two variants are available, differing only in the bundled OpenTOPAS version:
+
+| Tag | OpenTOPAS | Geant4 |
+|-----|-----------|--------|
+| `latest-topas4.2.3` | v4.2.3 | 11.3.2 |
+| `latest-topas4.0.0` | v4.0.0 | 11.1.3 |
+
+For release-pinned tags (e.g. `v0.2.1-topas4.2.3`) see the
+[Packages](https://github.com/Eurados/pregdos/pkgs/container/pregdos) page.
+
+### Building from source
 
 The full production image (OpenTOPAS + SLURM + webserver) requires building
 in two steps. See [docker/pregdos/README.md](docker/pregdos/README.md) for
@@ -47,19 +69,6 @@ the complete build and run instructions.
 Standalone OpenTOPAS images (for testing simulations without the webserver)
 are documented in [docker/opentopas/README.md](docker/opentopas/README.md).
 
-### Quick start
-
-```bash
-# Build OpenTOPAS base image (~35 min, cached on rebuild)
-docker build -t pregdos-base-opentopas-v4.0.0 -f docker/opentopas/4.0.0/Dockerfile .
-
-# Build combined image
-docker build -t pregdos -f docker/pregdos/Dockerfile .
-
-# Run
-docker run --rm -it --hostname localhost -p 5000:5000 pregdos
-```
-
 ## Project layout
 
 ```
@@ -67,7 +76,7 @@ pregdos/          Python package (Flask webserver, DICOM conversion)
 tests/            pytest test suite
 docker/
     opentopas/    Standalone OpenTOPAS images (v4.0.0 and v4.2.3)
-    topas/        Standalone TOPAS 3.9 image
+    topas3.9/     Standalone TOPAS 3.9 image (local build only, not redistributable)
     slurm/        Standalone SLURM image (for testing)
     pregdos/      Combined production image
 ```
