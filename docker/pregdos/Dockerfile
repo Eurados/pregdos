@@ -26,7 +26,8 @@
 # ── Stage 1: OpenTOPAS (pre-built, no compilation) ────────────────────────────
 ARG OPENTOPAS_IMAGE=pregdos-opentopas-v4.0.0
 FROM ${OPENTOPAS_IMAGE} AS topas-builder
-RUN mkdir -p /opt/pregdos-meta && printf "%s\n" "${TOPAS_VERSION:-unknown}" > /opt/pregdos-meta/TOPAS_VERSION
+RUN printf "%s\n" "${TOPAS_VERSION:-unknown}" > /tmp/TOPAS_VERSION
+RUN printf "%s\n" "${GEANT4_VERSION:-unknown}" > /tmp/GEANT4_VERSION
 
 
 # ── Stage 2: SLURM (independent) ─────────────────────────────────────────────
@@ -90,7 +91,8 @@ COPY --from=topas-builder ${APPDIR}/GEANT4/geant4-install ${APPDIR}/GEANT4/geant
 COPY --from=topas-builder ${APPDIR}/G4DATA              ${APPDIR}/G4DATA
 COPY --from=topas-builder ${APPDIR}/TOPAS/OpenTOPAS-install ${APPDIR}/TOPAS/OpenTOPAS-install
 COPY --from=topas-builder ${APPDIR}/GDCM/gdcm-install   ${APPDIR}/GDCM/gdcm-install
-COPY --from=topas-builder /opt/pregdos-meta/TOPAS_VERSION /etc/pregdos/TOPAS_VERSION
+COPY --from=topas-builder /tmp/TOPAS_VERSION /etc/pregdos/TOPAS_VERSION
+COPY --from=topas-builder /tmp/GEANT4_VERSION /etc/pregdos/GEANT4_VERSION
 
 # Copy SLURM from builder
 COPY --from=slurm-builder /build /

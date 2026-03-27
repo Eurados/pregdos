@@ -22,7 +22,6 @@ import shutil
 import tempfile
 import copy
 from typing import List
-import re
 
 from .models import ConversionParameters, ConversionResult
 
@@ -424,35 +423,25 @@ def about():
         except importlib.metadata.PackageNotFoundError:
             return "unknown"
 
-    def topas_version():
-        explicit = (os.environ.get("TOPAS_VERSION") or "").strip()
-        if explicit:
-            return explicit
-        marker = Path("/etc/pregdos/TOPAS_VERSION")
+    def explicit_version(env_name, marker_name):
+        env_value = (os.environ.get(env_name) or "").strip()
+        if env_value:
+            return env_value
+        marker = Path("/etc/pregdos") / marker_name
         try:
             if marker.is_file():
-                file_version = marker.read_text(encoding="utf-8").strip()
-                if file_version:
-                    return file_version
+                marker_value = marker.read_text(encoding="utf-8").strip()
+                if marker_value:
+                    return marker_value
         except OSError:
             pass
-        try:
-            result = subprocess.run(
-                [TOPAS_BIN], capture_output=True, text=True, timeout=3
-            )
-            text = result.stdout + result.stderr
-            match = re.search(r"\b\d+\.\d+\.\d+\b", text)
-            if match:
-                return match.group(0)
-            return "unavailable"
-        except Exception:
-            return "unavailable"
+        return "unknown"
 
     versions = {
         "pregdos": pkg_version("pregdos"),
         "dicomexport": pkg_version("dicomexport"),
-        "topas": topas_version(),
-        "geant4": os.environ.get("GEANT4_VERSION", "unknown"),
+        "topas": explicit_version("TOPAS_VERSION", "TOPAS_VERSION"),
+        "geant4": explicit_version("GEANT4_VERSION", "GEANT4_VERSION"),
     }
     return render_template("about.html", versions=versions)
 
