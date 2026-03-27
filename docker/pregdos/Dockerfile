@@ -9,7 +9,7 @@
 #   runtime        — lean final image combining both + webserver
 #
 # Useful build args:
-#   OPENTOPAS_IMAGE   default pregdos-opentopas-v4.0.0
+#   OPENTOPAS_IMAGE   default pregdos-base-opentopas-v4.0.0
 #   SLURM_VERSION     default 25.11.4
 #   PREGDOS_VERSION   optional override for pregdos package version
 #
@@ -17,14 +17,14 @@
 #   docker build -t pregdos -f docker/pregdos/Dockerfile .
 #
 # Switch to OpenTOPAS v4.2.3:
-#   docker build -t pregdos --build-arg OPENTOPAS_IMAGE=pregdos-opentopas-v4.2.3 \
+#   docker build -t pregdos --build-arg OPENTOPAS_IMAGE=pregdos-base-opentopas-v4.2.3 \
 #       -f docker/pregdos/Dockerfile .
 #
 # NOTE: when switching to v4.2.3 the runtime Qt libraries below must be
 #       changed from Qt5 to Qt6 (see TODO comment in the runtime stage).
 
 # ── Stage 1: OpenTOPAS (pre-built, no compilation) ────────────────────────────
-ARG OPENTOPAS_IMAGE=pregdos-opentopas-v4.0.0
+ARG OPENTOPAS_IMAGE=pregdos-base-opentopas-v4.0.0
 FROM ${OPENTOPAS_IMAGE} AS topas-builder
 RUN printf "%s\n" "${TOPAS_VERSION:-unknown}" > /tmp/TOPAS_VERSION
 RUN printf "%s\n" "${GEANT4_VERSION:-unknown}" > /tmp/GEANT4_VERSION
@@ -72,9 +72,9 @@ ENV PATH=${APPDIR}/TOPAS/OpenTOPAS-install/bin:${PATH}
 
 # Runtime deps for TOPAS + SLURM + webserver
 # TODO: trim this list once we know exactly what's needed
-# TODO: switch Qt5 → Qt6 libs when using OPENTOPAS_IMAGE=pregdos-opentopas-v4.2.3
+# TODO: switch Qt5 → Qt6 libs when using OPENTOPAS_IMAGE=pregdos-base-opentopas-v4.2.3
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # TOPAS/Geant4 runtime (Qt5 — matches pregdos-opentopas-v4.0.0)
+    # TOPAS/Geant4 runtime (Qt5 — matches pregdos-base-opentopas-v4.0.0)
     libexpat1 libgl1 libglu1-mesa libxt6 libxmu6 \
     libqt5core5a libqt5gui5 libqt5opengl5 libqt5widgets5 \
     # SLURM runtime

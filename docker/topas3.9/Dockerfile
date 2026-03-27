@@ -4,7 +4,7 @@
 # NOTE: Base image kept as debian:bullseye-slim for Geant4/TOPAS 3.9 compatibility.
 #
 # Build from project root:
-#   docker build -t pregdos-topas3.9 -f docker/topas3.9/Dockerfile .
+#   docker build -t pregdos-base-topas-v3.9 -f docker/topas3.9/Dockerfile .
 
 # ── Stage 1: Builder ──────────────────────────────────────────────────────────
 FROM debian:bullseye-slim AS builder
@@ -12,8 +12,15 @@ SHELL ["/bin/bash", "-c"]
 
 ARG GEANT4_VERSION=10.07.p03
 ARG GDCM_VERSION=3.0.23
+ARG TOPAS_VERSION=3.9
+ENV GEANT4_VERSION=${GEANT4_VERSION}
+ENV TOPAS_VERSION=${TOPAS_VERSION}
 ENV DEBIAN_FRONTEND=noninteractive
 ENV APPDIR=/opt
+ENV G4DATA=${APPDIR}/G4DATA
+ENV TOPAS_G4_DATA_DIR=${G4DATA}
+ENV Geant4_DIR=${APPDIR}/GEANT4/geant4-install
+ENV GDCM_DIR=${APPDIR}/GDCM/gdcm-install
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget zip cmake g++ patch \
@@ -23,8 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Geant4 datasets
-RUN mkdir -p ${APPDIR}/G4DATA && \
-    cd ${APPDIR}/G4DATA && \
+RUN mkdir -p ${G4DATA} && \
+    cd ${G4DATA} && \
     wget -q -4 \
     https://geant4-data.web.cern.ch/geant4-data/datasets/G4NDL.4.6.tar.gz \
     https://geant4-data.web.cern.ch/geant4-data/datasets/G4EMLOW.7.13.tar.gz \
@@ -104,6 +111,10 @@ RUN cd ${APPDIR}/TOPAS && \
 FROM debian:bullseye-slim
 SHELL ["/bin/bash", "-c"]
 
+ARG GEANT4_VERSION=10.07.p03
+ARG TOPAS_VERSION=3.9
+ENV GEANT4_VERSION=${GEANT4_VERSION}
+ENV TOPAS_VERSION=${TOPAS_VERSION}
 ENV DEBIAN_FRONTEND=noninteractive
 ENV APPDIR=/opt
 ENV G4DATA=${APPDIR}/G4DATA
@@ -112,6 +123,10 @@ ENV Geant4_DIR=${APPDIR}/GEANT4/geant4-install
 ENV GDCM_DIR=${APPDIR}/GDCM/gdcm-install
 ENV LD_LIBRARY_PATH=${APPDIR}/TOPAS/topas-install/lib:${APPDIR}/GEANT4/geant4-install/lib
 ENV PATH=${APPDIR}/TOPAS/topas-install/bin:${PATH}
+
+# Create a non-root user
+RUN useradd -m user
+ENV HOME=/home/user
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libqt5widgets5 libqt5opengl5 libxmu6 \
@@ -122,15 +137,13 @@ COPY --from=builder ${APPDIR}/G4DATA               ${APPDIR}/G4DATA
 COPY --from=builder ${APPDIR}/GEANT4/geant4-install ${APPDIR}/GEANT4/geant4-install
 COPY --from=builder ${APPDIR}/TOPAS/topas-install  ${APPDIR}/TOPAS/topas-install
 
-# Create a non-root user
-RUN useradd -m user
-ENV HOME=/home/user
+USER user
 
 # Set environment variables in bashrc
-USER user
 RUN echo "export Geant4_DIR=${Geant4_DIR}" >> ${HOME}/.bashrc && \
     echo "export GDCM_DIR=${GDCM_DIR}" >> ${HOME}/.bashrc && \
-    echo "export TOPAS_G4_DATA_DIR=${TOPAS_G4_DATA_DIR}" >> ${HOME}/.bashrc
+    echo "export TOPAS_G4_DATA_DIR=${TOPAS_G4_DATA_DIR}" >> ${HOME}/.bashrc && \
+    echo "export TOPAS_VERSION=${TOPAS_VERSION}" >> ${HOME}/.bashrc
 
 WORKDIR ${HOME}
 CMD ["/bin/bash"]
