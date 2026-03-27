@@ -408,17 +408,11 @@ def submit_job():
         else:
             errors.append(f"sbatch failed for {safe_fname}: {result.stderr.strip()}")
 
-    if errors:
-        for e in errors:
-            flash(e)
-    return render_template(
-        "job_submitted.html",
-        job_ids=job_ids,
-        job_dir=job_dir,
-        job_dir_name=os.path.basename(job_dir),
-        study_name=study_name,
-        errors=errors,
-    )
+    for fname, jid in job_ids:
+        flash(f"Submitted {fname} → SLURM job {jid}")
+    for e in errors:
+        flash(f"Error: {e}")
+    return redirect(url_for("list_jobs"))
 
 
 @app.route("/about")

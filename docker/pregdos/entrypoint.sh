@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Reserve 1 CPU and 10% of RAM for the OS
-NCPUS=$(( $(nproc) - 1 ))
+# NCPUS=$(( $(nproc) - 1 ))
+NCPUS=$(( $(nproc) ))
 [ "$NCPUS" -lt 1 ] && NCPUS=1
 TOTAL_MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
 SLURM_MEM_MB=$(( TOTAL_MEM_MB * 90 / 100 ))

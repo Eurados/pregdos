@@ -26,4 +26,22 @@
     <a class="btn btn-secondary" href="{{ url_for('upload_files') }}">New simulation</a>
   </div>
 </section>
+
+<section class="card">
+  <h2>Job queue</h2>
+  <pre id="squeue-output" style="font-family: monospace; white-space: pre; overflow-x: auto;">Loading...</pre>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function refreshSqueue() {
+    fetch("{{ url_for('squeue') }}")
+      .then(r => r.text())
+      .then(text => { document.getElementById("squeue-output").textContent = text || "(queue empty)"; })
+      .catch(() => { document.getElementById("squeue-output").textContent = "(squeue unavailable)"; });
+  }
+  refreshSqueue();
+  setInterval(refreshSqueue, 5000);
+</script>
 {% endblock %}
