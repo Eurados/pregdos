@@ -72,11 +72,11 @@ ENV PATH=${APPDIR}/TOPAS/OpenTOPAS-install/bin:${PATH}
 
 # Runtime deps for TOPAS + SLURM + webserver
 # TODO: trim this list once we know exactly what's needed
-# TODO: switch Qt5 → Qt6 libs when using OPENTOPAS_IMAGE=pregdos-base-opentopas-v4.2.3
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # TOPAS/Geant4 runtime (Qt5 — matches pregdos-base-opentopas-v4.0.0)
+    # TOPAS/Geant4 runtime — Qt5 (opentopas v4.0.0) and Qt6 (opentopas v4.2.3)
     libexpat1 libgl1 libglu1-mesa libxt6 libxmu6 \
     libqt5core5a libqt5gui5 libqt5opengl5 libqt5widgets5 \
+    libqt6core6 libqt6gui6 libqt6opengl6 libqt6openglwidgets6 libqt6widgets6 \
     # SLURM runtime
     munge libmunge2 libssl3 libpam-runtime libhwloc15 libnuma1 \
     libcurl4 libyaml-0-2 libjson-c5 libhttp-parser2.9 \

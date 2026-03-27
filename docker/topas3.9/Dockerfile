@@ -1,13 +1,18 @@
 # TOPAS 3.9 on Geant4 10.07.p03
 #
 # NOTE: TOPAS 3.9 source is downloaded from Google Drive — the link may break.
-# NOTE: Base image kept as debian:bullseye-slim for Geant4/TOPAS 3.9 compatibility.
+# NOTE: Base image is debian:bookworm (NOT trixie):
+#   - trixie ships cmake 3.31 which is incompatible with Geant4 10.7.3's
+#     generated cmake config files (Geant4PackageCache.cmake macro breakage).
+#   - bookworm provides cmake 3.25 + gcc-12, both compatible with this vintage.
+# NOTE: If integrating topas3.9 into the pregdos image, the pregdos runtime
+#   stage must also use debian:bookworm to match library versions.
 #
 # Build from project root:
 #   docker build -t pregdos-base-topas-v3.9 -f docker/topas3.9/Dockerfile .
 
 # ── Stage 1: Builder ──────────────────────────────────────────────────────────
-FROM debian:bullseye-slim AS builder
+FROM debian:bookworm AS builder
 SHELL ["/bin/bash", "-c"]
 
 ARG GEANT4_VERSION=10.07.p03
@@ -23,7 +28,7 @@ ENV Geant4_DIR=${APPDIR}/GEANT4/geant4-install
 ENV GDCM_DIR=${APPDIR}/GDCM/gdcm-install
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget zip cmake g++ patch \
+    wget zip unzip cmake make g++ patch ca-certificates \
     libexpat1-dev libx11-dev libharfbuzz-dev \
     libglu1-mesa-dev libxt-dev libgl1-mesa-dev \
     qtbase5-dev libqt5opengl5-dev libxmu-dev \
@@ -108,7 +113,7 @@ RUN cd ${APPDIR}/TOPAS && \
 
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
-FROM debian:bullseye-slim
+FROM debian:bookworm
 SHELL ["/bin/bash", "-c"]
 
 ARG GEANT4_VERSION=10.07.p03
