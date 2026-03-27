@@ -13,7 +13,9 @@ SHELL ["/bin/bash", "-c"]
 
 ARG GEANT4_VERSION=11.3.2
 ARG OPENTOPAS_REF=v4.2.3
+ARG TOPAS_VERSION=4.2.3
 ENV GEANT4_VERSION=${GEANT4_VERSION}
+ENV TOPAS_VERSION=${TOPAS_VERSION}
 ENV DEBIAN_FRONTEND=noninteractive
 ENV APPDIR=/opt
 ENV G4DATA=${APPDIR}/G4DATA
@@ -127,6 +129,7 @@ USER user
 RUN echo "export Geant4_DIR=$Geant4_DIR" >> ${HOME}/.bashrc && \
     echo "export GDCM_DIR=$GDCM_DIR" >> ${HOME}/.bashrc && \
     echo "export TOPAS_G4_DATA_DIR=$TOPAS_G4_DATA_DIR" >> ${HOME}/.bashrc && \
+    echo "export TOPAS_VERSION=$TOPAS_VERSION" >> ${HOME}/.bashrc && \
     echo "export QT_QPA_PLATFORM_PLUGIN_PATH=$QT_QPA_PLATFORM_PLUGIN_PATH" >> ${HOME}/.bashrc
 
 WORKDIR ${HOME}

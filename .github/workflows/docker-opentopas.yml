@@ -1,8 +1,15 @@
 name: Build OpenTOPAS base image
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
+      run_heavy:
+        description: "Run heavy image build/publish"
+        type: boolean
+        required: true
+        default: false
       version:
         description: 'OpenTOPAS version to build (e.g. 4.0.0 or 4.2.3)'
         type: choice
@@ -14,10 +21,13 @@ on:
 
 jobs:
   build:
+    if: github.event_name == 'release' || inputs.run_heavy == true
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    env:
+      OPENTOPAS_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '4.0.0' }}
 
     steps:
       - name: Checkout repository
@@ -44,6 +54,6 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: docker/opentopas/${{ inputs.version }}/Dockerfile
+          file: docker/opentopas/${{ env.OPENTOPAS_VERSION }}/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/pregdos-opentopas-v${{ inputs.version }}:latest
+          tags: ghcr.io/${{ github.repository_owner }}/pregdos-opentopas-v${{ env.OPENTOPAS_VERSION }}:latest

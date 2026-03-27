@@ -319,6 +319,30 @@ button:focus-visible,
   margin-top: 24px;
 }
 
+/* ----------------------------------------------------------
+   About Table
+   ---------------------------------------------------------- */
+
+.about-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid rgba(100, 115, 140, 0.45);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.about-table th,
+.about-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border: 1px solid rgba(100, 115, 140, 0.35);
+}
+
+.about-table thead th {
+  background: rgba(44, 123, 229, 0.10);
+  font-weight: 700;
+}
+
 .dashboard-card {
   display: flex;
   flex-direction: column;

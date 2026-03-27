@@ -22,6 +22,7 @@ import shutil
 import tempfile
 import copy
 from typing import List
+import re
 
 from .models import ConversionParameters, ConversionResult
 
@@ -424,14 +425,25 @@ def about():
             return "unknown"
 
     def topas_version():
+        explicit = (os.environ.get("TOPAS_VERSION") or "").strip()
+        if explicit:
+            return explicit
+        marker = Path("/etc/pregdos/TOPAS_VERSION")
+        try:
+            if marker.is_file():
+                file_version = marker.read_text(encoding="utf-8").strip()
+                if file_version:
+                    return file_version
+        except OSError:
+            pass
         try:
             result = subprocess.run(
                 [TOPAS_BIN], capture_output=True, text=True, timeout=3
             )
-            for line in (result.stdout + result.stderr).splitlines():
-                low = line.lower()
-                if "topas" in low and "version" in low:
-                    return line.strip()
+            text = result.stdout + result.stderr
+            match = re.search(r"\b\d+\.\d+\.\d+\b", text)
+            if match:
+                return match.group(0)
             return "unavailable"
         except Exception:
             return "unavailable"
