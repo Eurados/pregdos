@@ -47,13 +47,65 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-size: 17px;        
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 17px;
   line-height: 1.55;
 }
 
 .container {
   width: min(960px, 92%);
   margin-inline: auto;
+}
+
+/* ----------------------------------------------------------
+   Tab navigation
+   ---------------------------------------------------------- */
+
+.tab-nav {
+  border-bottom: 1px solid rgba(12, 20, 33, 0.10);
+  background: var(--panel);
+}
+
+.tab-nav-inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tab-nav-brand {
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--brand);
+  text-decoration: none;
+  padding: 14px 0;
+  margin-right: 16px;
+  flex-shrink: 0;
+}
+
+.tab-nav-tabs {
+  display: flex;
+  gap: 2px;
+}
+
+.tab-nav-tab {
+  display: inline-block;
+  padding: 14px 16px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--muted);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.tab-nav-tab:hover {
+  color: var(--text);
+}
+
+.tab-nav-tab.active {
+  color: var(--brand);
+  border-bottom-color: var(--brand);
 }
 
 /* ----------------------------------------------------------
@@ -173,6 +225,17 @@ button.primary:hover {
   border-color: rgba(44, 123, 229, 0.35);
 }
 
+.btn-secondary {
+  background: transparent;
+  color: var(--muted);
+  border-color: rgba(100, 115, 140, 0.35);
+}
+
+.btn-secondary:hover {
+  background: rgba(100, 115, 140, 0.08);
+  border-color: rgba(100, 115, 140, 0.5);
+}
+
 /* Focus & Hover States */
 
 input:hover,
@@ -208,8 +271,8 @@ button:focus-visible,
    ---------------------------------------------------------- */
 
 .alert {
-  background: rgba(214, 69, 69, 0.08);
-  border: 1px solid rgba(214, 69, 69, 0.35);
+  background: rgba(44, 123, 229, 0.07);
+  border: 1px solid rgba(44, 123, 229, 0.25);
   padding: 12px 14px;
   border-radius: 10px;
   margin-bottom: 16px;
@@ -243,6 +306,68 @@ button:focus-visible,
   background: rgba(214, 69, 69, 0.12);
   color: var(--danger);
   border: 1px solid rgba(214, 69, 69, 0.35);
+}
+
+/* ----------------------------------------------------------
+   Dashboard
+   ---------------------------------------------------------- */
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 20px;
+  margin-top: 24px;
+}
+
+/* ----------------------------------------------------------
+   About Table
+   ---------------------------------------------------------- */
+
+.about-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid rgba(100, 115, 140, 0.45);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.about-table th,
+.about-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border: 1px solid rgba(100, 115, 140, 0.35);
+}
+
+.about-table thead th {
+  background: rgba(44, 123, 229, 0.10);
+  font-weight: 700;
+}
+
+.dashboard-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dashboard-card h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.dashboard-card p {
+  margin: 0;
+  color: var(--muted);
+  flex: 1;
+}
+
+.dashboard-card .actions {
+  justify-content: flex-start;
+  margin-top: 8px;
+}
+
+.dashboard-icon {
+  font-size: 1.8rem;
+  line-height: 1;
 }
 
 /* ----------------------------------------------------------

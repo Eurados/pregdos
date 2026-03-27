@@ -11,7 +11,7 @@
 # Useful build args:
 #   OPENTOPAS_IMAGE   default pregdos-opentopas-v4.0.0
 #   SLURM_VERSION     default 25.11.4
-#   PREGDOS_VERSION   default 0.0.0  (passed to setuptools-scm)
+#   PREGDOS_VERSION   optional override for pregdos package version
 #
 # Build from project root:
 #   docker build -t pregdos -f docker/pregdos/Dockerfile .
@@ -26,6 +26,8 @@
 # ── Stage 1: OpenTOPAS (pre-built, no compilation) ────────────────────────────
 ARG OPENTOPAS_IMAGE=pregdos-opentopas-v4.0.0
 FROM ${OPENTOPAS_IMAGE} AS topas-builder
+RUN printf "%s\n" "${TOPAS_VERSION:-unknown}" > /tmp/TOPAS_VERSION
+RUN printf "%s\n" "${GEANT4_VERSION:-unknown}" > /tmp/GEANT4_VERSION
 
 
 # ── Stage 2: SLURM (independent) ─────────────────────────────────────────────
@@ -78,7 +80,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # SLURM runtime
     munge libmunge2 libssl3 libpam-runtime libhwloc15 libnuma1 \
     libcurl4 libyaml-0-2 libjson-c5 libhttp-parser2.9 \
-    # webserver (git needed for dicomexport pip install)
+    # webserver (git needed for dicomexport pip install from github)
     python3 python3-pip python3-venv git \
     # misc
     sudo curl ca-certificates nano \
@@ -89,6 +91,8 @@ COPY --from=topas-builder ${APPDIR}/GEANT4/geant4-install ${APPDIR}/GEANT4/geant
 COPY --from=topas-builder ${APPDIR}/G4DATA              ${APPDIR}/G4DATA
 COPY --from=topas-builder ${APPDIR}/TOPAS/OpenTOPAS-install ${APPDIR}/TOPAS/OpenTOPAS-install
 COPY --from=topas-builder ${APPDIR}/GDCM/gdcm-install   ${APPDIR}/GDCM/gdcm-install
+COPY --from=topas-builder /tmp/TOPAS_VERSION /etc/pregdos/TOPAS_VERSION
+COPY --from=topas-builder /tmp/GEANT4_VERSION /etc/pregdos/GEANT4_VERSION
 
 # Copy SLURM from builder
 COPY --from=slurm-builder /build /
@@ -117,12 +121,16 @@ COPY docker/pregdos/slurm.conf /etc/slurm/slurm.conf
 COPY docker/pregdos/cgroup.conf /etc/slurm/cgroup.conf
 
 # Install pregdos webserver into a venv
-# .git is excluded via .dockerignore; pass a pretend version for setuptools-scm
 COPY . /app
-ARG PREGDOS_VERSION=0.0.0
+ARG PREGDOS_VERSION=
 RUN python3 -m venv /app/venv && \
-    SETUPTOOLS_SCM_PRETEND_VERSION=${PREGDOS_VERSION} \
-    /app/venv/bin/pip install --no-cache-dir /app
+    if [ -n "${PREGDOS_VERSION}" ]; then \
+      SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PREGDOS="${PREGDOS_VERSION}" \
+      /app/venv/bin/pip install --no-cache-dir /app; \
+    else \
+      /app/venv/bin/pip install --no-cache-dir /app; \
+    fi && \
+    rm -rf /app/.git
 ENV PATH=/app/venv/bin:${PATH}
 
 COPY docker/pregdos/entrypoint.sh /usr/local/bin/entrypoint.sh

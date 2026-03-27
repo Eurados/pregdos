@@ -43,10 +43,10 @@ def test_upload_page_loads(client):
     assert b"form" in response.data.lower()
 
 
-# --- POST / validation ---
+# --- POST /upload validation ---
 
 def test_upload_missing_beam_model_and_spr(client):
-    response = client.post("/", data={}, follow_redirects=True)
+    response = client.post("/upload", data={}, follow_redirects=True)
     assert response.status_code == 200
     assert b"Beam model and SPR table required" in response.data
 
@@ -56,7 +56,7 @@ def test_upload_missing_study(client):
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
         "spr_table": (io.BytesIO(b"data"), "spr.txt"),
     }
-    response = client.post("/", data=data, content_type="multipart/form-data", follow_redirects=True)
+    response = client.post("/upload", data=data, content_type="multipart/form-data", follow_redirects=True)
     assert response.status_code == 200
     assert b"Provide either a ZIP or a folder" in response.data
 
@@ -68,7 +68,7 @@ def test_upload_both_zip_and_folder_rejected(client):
         "study_zip": (io.BytesIO(b"PK\x03\x04"), "study.zip"),
         "study_dir": (io.BytesIO(b"data"), "study/file.dcm"),
     }
-    response = client.post("/", data=data, content_type="multipart/form-data", follow_redirects=True)
+    response = client.post("/upload", data=data, content_type="multipart/form-data", follow_redirects=True)
     assert response.status_code == 200
     assert b"either ZIP or Folder" in response.data
 

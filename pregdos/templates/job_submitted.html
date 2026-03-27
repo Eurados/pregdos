@@ -1,80 +1,55 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Jobs Submitted · PregDos</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <style>body{font-family:'Inter',system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial,'Noto Sans','Apple Color Emoji','Segoe UI Emoji','Segoe UI Symbol','Noto Color Emoji',sans-serif}</style>
-</head>
-<body>
-  <header class="site-header">
-    <div class="container">
-      <h1>Jobs submitted</h1>
-      <p class="subtitle">Jobs have been queued and will run in the background</p>
-    </div>
-  </header>
+{% extends "base.html" %}
+{% block title %}Jobs Submitted · PregDos{% endblock %}
+{% block heading %}Jobs submitted{% endblock %}
+{% block subtitle %}Jobs have been queued and will run in the background{% endblock %}
 
-  <main class="container">
-    {% with messages = get_flashed_messages() %}
-      {% if messages %}
-        <div class="alert">
-          <ul>
-          {% for message in messages %}
-            <li>{{ message }}</li>
-          {% endfor %}
-          </ul>
-        </div>
-      {% endif %}
-    {% endwith %}
+{% block content %}
+<section class="card">
+  <p><strong>Study:</strong> {{ study_name }}</p>
+  <p><strong>Job directory:</strong> <code>{{ job_dir }}</code></p>
 
-    <section class="card">
-      <p><strong>Study:</strong> {{ study_name }}</p>
-      <p><strong>Job directory:</strong> <code>{{ job_dir }}</code></p>
+  {% if job_ids %}
+    <table>
+      <thead><tr><th>File</th><th>SLURM job ID</th></tr></thead>
+      <tbody>
+        {% for fname, jid in job_ids %}
+          <tr><td>{{ fname }}</td><td>{{ jid }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
 
-      {% if job_ids %}
-        <table>
-          <thead><tr><th>File</th><th>SLURM job ID</th></tr></thead>
-          <tbody>
-            {% for fname, jid in job_ids %}
-              <tr><td>{{ fname }}</td><td>{{ jid }}</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      {% endif %}
+  {% if errors %}
+    <p><strong>Errors:</strong></p>
+    <ul>
+      {% for e in errors %}
+        <li>{{ e }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
 
-      {% if errors %}
-        <p><strong>Errors:</strong></p>
-        <ul>
-          {% for e in errors %}
-            <li>{{ e }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
+  <div class="actions">
+    <a class="btn primary" href="{{ url_for('job_files', job_dir_name=job_dir_name) }}">Browse output files</a>
+    <a class="btn btn-secondary" href="{{ url_for('upload_files') }}">Convert another study</a>
+    <a class="btn btn-secondary" href="{{ url_for('list_jobs') }}">All jobs</a>
+  </div>
+</section>
 
-      <div class="actions">
-        <a class="btn" href="{{ url_for('upload_files') }}">Convert another study</a>
-      </div>
-    </section>
+<section class="card">
+  <h2>Job queue</h2>
+  <pre id="squeue-output" style="font-family: monospace; white-space: pre; overflow-x: auto;">Loading...</pre>
+</section>
+{% endblock %}
 
-    <section class="card">
-      <h2>Job queue</h2>
-      <pre id="squeue-output" style="font-family: monospace; white-space: pre; overflow-x: auto;">Loading...</pre>
-    </section>
-  </main>
-
-  <script>
-    function refreshSqueue() {
-      fetch("{{ url_for('squeue') }}")
-        .then(r => r.text())
-        .then(text => { document.getElementById("squeue-output").textContent = text || "(queue empty)"; })
-        .catch(() => { document.getElementById("squeue-output").textContent = "(squeue unavailable)"; });
-    }
-    refreshSqueue();
-    setInterval(refreshSqueue, 5000);
-  </script>
-</body>
-</html>
+{% block scripts %}
+<script>
+  function refreshSqueue() {
+    fetch("{{ url_for('squeue') }}")
+      .then(r => r.text())
+      .then(text => { document.getElementById("squeue-output").textContent = text || "(queue empty)"; })
+      .catch(() => { document.getElementById("squeue-output").textContent = "(squeue unavailable)"; });
+  }
+  refreshSqueue();
+  setInterval(refreshSqueue, 5000);
+</script>
+{% endblock %}

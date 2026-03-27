@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}PregDos{% endblock %}
+{% block heading %}PregDos{% endblock %}
+{% block subtitle %}Proton therapy dose recalculation &mdash; research use only{% endblock %}
+
+{% block content %}
+<div class="dashboard-grid">
+  <div class="card dashboard-card">
+    <div class="dashboard-icon">&#x1F4E4;</div>
+    <h2>New simulation</h2>
+    <p>Upload a DICOM study, select structures, and submit TOPAS Monte Carlo jobs to the queue.</p>
+    <div class="actions">
+      <a class="btn primary" href="{{ url_for('upload_files') }}">Start</a>
+    </div>
+  </div>
+
+  <div class="card dashboard-card">
+    <div class="dashboard-icon">&#x1F4CB;</div>
+    <h2>Jobs</h2>
+    <p>View running and completed jobs, browse output files, and download results.</p>
+    <div class="actions">
+      <a class="btn primary" href="{{ url_for('list_jobs') }}">View jobs</a>
+    </div>
+  </div>
+
+  <div class="card dashboard-card">
+    <div class="dashboard-icon">&#x2139;&#xFE0F;</div>
+    <h2>About</h2>
+    <p>Software versions and component information.</p>
+    <div class="actions">
+      <a class="btn primary" href="{{ url_for('about') }}">View</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

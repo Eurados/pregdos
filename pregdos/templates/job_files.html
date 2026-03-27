@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ job_dir_name }} · PregDos{% endblock %}
+{% block heading %}{{ job_dir_name }}{% endblock %}
+{% block subtitle %}Output files{% endblock %}
+
+{% block content %}
+<section class="card">
+  {% if files %}
+    <table>
+      <thead><tr><th>File</th><th>Size</th><th></th></tr></thead>
+      <tbody>
+        {% for f in files %}
+          <tr>
+            <td>{{ f.name }}</td>
+            <td>{{ (f.size / 1024 / 1024) | round(1) }} MB</td>
+            <td><a class="btn btn-secondary" href="{{ url_for('download_job_file', job_dir_name=job_dir_name, filename=f.name) }}">Download</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No files yet — job may still be running.</p>
+  {% endif %}
+
+  <div class="actions">
+    <a class="btn btn-secondary" href="{{ url_for('list_jobs') }}">All jobs</a>
+    <a class="btn btn-secondary" href="{{ url_for('upload_files') }}">New simulation</a>
+  </div>
+</section>
+{% endblock %}

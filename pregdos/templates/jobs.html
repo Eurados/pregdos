@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Jobs · PregDos{% endblock %}
+{% block heading %}Jobs{% endblock %}
+{% block subtitle %}All job directories, newest first{% endblock %}
+
+{% block content %}
+<section class="card">
+  {% if jobs %}
+    <table>
+      <thead><tr><th>Job directory</th><th>Files</th><th></th></tr></thead>
+      <tbody>
+        {% for job in jobs %}
+          <tr>
+            <td><code>{{ job.name }}</code></td>
+            <td>{{ job.file_count }}</td>
+            <td><a class="btn btn-secondary" href="{{ url_for('job_files', job_dir_name=job.name) }}">Browse</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No job directories found.</p>
+  {% endif %}
+
+  <div class="actions">
+    <a class="btn btn-secondary" href="{{ url_for('upload_files') }}">New simulation</a>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Job queue</h2>
+  <pre id="squeue-output" style="font-family: monospace; white-space: pre; overflow-x: auto;">Loading...</pre>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function refreshSqueue() {
+    fetch("{{ url_for('squeue') }}")
+      .then(r => r.text())
+      .then(text => { document.getElementById("squeue-output").textContent = text || "(queue empty)"; })
+      .catch(() => { document.getElementById("squeue-output").textContent = "(squeue unavailable)"; });
+  }
+  refreshSqueue();
+  setInterval(refreshSqueue, 5000);
+</script>
+{% endblock %}
