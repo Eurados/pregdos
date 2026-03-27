@@ -33,6 +33,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Normalize image owner
+        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
       - name: Free disk space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -56,4 +59,4 @@ jobs:
           context: .
           file: docker/opentopas/${{ env.OPENTOPAS_VERSION }}/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/pregdos-opentopas-v${{ env.OPENTOPAS_VERSION }}:latest
+          tags: ghcr.io/${{ env.OWNER_LC }}/pregdos-opentopas-v${{ env.OPENTOPAS_VERSION }}:latest
