@@ -23,6 +23,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Normalize image owner
+        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
       - name: Free disk space
         uses: jlumbroso/free-disk-space@v1.3.0
         with:
@@ -44,7 +47,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/pregdos
+          images: ghcr.io/${{ env.OWNER_LC }}/pregdos
           tags: |
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ github.event_name == 'release' }}
@@ -59,7 +62,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            OPENTOPAS_IMAGE=ghcr.io/${{ github.repository_owner }}/pregdos-opentopas-v4.0.0:latest
+            OPENTOPAS_IMAGE=ghcr.io/${{ env.OWNER_LC }}/pregdos-opentopas-v4.0.0:latest
             PREGDOS_VERSION=${{ github.event_name == 'release' && github.event.release.tag_name || format('0+manual.{0}', github.run_number) }}
 
       - name: Delete old package versions
