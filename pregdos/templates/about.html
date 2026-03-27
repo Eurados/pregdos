@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}About · PregDos{% endblock %}
+{% block heading %}About{% endblock %}
+{% block subtitle %}Software versions and components{% endblock %}
+
+{% block content %}
+<section class="card">
+  <table>
+    <thead><tr><th>Component</th><th>Version</th></tr></thead>
+    <tbody>
+      <tr><td>PregDos</td><td>{{ versions.pregdos }}</td></tr>
+      <tr><td>dicomexport</td><td>{{ versions.dicomexport }}</td></tr>
+      <tr><td>OpenTOPAS</td><td>{{ versions.topas }}</td></tr>
+      <tr><td>Geant4</td><td>{{ versions.geant4 }}</td></tr>
+    </tbody>
+  </table>
+  <p class="hint" style="margin-top: 16px;">Under development &mdash; not for clinical use.</p>
+</section>
+{% endblock %}

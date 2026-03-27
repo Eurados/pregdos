@@ -1,72 +1,38 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PregDos · DICOM → TOPAS</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>body{font-family:'Inter',system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial,'Noto Sans','Apple Color Emoji','Segoe UI Emoji','Segoe UI Symbol','Noto Color Emoji',sans-serif}</style>
-    <meta name="color-scheme" content="light dark" />
-    <meta name="description" content="Upload DICOM study and resources to generate TOPAS input files" />
-    <link rel="icon" href="data:,">
-  
-</head>
-<body>
-    <header class="site-header">
-        <div class="container">
-            <h1>PregDos · DICOM → TOPAS</h1>
-            <p class="subtitle">Upload a DICOM study (zip), beam model CSV, and SPR-to-material table</p>
-        </div>
-    </header>
+{% extends "base.html" %}
+{% block title %}New Simulation · PregDos{% endblock %}
+{% block heading %}New simulation{% endblock %}
+{% block subtitle %}Upload a DICOM study (ZIP or folder), beam model CSV, and SPR-to-material table{% endblock %}
 
-    <main class="container">
-        {% with messages = get_flashed_messages() %}
-            {% if messages %}
-                <div class="alert">
-                    <ul>
-                    {% for message in messages %}
-                        <li>{{ message }}</li>
-                    {% endfor %}
-                    </ul>
-                </div>
-            {% endif %}
-        {% endwith %}
+{% block content %}
+<section class="card">
+  <form method="post" enctype="multipart/form-data" class="form-grid">
+    <div class="form-row">
+      <label for="study_zip">DICOM Study (ZIP)</label>
+      <input id="study_zip" type="file" name="study_zip" accept=".zip" />
+      <small class="hint">Option A: Upload a ZIP containing CT, RS, and plan DICOM files. Use either ZIP or Folder (not both).</small>
+    </div>
 
-        <section class="card">
-            <form method="post" enctype="multipart/form-data" class="form-grid">
-                <div class="form-row">
-                    <label for="study_zip">DICOM Study (ZIP)</label>
-                    <input id="study_zip" type="file" name="study_zip" accept=".zip" />
-                    <small class="hint">Option A: Upload a ZIP containing CT, RS, and plan DICOM files. Use either ZIP or Folder (not both).</small>
-                </div>
+    <div class="form-row">
+      <label for="study_dir">DICOM Study (Folder)</label>
+      <input id="study_dir" type="file" name="study_dir" webkitdirectory mozdirectory directory multiple />
+      <small class="hint">Option B: Select the study folder; all files inside will be uploaded. Use either ZIP or Folder (not both).</small>
+    </div>
 
-                <div class="form-row">
-                    <label for="study_dir">DICOM Study (Folder)</label>
-                    <input id="study_dir" type="file" name="study_dir" webkitdirectory mozdirectory directory multiple />
-                    <small class="hint">Option B: Select the study folder; all files inside will be uploaded. Use either ZIP or Folder (not both).</small>
-                </div>
+    <div class="form-row">
+      <label for="beam_model">Beam Model (CSV)</label>
+      <input id="beam_model" type="file" name="beam_model" accept=".csv" required />
+      <small class="hint">Example: DCPT_beam_model__v2.csv</small>
+    </div>
 
-                <div class="form-row">
-                    <label for="beam_model">Beam Model (CSV)</label>
-                    <input id="beam_model" type="file" name="beam_model" accept=".csv" required />
-                    <small class="hint">Example: DCPT_beam_model__v2.csv</small>
-                </div>
+    <div class="form-row">
+      <label for="spr_table">SPR-to-Material Table</label>
+      <input id="spr_table" type="file" name="spr_table" accept=".txt,.csv" required />
+      <small class="hint">Example: SPRtoMaterial__Brain.txt</small>
+    </div>
 
-                <div class="form-row">
-                    <label for="spr_table">SPR-to-Material Table</label>
-                    <input id="spr_table" type="file" name="spr_table" accept=".txt,.csv" required />
-                    <small class="hint">Example: SPRtoMaterial__Brain.txt</small>
-                </div>
-
-                <div class="actions">
-                    <button type="submit" class="btn primary">Upload & Continue</button>
-                </div>
-            </form>
-        </section>
-    </main>
-  
-</body>
-</html>
+    <div class="actions">
+      <button type="submit" class="btn primary">Upload &amp; Continue</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

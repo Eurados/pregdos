@@ -5,7 +5,9 @@ from flask import (
     send_from_directory,
     redirect,
     flash,
+    url_for,
 )
+import importlib.metadata
 import pydicom
 import glob
 
@@ -187,7 +189,12 @@ def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-@app.route("/", methods=["GET", "POST"])
+@app.route("/")
+def index():
+    return render_template("dashboard.html")
+
+
+@app.route("/upload", methods=["GET", "POST"])
 def upload_files():
     if request.method == "POST":
         study_zip = request.files.get("study_zip")
@@ -307,7 +314,7 @@ def convert():
         result = run_conversion(params, selected_structures)
     except RuntimeError as err:
         flash(str(err))
-        return redirect("/")
+        return redirect(url_for("upload_files"))
     return render_template(
         "convert_success.html",
         out_files=result.out_files,
@@ -327,11 +334,11 @@ def download_file(study, filename):
     abs_upload_folder = os.path.abspath(app.config["UPLOAD_FOLDER"])
     if not abs_dir_path.startswith(abs_upload_folder + os.sep):
         flash("Invalid study path.")
-        return redirect("/")
+        return redirect(url_for("upload_files"))
     file_path = os.path.join(abs_dir_path, safe_filename)
     if not os.path.isfile(file_path):
         flash("File not found.")
-        return redirect("/")
+        return redirect(url_for("upload_files"))
     return send_from_directory(abs_dir_path, safe_filename, as_attachment=True)
 
 
@@ -352,7 +359,7 @@ def submit_job():
     abs_upload_folder = os.path.abspath(app.config["UPLOAD_FOLDER"])
     if not abs_study_dir.startswith(abs_upload_folder + os.sep):
         flash("Invalid study path.")
-        return redirect("/")
+        return redirect(url_for("upload_files"))
 
     # Create timestamped job working directory under JOBS_FOLDER
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -381,11 +388,13 @@ def submit_job():
             continue
         shutil.copy2(src, os.path.join(job_dir, safe_fname))
 
+        ncpu = os.cpu_count() or 1
         result = subprocess.run(
             [
                 "runuser", "-u", "slurm", "--",
                 "sbatch",
                 "--export=ALL",
+                f"--cpus-per-task={ncpu}",
                 f"--chdir={job_dir}",
                 f"--output={job_dir}/slurm-%j.out",
                 "--wrap", f"{TOPAS_BIN} {safe_fname}",
@@ -406,9 +415,86 @@ def submit_job():
         "job_submitted.html",
         job_ids=job_ids,
         job_dir=job_dir,
+        job_dir_name=os.path.basename(job_dir),
         study_name=study_name,
         errors=errors,
     )
+
+
+@app.route("/about")
+def about():
+    def pkg_version(name):
+        try:
+            return importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            return "unknown"
+
+    def topas_version():
+        try:
+            result = subprocess.run(
+                [TOPAS_BIN], capture_output=True, text=True, timeout=3
+            )
+            for line in (result.stdout + result.stderr).splitlines():
+                low = line.lower()
+                if "topas" in low and "version" in low:
+                    return line.strip()
+            return "unavailable"
+        except Exception:
+            return "unavailable"
+
+    versions = {
+        "pregdos": pkg_version("pregdos"),
+        "dicomexport": pkg_version("dicomexport"),
+        "topas": topas_version(),
+        "geant4": os.environ.get("GEANT4_VERSION", "unknown"),
+    }
+    return render_template("about.html", versions=versions)
+
+
+@app.route("/jobs")
+def list_jobs():
+    jobs_folder = app.config["JOBS_FOLDER"]
+    jobs = []
+    if os.path.isdir(jobs_folder):
+        for name in sorted(os.listdir(jobs_folder), reverse=True):
+            job_path = os.path.join(jobs_folder, name)
+            if os.path.isdir(job_path):
+                file_count = len(os.listdir(job_path))
+                jobs.append({"name": name, "file_count": file_count})
+    return render_template("jobs.html", jobs=jobs)
+
+
+@app.route("/jobs/<job_dir_name>")
+def job_files(job_dir_name):
+    jobs_folder = app.config["JOBS_FOLDER"]
+    safe_name = secure_filename(job_dir_name)
+    abs_job_path = os.path.abspath(os.path.join(jobs_folder, safe_name))
+    abs_jobs_folder = os.path.abspath(jobs_folder)
+    if not abs_job_path.startswith(abs_jobs_folder + os.sep):
+        flash("Invalid job directory.")
+        return redirect("/jobs")
+    if not os.path.isdir(abs_job_path):
+        flash("Job directory not found.")
+        return redirect("/jobs")
+    files = []
+    for fname in sorted(os.listdir(abs_job_path)):
+        fpath = os.path.join(abs_job_path, fname)
+        if os.path.isfile(fpath):
+            files.append({"name": fname, "size": os.path.getsize(fpath)})
+    return render_template("job_files.html", job_dir_name=safe_name, files=files)
+
+
+@app.route("/jobs/download/<job_dir_name>/<filename>")
+def download_job_file(job_dir_name, filename):
+    jobs_folder = app.config["JOBS_FOLDER"]
+    safe_name = secure_filename(job_dir_name)
+    safe_filename = secure_filename(filename)
+    abs_job_path = os.path.abspath(os.path.join(jobs_folder, safe_name))
+    abs_jobs_folder = os.path.abspath(jobs_folder)
+    if not abs_job_path.startswith(abs_jobs_folder + os.sep):
+        flash("Invalid job directory.")
+        return redirect("/jobs")
+    return send_from_directory(abs_job_path, safe_filename, as_attachment=True)
 
 
 def main():

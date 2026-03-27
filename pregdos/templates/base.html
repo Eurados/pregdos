@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}PregDos{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <nav class="tab-nav">
+    <div class="container tab-nav-inner">
+      <a class="tab-nav-brand" href="{{ url_for('index') }}">PregDos</a>
+      <div class="tab-nav-tabs">
+        <a href="{{ url_for('upload_files') }}"
+           class="tab-nav-tab{% if request.path.startswith('/upload') or request.path == '/' %} active{% endif %}">
+          New simulation
+        </a>
+        <a href="{{ url_for('list_jobs') }}"
+           class="tab-nav-tab{% if request.path.startswith('/jobs') %} active{% endif %}">
+          Jobs
+        </a>
+        <a href="{{ url_for('about') }}"
+           class="tab-nav-tab{% if request.path == '/about' %} active{% endif %}">
+          About
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <header class="site-header">
+    <div class="container">
+      <h1>{% block heading %}PregDos{% endblock %}</h1>
+      {% set page_subtitle %}{% block subtitle %}{% endblock %}{% endset %}
+      {% if page_subtitle.strip() %}<p class="subtitle">{{ page_subtitle }}</p>{% endif %}
+    </div>
+  </header>
+
+  <main class="container">
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <div class="alert">
+          <ul>
+          {% for message in messages %}
+            <li>{{ message }}</li>
+          {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer container">
+    <p>PregDos &mdash; research software</p>
+  </footer>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>
