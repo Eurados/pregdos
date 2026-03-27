@@ -1,0 +1,45 @@
+name: Build OpenTOPAS base image
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'OpenTOPAS version to build (e.g. 4.0.0 or 4.2.3)'
+        required: true
+        default: '4.0.0'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/opentopas/${{ inputs.version }}/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/pregdos-opentopas-v${{ inputs.version }}:latest

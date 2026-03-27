@@ -78,7 +78,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # SLURM runtime
     munge libmunge2 libssl3 libpam-runtime libhwloc15 libnuma1 \
     libcurl4 libyaml-0-2 libjson-c5 libhttp-parser2.9 \
-    # webserver (git needed for dicomexport pip install)
+    # webserver (git needed for dicomexport pip install from github)
     python3 python3-pip python3-venv git \
     # misc
     sudo curl ca-certificates nano \
