@@ -204,12 +204,14 @@ SCORER_DEFS = [
     },
 ]
 
-# TOPAS scorer object name for each type (appears as Sc/<name>/... in the file)
+# TOPAS scorer object name prefix for each type.
+# The full name is built dynamically as "{prefix}_{sanitized_structure_name}"
+# so multiple structures can each have their own scorer in the same file.
 _SCORER_NAME = {
-    ScorerType.NEUTRON_DOSE_EQUIV: "AmBDoseFetus",
-    ScorerType.GAMMA_DOSE: "DoseFetusGamma",
-    ScorerType.PROTON_PRIMARY: "DoseFetusProtonPrimary",
-    ScorerType.PROTON_SECONDARY: "DoseFetusProtonSecondary",
+    ScorerType.NEUTRON_DOSE_EQUIV: "AmBDose",
+    ScorerType.GAMMA_DOSE: "DoseGamma",
+    ScorerType.PROTON_PRIMARY: "DoseProtonPrimary",
+    ScorerType.PROTON_SECONDARY: "DoseProtonSecondary",
 }
 
 # Suffix appended to the TOPAS file stem to form the output CSV filename.
@@ -225,6 +227,18 @@ _OUTPUT_SUFFIX = {
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _sanitize_name(s: str) -> str:
+    """Convert an RT structure name to a TOPAS-safe identifier fragment.
+
+    TOPAS parameter names must be alphanumeric (plus underscore).  Structure
+    names from DICOM can contain spaces, hyphens, dots, etc.  This function
+    replaces every non-alphanumeric character with ``_`` and strips any
+    leading/trailing underscores.  Returns ``"unknown"`` for empty input.
+    """
+    result = re.sub(r"[^A-Za-z0-9]", "_", s).strip("_")
+    return result or "unknown"
+
 
 def _user_grid_geometry(grid: UserDefinedGrid) -> str:
     """Return TOPAS geometry lines that define the ScoringGrid TsBox component.
@@ -278,10 +292,17 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
     str
         Multi-line TOPAS parameter string ready to be appended to a ``.txt`` file.
     """
-    name = _SCORER_NAME[entry.scorer_type]
-    output_file = output_base + _OUTPUT_SUFFIX[entry.scorer_type]
-
     is_structure = entry.volume_type == VolumeType.STRUCTURE
+
+    # Build a unique TOPAS scorer name that encodes both the quantity and the
+    # target: AmBDose_Fetus, DoseGamma_GTV_T1, DoseProtonPrimary_Grid, etc.
+    base_name = _SCORER_NAME[entry.scorer_type]
+    if is_structure:
+        name = f"{base_name}_{_sanitize_name(entry.structure_name)}"
+        output_file = output_base + _OUTPUT_SUFFIX[entry.scorer_type] + "_" + _sanitize_name(entry.structure_name)
+    else:
+        name = f"{base_name}_Grid"
+        output_file = output_base + _OUTPUT_SUFFIX[entry.scorer_type]
 
     # For structure mode the scoring component is the entire "Patient" CT volume;
     # the OnlyIncludeIfInRTStructure filter then restricts hits to that ROI.
@@ -515,20 +536,22 @@ def append_scorers(topas_file_path: str, config: ScorerConfig) -> None:
 def scorer_config_from_form(form) -> ScorerConfig:
     """Build a :class:`ScorerConfig` from a Flask ``request.form`` mapping.
 
-    Expects the following form field names (all produced by
-    ``configure_scorers.html``):
+    Expects the following form field names (produced by ``setup.html``):
 
-    * ``keep_infield``              — checkbox; present = True
-    * ``{id}_enabled``              — checkbox per scorer (id from SCORER_DEFS)
-    * ``{id}_volume_type``          — ``"structure"`` or ``"user_grid"``
-    * ``{id}_structure``            — RT structure name for structure mode
-    * ``grid_size_x/y/z``           — box total dimensions in mm
-    * ``grid_nx/ny/nz``             — voxel counts per axis
+    * ``keep_infield``      — checkbox; present = True
+    * ``score_{id}``        — multi-value checkbox (one value per structure name)
+                              where ``id`` is a key from SCORER_DEFS
+
+    For example, checking Neutron for structures "Fetus" and "Abdomen" produces
+    two values for ``score_neutron``: ``["Fetus", "Abdomen"]``.  Each produces a
+    separate :class:`ScorerEntry` with ``VolumeType.STRUCTURE``.
 
     Parameters
     ----------
     form:
         A dict-like object (``flask.request.form`` or a plain dict in tests).
+        Must support ``.get(key)`` and ``.getlist(key)`` — same interface as
+        Flask's ImmutableMultiDict.
 
     Returns
     -------
@@ -540,36 +563,15 @@ def scorer_config_from_form(form) -> ScorerConfig:
     scorers: List[ScorerEntry] = []
     for scorer_def in SCORER_DEFS:
         sid = scorer_def["id"]
-        # Only include scorers whose checkbox was ticked
-        if not form.get(f"{sid}_enabled"):
-            continue
-        volume_type_str = form.get(f"{sid}_volume_type", "structure")
-        volume_type = (
-            VolumeType.USER_GRID if volume_type_str == "user_grid" else VolumeType.STRUCTURE
-        )
-        structure_name = form.get(f"{sid}_structure", "")
-        scorers.append(
-            ScorerEntry(
-                scorer_type=scorer_def["scorer_type"],
-                volume_type=volume_type,
-                structure_name=structure_name,
-            )
-        )
+        # getlist returns one value per checked structure for this scorer type
+        for structure_name in form.getlist(f"score_{sid}"):
+            if structure_name:
+                scorers.append(
+                    ScorerEntry(
+                        scorer_type=scorer_def["scorer_type"],
+                        volume_type=VolumeType.STRUCTURE,
+                        structure_name=structure_name,
+                    )
+                )
 
-    # Build the grid definition only if at least one scorer needs it
-    grid: Optional[UserDefinedGrid] = None
-    if any(e.volume_type == VolumeType.USER_GRID for e in scorers):
-        try:
-            grid = UserDefinedGrid(
-                size_x_mm=float(form.get("grid_size_x", 100)),
-                size_y_mm=float(form.get("grid_size_y", 100)),
-                size_z_mm=float(form.get("grid_size_z", 100)),
-                nx=int(form.get("grid_nx", 10)),
-                ny=int(form.get("grid_ny", 10)),
-                nz=int(form.get("grid_nz", 10)),
-            )
-        except (TypeError, ValueError):
-            # Fall back to a sensible default rather than crashing on bad input
-            grid = UserDefinedGrid(100.0, 100.0, 100.0, 10, 10, 10)
-
-    return ScorerConfig(scorers=scorers, keep_infield=keep_infield, grid=grid)
+    return ScorerConfig(scorers=scorers, keep_infield=keep_infield)

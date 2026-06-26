@@ -259,6 +259,53 @@ select {
   min-height: unset;
 }
 
+/* Scorer setup table */
+
+.scorer-table-wrap {
+  overflow-x: auto;
+  margin-top: 12px;
+}
+
+.scorer-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.85rem;
+}
+
+.scorer-table th,
+.scorer-table td {
+  border: 1px solid var(--border, #d1dae6);
+  padding: 6px 10px;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.scorer-table th {
+  background: var(--panel);
+  font-weight: 600;
+  white-space: normal;
+  max-width: 110px;
+}
+
+.scorer-table .col-structure {
+  text-align: left;
+  min-width: 140px;
+  max-width: 220px;
+  word-break: break-word;
+}
+
+.scorer-table .col-include {
+  min-width: 60px;
+}
+
+.scorer-table .col-scorer {
+  min-width: 80px;
+}
+
+.scorer-table tbody tr:nth-child(even) {
+  background: var(--bg);
+}
+
 /* Buttons */
 
 button,

@@ -5,24 +5,56 @@
 
 {% block content %}
 <section class="card">
-  <table class="about-table">
-    <thead><tr><th>Component</th><th>Version</th></tr></thead>
-    <tbody>
-      <tr><td>PregDos</td><td>{{ versions.pregdos }}</td></tr>
-      <tr><td>dicomexport</td><td>{{ versions.dicomexport }}</td></tr>
-      <tr><td>OpenTOPAS</td><td>{{ versions.topas }}</td></tr>
-      <tr><td>Geant4</td><td>{{ versions.geant4 }}</td></tr>
-    </tbody>
-  </table>
-  <p class="hint" style="margin-top: 16px;">Under development &mdash; not for clinical use.</p>
+    <table class="about-table">
+        <thead>
+            <tr>
+                <th>Component</th>
+                <th>Version</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>PregDos</td>
+                <td>{{ versions.pregdos }}</td>
+            </tr>
+            <tr>
+                <td>dicomexport</td>
+                <td>{{ versions.dicomexport }}</td>
+            </tr>
+            <tr>
+                <td>OpenTOPAS</td>
+                <td>{{ versions.topas }}</td>
+            </tr>
+            <tr>
+                <td>Geant4</td>
+                <td>{{ versions.geant4 }}</td>
+            </tr>
+        </tbody>
+    </table>
+    <p class="hint" style="margin-top: 16px;">Under development &mdash; not for clinical use.</p>
 </section>
 
 <section class="card" style="margin-top: 16px;">
-  <p style="margin: 0;">
-    Source code:
-    <a href="https://github.com/Eurados/pregdos" target="_blank" rel="noopener noreferrer">
-      github.com/Eurados/pregdos
-    </a>
-  </p>
+    <p style="margin: 0;">
+        Source code:
+        <a href="https://github.com/Eurados/pregdos" target="_blank" rel="noopener noreferrer">
+            github.com/Eurados/pregdos
+        </a>
+    </p>
+    <p style="margin: 8px 0 0;">
+        PregDos webpage:
+        <a href="https://github.com/Eurados/pregdos" target="_blank" rel="noopener noreferrer">
+            github.com/Eurados/pregdos
+        </a>
+    </p>
+    <p class="hint" style="margin: 12px 0 0;">
+        This work is part of the
+        <a href="https://pianoforte-partnership.eu/sonora/" target="_blank" rel="noopener noreferrer">SONORA
+            project</a>,
+        which has received funding from the European Union's EURATOM research and
+        innovation programme under grant agreement No 101061037
+        (<a href="https://pianoforte-partnership.eu/" target="_blank" rel="noopener noreferrer">PIANOFORTE</a>
+        - European Partnership for Radiation Protection Research).
+    </p>
 </section>
 {% endblock %}

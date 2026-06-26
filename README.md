@@ -87,7 +87,9 @@ See [TODO.md](TODO.md) for the full list of open tasks.
 
 ## Acknowledgements
 
-This work is part of the SONORA project, which has received funding from the
-European Union's EURATOM research and innovation programme under grant
-agreement No 101061037
-(PIANOFORTE – European Partnership for Radiation Protection Research).
+This work is part of the
+[SONORA project](https://pianoforte-partnership.eu/sonora/), which has received
+funding from the European Union's EURATOM research and innovation programme
+under grant agreement No 101061037
+([PIANOFORTE](https://pianoforte-partnership.eu/) - European Partnership for
+Radiation Protection Research).

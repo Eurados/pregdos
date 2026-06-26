@@ -25,7 +25,7 @@ def _make_entry(scorer_type, volume_type=VolumeType.STRUCTURE, structure="fetus"
 def test_neutron_scorer_block_structure():
     entry = _make_entry(ScorerType.NEUTRON_DOSE_EQUIV)
     block = scorer_block(entry, "topas_field01")
-    assert 's:Sc/AmBDoseFetus/Quantity' in block
+    assert 's:Sc/AmBDose_fetus/Quantity' in block
     assert '"AmbientDoseEquivalent"' in block
     assert 'OnlyIncludeParticlesNamed' in block
     assert '"neutron"' in block
@@ -135,7 +135,7 @@ def test_append_scorers_adds_neutron_scorer(tmp_path):
     )
     append_scorers(str(p), config)
     result = p.read_text()
-    assert "AmBDoseFetus" in result
+    assert "AmBDose_fetus" in result
     assert "DoseToWater" in result  # in-field scorer preserved
     assert _TIME_BODY in result     # time features preserved
 
@@ -149,7 +149,7 @@ def test_append_scorers_removes_infield_when_requested(tmp_path):
     append_scorers(str(p), config)
     result = p.read_text()
     assert "DoseToWater" not in result
-    assert "DoseFetusGamma" in result
+    assert "DoseGamma_fetus" in result
     assert _TIME_BODY in result
 
 
@@ -165,9 +165,9 @@ def test_append_scorers_multiple_scorers(tmp_path):
     )
     append_scorers(str(p), config)
     result = p.read_text()
-    assert "DoseFetusGamma" in result
-    assert "AmBDoseFetus" in result
-    assert "DoseFetusProtonPrimary" in result
+    assert "DoseGamma_fetus" in result
+    assert "AmBDose_fetus" in result
+    assert "DoseProtonPrimary_fetus" in result
 
 
 def test_append_scorers_includes_grid_geometry(tmp_path):
@@ -193,7 +193,7 @@ def test_append_scorers_no_existing_scorer_section(tmp_path):
     )
     append_scorers(str(p), config)
     result = p.read_text()
-    assert "AmBDoseFetus" in result
+    assert "AmBDose_fetus" in result
 
 
 # ---------------------------------------------------------------------------
@@ -202,11 +202,18 @@ def test_append_scorers_no_existing_scorer_section(tmp_path):
 
 class FakeForm(dict):
     def get(self, key, default=None):
-        return self[key] if key in self else default
+        v = self[key] if key in self else default
+        if isinstance(v, list):
+            return v[0] if v else default
+        return v
 
     def getlist(self, key):
-        val = self.get(key)
-        return [val] if val else []
+        v = self[key] if key in self else None
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        return [v]
 
 
 def test_scorer_config_from_form_no_scorers_keep_infield():
@@ -219,9 +226,7 @@ def test_scorer_config_from_form_no_scorers_keep_infield():
 def test_scorer_config_from_form_selects_neutron_scorer():
     form = FakeForm({
         "keep_infield": "1",
-        "neutron_enabled": "1",
-        "neutron_volume_type": "structure",
-        "neutron_structure": "fetus",
+        "score_neutron": "fetus",
     })
     config = scorer_config_from_form(form)
     assert len(config.scorers) == 1
@@ -230,29 +235,19 @@ def test_scorer_config_from_form_selects_neutron_scorer():
     assert config.scorers[0].structure_name == "fetus"
 
 
-def test_scorer_config_from_form_user_grid_creates_grid():
+def test_scorer_config_from_form_multiple_structures():
     form = FakeForm({
-        "gamma_enabled": "1",
-        "gamma_volume_type": "user_grid",
-        "gamma_structure": "",
-        "grid_size_x": "200",
-        "grid_size_y": "150",
-        "grid_size_z": "120",
-        "grid_nx": "20",
-        "grid_ny": "15",
-        "grid_nz": "12",
+        "score_gamma": ["fetus", "uterus"],
     })
     config = scorer_config_from_form(form)
-    assert config.grid is not None
-    assert config.grid.size_x_mm == 200.0
-    assert config.grid.nx == 20
+    assert len(config.scorers) == 2
+    assert all(e.scorer_type == ScorerType.GAMMA_DOSE for e in config.scorers)
+    assert {e.structure_name for e in config.scorers} == {"fetus", "uterus"}
 
 
-def test_scorer_config_from_form_no_grid_when_structure_only():
+def test_scorer_config_from_form_no_grid():
     form = FakeForm({
-        "gamma_enabled": "1",
-        "gamma_volume_type": "structure",
-        "gamma_structure": "fetus",
+        "score_gamma": "fetus",
     })
     config = scorer_config_from_form(form)
     assert config.grid is None

@@ -234,13 +234,14 @@ def upload_files():
         if not structures:
             flash("No RS-file or structures found!")
             return redirect(request.url)
-        # Render structure selection template
+        # Render the combined setup page (structure inclusion + scorer selection)
         return render_template(
-            "select_structures.html",
+            "setup.html",
             structures=structures,
             study_dir=study_dir,
             beam_model_path=beam_model_path,
             spr_table_path=spr_table_path,
+            scorer_defs=SCORER_DEFS,
         )
     return render_template("upload.html")
 
@@ -294,39 +295,18 @@ def run_conversion(params: ConversionParameters, selected_structures: List[str])
     )
 
 
-@app.route("/configure_scorers", methods=["POST"])
-def configure_scorers():
-    """Intermediate step between structure selection and conversion.
-
-    Receives the study/beam-model/SPR paths and the chosen structures from
-    the structure-selection form, then renders the scorer configuration page.
-    The scorer page in turn POSTs everything to /convert.
-
-    We pass ``selected_structures`` back so the template can populate the
-    per-scorer target-structure dropdowns with only the ROIs that were
-    selected (and therefore will be present in the filtered RTSTRUCT).
-    """
-    study_dir = request.form["study_dir"]
-    beam_model_path = request.form["beam_model_path"]
-    spr_table_path = request.form["spr_table_path"]
-    selected_structures = request.form.getlist("structures")
-    return render_template(
-        "configure_scorers.html",
-        study_dir=study_dir,
-        beam_model_path=beam_model_path,
-        spr_table_path=spr_table_path,
-        selected_structures=selected_structures,
-        # SCORER_DEFS drives the list of scorer checkboxes in the template
-        scorer_defs=SCORER_DEFS,
-    )
-
-
 @app.route("/convert", methods=["POST"])
 def convert():
     study_dir = request.form["study_dir"]
     beam_model_path = request.form["beam_model_path"]
     spr_table_path = request.form["spr_table_path"]
-    selected_structures = request.form.getlist("structures")
+    # Any structure with at least one scorer checked is included in the RTSTRUCT filter
+    selected_structures = list({
+        s
+        for sc_def in SCORER_DEFS
+        for s in request.form.getlist(f'score_{sc_def["id"]}')
+        if s
+    })
     params = ConversionParameters(
         study_dir=study_dir,
         beam_model_path=beam_model_path,
@@ -341,7 +321,7 @@ def convert():
         flash(str(err))
         return redirect(url_for("upload_files"))
 
-    # Parse the scorer choices the user made on the configure_scorers page.
+    # Parse the scorer choices the user made on the setup page.
     # append_scorers() modifies each TOPAS file in-place: it injects the
     # requested out-of-field scorer blocks and optionally removes the
     # DoseToWater scorer that dicomexport always writes.
