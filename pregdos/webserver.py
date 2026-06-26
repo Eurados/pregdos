@@ -62,7 +62,7 @@ def _builtin_beam_models() -> list[dict]:
     for entry in bm_dir.iterdir():
         if entry.name.endswith(".csv"):
             models.append({"name": entry.name, "label": entry.name})
-    models.sort(key=lambda m: m["name"])
+    models.sort(key=lambda m: m["name"], reverse=True)
     return models
 
 
