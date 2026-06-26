@@ -35,7 +35,7 @@ where = ["."]
 include = ["pregdos*"]
 
 [tool.setuptools.package-data]
-pregdos = ["templates/*.html", "static/*"]
+pregdos = ["templates/*.html", "static/*", "data/*.csv"]
 
 [tool.pytest.ini_options]
 log_cli = true
