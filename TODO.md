@@ -7,7 +7,11 @@
 - [x] Add fetus dose scorer configuration (neutron H*(10), gamma, proton primary/secondary)
 - [x] Merge structure selection and scorer configuration into a single setup page
 - [x] Bundled SPR tables and beam models selectable from dropdown (upload still available)
-- [ ] Add results/file browser page
+- [ ] **Results viewer** — expose scorer CSV outputs from job folders in the web UI:
+  - `/jobs/<name>` already lists files; extend it to parse and display scorer CSVs as a table
+  - Show one row per scorer (neutron H*(10), gamma, proton primary/secondary) with mean dose ± SD
+  - Add a "Delete job" button on the job page (no auth required — trusted environment)
+  - Consider a simple bar chart per scorer using a lightweight JS library (Chart.js or similar)
 - [ ] Turn off `debug=True` in `webserver.py` for production/container use
 - [ ] Remove unused `StructureSelection` dataclass from `models.py` or wire it in
 
