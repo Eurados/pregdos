@@ -187,6 +187,20 @@ select {
   width: 100%;
 }
 
+select {
+  cursor: pointer;
+  padding-right: 36px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%2352627a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 16px 16px;
+}
+
+.select-input {
+  width: auto;
+  max-width: 420px;
+}
+
 .multiselect {
   min-height: 320px;
 }
@@ -257,6 +271,36 @@ select {
   width: 100%;
   padding: 8px 10px;
   min-height: unset;
+}
+
+/* ZIP / Folder either-or upload split */
+
+.upload-split {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.upload-split-col {
+  display: grid;
+  gap: 6px;
+}
+
+.upload-split-label {
+  font-weight: 500;
+}
+
+.upload-split-or {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-top: 30px;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 /* Scorer setup table */
