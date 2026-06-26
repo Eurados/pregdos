@@ -25,6 +25,7 @@ import copy
 from typing import List
 
 from .models import ConversionParameters, ConversionResult
+from .postprocess import post_process_job
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
 
 
@@ -510,6 +511,8 @@ def submit_job():
             job_ids.append((safe_fname, job_id))
         else:
             errors.append(f"sbatch failed for {safe_fname}: {result.stderr.strip()}")
+
+    post_process_job(job_dir)
 
     for fname, jid in job_ids:
         flash(f"Submitted {fname} → SLURM job {jid}")
