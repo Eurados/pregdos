@@ -1,7 +1,5 @@
 import textwrap
 
-import pytest
-
 from pregdos.topas_scorer import (
     ScorerConfig,
     ScorerEntry,
