@@ -298,6 +298,33 @@ def test_convert_appends_selected_scorers_and_survives_rerun(client, tmp_path, m
         assert "DoseGamma_CTV" in text, run
 
 
+def test_convert_scorer_failure_is_reported_and_not_successful(client, tmp_path, mocker):
+    """If scorer post-processing fails, the user gets a visible error naming the
+    affected file and the conversion is not presented as successful (issue #36)."""
+    study_dir = tmp_path / "study"
+    study_dir.mkdir()
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    mocker.patch("pregdos.webserver.append_scorers", side_effect=RuntimeError("boom"))
+
+    form = {
+        "study_dir": str(study_dir),
+        "beam_model_path": str(tmp_path / "beam.csv"),
+        "spr_table_path": str(tmp_path / "spr.txt"),
+        "nstat": "1000000",
+        "output_basename": "topas",
+        "keep_infield": "1",
+        "score_neutron": "CTV",
+    }
+    resp = client.post("/convert", data=form, follow_redirects=True)
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    # error names the affected file …
+    assert "Scorer post-processing failed" in body
+    assert "topas_field01.txt" in body
+    # … and the conversion is not treated as successful
+    assert "Submit Jobs" not in body
+
+
 # --- Models smoke tests ---
 
 def test_conversion_parameters_defaults():

@@ -172,10 +172,10 @@ def filter_rtstruct_keep_rois(orig_study_dir, selected_rois):
     # make a temp dir sibling to original
     parent = Path(orig_study_dir).parent
     tmpdir = tempfile.mkdtemp(prefix=Path(orig_study_dir).name + "_filtered_", dir=str(parent))
-    # Copy only the DICOM inputs into the filtered dir, excluding generated
-    # TOPAS files (*.txt).  On a re-run the original study dir may already
-    # contain topas_field*.txt from a previous conversion; copying those into
-    # the filtered dir would let them shadow the freshly generated output during
+    # Copy the study into the filtered dir, but exclude generated TOPAS files
+    # (*.txt).  On a re-run the original study dir may already contain
+    # topas_field*.txt from a previous conversion; copying those into the
+    # filtered dir would let them shadow the freshly generated output during
     # file discovery in run_conversion(), so the post-processed scorers would be
     # written to a throwaway copy while submit/download keep the stale file (#36).
     shutil.copytree(
@@ -455,12 +455,19 @@ def convert():
     # DoseToWater scorer that dicomexport always writes.
     scorer_config = scorer_config_from_form(request.form)
     if scorer_config.scorers or not scorer_config.keep_infield:
+        failures = []
         for fpath in result.out_file_paths:
             try:
                 append_scorers(fpath, scorer_config)
             except Exception as err:
-                # Non-fatal: the original file is still usable; alert the user
-                flash(f"Warning: scorer post-processing failed for {os.path.basename(fpath)}: {err}")
+                failures.append((os.path.basename(fpath), err))
+        if failures:
+            # The user asked for scorers that could not be written.  Do not
+            # present the conversion as successful: surface a visible error
+            # naming each affected file and send the user back to try again (#36).
+            for name, err in failures:
+                flash(f"Scorer post-processing failed for {name}: {err}")
+            return redirect(url_for("upload_files"))
 
     return render_template(
         "convert_success.html",
