@@ -13,7 +13,7 @@ Based on:
 > Schneider W, Bortfeld T, Schlegel W. (2000). *Correlation between CT numbers and tissue
 > parameters needed for Monte Carlo simulations of clinical dose distributions.*
 > Physics in Medicine and Biology, 45(2):459–478.
-> DOI: [10.1088/0031-9155/45/2/314](https://doi.org/10.1088/0031-9155/45/2/314))
+> DOI: [10.1088/0031-9155/45/2/314](https://doi.org/10.1088/0031-9155/45/2/314)
 
 ### SPRtoMaterial__Brain.txt
 

@@ -95,7 +95,7 @@ def ensure_upload_folder() -> str | None:
         return f"Cannot create upload folder {path!r}: {e}"
     if not os.path.isdir(path):
         return f"Upload folder path {path!r} exists but is not a directory."
-    if not os.access(path, os.W_OK):
+    if not os.access(path, os.W_OK | os.X_OK):
         return f"Upload folder {path!r} is not writable."
     return None
 
@@ -269,8 +269,8 @@ def upload_files():
     if folder_err:
         flash(folder_err)
         return render_template("upload.html",
-                               beam_models=_builtin_beam_models(),
-                               spr_tables=_builtin_spr_tables()), 500
+                               builtin_beam_models=_builtin_beam_models(),
+                               builtin_spr_tables=_builtin_spr_tables()), 500
 
     if request.method == "POST":
         study_zip = request.files.get("study_zip")
@@ -412,19 +412,22 @@ def convert():
         if s
     })
     nstat_val = request.form.get("nstat", "1000000")
-    if nstat_val == "custom":
-        try:
+    try:
+        if nstat_val == "custom":
             nstat = int(request.form.get("nstat_custom", "").strip())
-            if nstat < 1:
-                raise ValueError
-        except ValueError:
-            flash("Invalid number of primaries — must be a positive integer.")
-            return redirect(url_for("upload_files"))
-    else:
-        nstat = int(nstat_val)
+        else:
+            nstat = int(nstat_val)
+        if nstat < 1:
+            raise ValueError
+    except ValueError:
+        flash("Invalid number of primaries — must be a positive integer.")
+        return redirect(url_for("upload_files"))
 
-    raw_basename = request.form.get("output_basename", "topas").strip()
-    output_basename = secure_filename(raw_basename) or "topas"
+    raw_basename = (request.form.get("output_basename") or "topas").strip()
+    output_basename = secure_filename(raw_basename)
+    if not output_basename or output_basename != raw_basename or "." in output_basename:
+        flash("Invalid output basename — use letters, digits, underscores, and hyphens only.")
+        return redirect(url_for("upload_files"))
     params = ConversionParameters(
         study_dir=study_dir,
         beam_model_path=beam_model_path,
