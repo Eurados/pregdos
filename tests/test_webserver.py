@@ -176,6 +176,59 @@ def test_submit_sbatch_failure_flashes_error(client, tmp_path, mocker):
     assert b"slurmctld not running" in response.data
 
 
+# --- POST /convert input validation ---
+
+def _convert_form(tmp_path, overrides=None):
+    """Minimal valid /convert form data pointing at a real directory."""
+    study = tmp_path / "study"
+    study.mkdir()
+    data = {
+        "study_dir":        str(study),
+        "beam_model_path":  str(tmp_path / "beam.csv"),
+        "spr_table_path":   str(tmp_path / "spr.txt"),
+        "nstat":            "1000000",
+        "output_basename":  "topas",
+    }
+    if overrides:
+        data.update(overrides)
+    return data
+
+
+def test_convert_invalid_preset_nstat_flashes_error(client, tmp_path):
+    data = _convert_form(tmp_path, {"nstat": "abc"})
+    resp = client.post("/convert", data=data, follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Invalid number of primaries" in resp.data
+
+
+def test_convert_invalid_custom_nstat_flashes_error(client, tmp_path):
+    data = _convert_form(tmp_path, {"nstat": "custom", "nstat_custom": "notanumber"})
+    resp = client.post("/convert", data=data, follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Invalid number of primaries" in resp.data
+
+
+def test_convert_negative_custom_nstat_flashes_error(client, tmp_path):
+    data = _convert_form(tmp_path, {"nstat": "custom", "nstat_custom": "-5"})
+    resp = client.post("/convert", data=data, follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Invalid number of primaries" in resp.data
+
+
+def test_convert_invalid_basename_flashes_error(client, tmp_path):
+    data = _convert_form(tmp_path, {"output_basename": "my.plan"})
+    resp = client.post("/convert", data=data, follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Invalid output basename" in resp.data
+
+
+def test_convert_basename_with_spaces_flashes_error(client, tmp_path):
+    data = _convert_form(tmp_path, {"output_basename": "my plan"})
+    resp = client.post("/convert", data=data, follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Invalid output basename" in resp.data
+
+
 # --- Models smoke tests ---
 
 def test_conversion_parameters_defaults():
