@@ -86,7 +86,18 @@ app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["JOBS_FOLDER"] = JOBS_FOLDER
 app.secret_key = os.environ.get("PREGDOS_SECRET_KEY", "pregdos_secret_key")
 
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+def ensure_upload_folder() -> str | None:
+    """Return an error string if the configured upload folder can't be used, else None."""
+    path = app.config["UPLOAD_FOLDER"]
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as e:
+        return f"Cannot create upload folder {path!r}: {e}"
+    if not os.path.isdir(path):
+        return f"Upload folder path {path!r} exists but is not a directory."
+    if not os.access(path, os.W_OK):
+        return f"Upload folder {path!r} is not writable."
+    return None
 
 
 @app.context_processor
@@ -254,6 +265,13 @@ def index():
 
 @app.route("/upload", methods=["GET", "POST"])
 def upload_files():
+    folder_err = ensure_upload_folder()
+    if folder_err:
+        flash(folder_err)
+        return render_template("upload.html",
+                               beam_models=_builtin_beam_models(),
+                               spr_tables=_builtin_spr_tables()), 500
+
     if request.method == "POST":
         study_zip = request.files.get("study_zip")
         study_dir_files = [f for f in (request.files.getlist("study_dir") or []) if f and f.filename]
