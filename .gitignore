@@ -2,6 +2,7 @@ __version__.py
 *.zip
 # avoid committing results from runs
 *_field[0-9]*
+_temp/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

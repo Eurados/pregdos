@@ -3,32 +3,38 @@
 ## Webserver
 
 - [x] Wire job submission to `sbatch` (Submit Jobs button → `/submit` route)
-- [ ] Wire `StructureSelection` dataclass into the webserver routes (currently unused)
 - [x] Add job status page (live `squeue` view on job_submitted page, auto-refresh every 5s)
-- [ ] Add results/file browser page
+- [x] Add fetus dose scorer configuration (neutron H*(10), gamma, proton primary/secondary)
+- [x] Merge structure selection and scorer configuration into a single setup page
+- [x] Bundled SPR tables and beam models selectable from dropdown (upload still available)
+- [ ] **Results viewer** — expose scorer CSV outputs from job folders in the web UI:
+  - `/jobs/<name>` already lists files; extend it to parse and display scorer CSVs as a table
+  - Show one row per scorer (neutron H*(10), gamma, proton primary/secondary) with mean dose ± SD
+  - Add a "Delete job" button on the job page (no auth required — trusted environment)
+  - Consider a simple bar chart per scorer using a lightweight JS library (Chart.js or similar)
 - [ ] Turn off `debug=True` in `webserver.py` for production/container use
+- [ ] Remove unused `StructureSelection` dataclass from `models.py` or wire it in
 
 ## Docker — combined image (`docker/pregdos/`)
 
 - [ ] Switch Qt5 → Qt6 runtime libs when building with `OPENTOPAS_IMAGE=pregdos-opentopas-v4.2.3`
 - [ ] Remove `openssh-server` from production image (currently included for development convenience only)
 - [ ] Trim runtime apt dependencies — current list is conservative
-- [ ] Add `topas3.9` install to the topas3.9 Dockerfile (`docker/topas3.9/Dockerfile`)
+- [ ] Update Docker image to include new `pregdos/data/spr_tables/` and `pregdos/data/beam_models/` package data
 
 ## Simulation workflow
 
-- [ ] Add post-processing step triggered on SLURM job completion
 - [x] Define a job working directory convention (timestamped `job_<YYYYMMDD_HHMMSS>/` under study dir)
-- [ ] Validate TOPAS input file generation against a known reference plan
+- [ ] Add post-processing step triggered on SLURM job completion
+- [ ] Validate generated TOPAS scorer blocks against Marijke's reference scripts in `_temp/`
 
 ## Infrastructure
 
+- [x] Document OpenTOPAS/Geant4 version compatibility matrix (see `docker/opentopas/README.md`)
 - [ ] Add GitHub Actions workflow to build and test the combined `docker/pregdos/` image
 - [ ] Add GitHub Actions workflow to build and smoke-test the `docker/opentopas/` images
-- [x] Document OpenTOPAS/Geant4 version compatibility matrix (see `docker/opentopas/README.md`)
 
 ## Known issues
 
 - [ ] Qt OpenGL visualization fails in Docker with X11 forwarding ("failed to create drawable") — missing runtime Mesa/GLX packages. Workaround: use parameter files without visualization.
-- [ ] `StructureSelection` dataclass is defined but not yet wired into the webserver
 - [ ] The pregdos webserver runs as `debug=True` — not suitable for any shared deployment

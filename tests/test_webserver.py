@@ -45,10 +45,10 @@ def test_upload_page_loads(client):
 
 # --- POST /upload validation ---
 
-def test_upload_missing_beam_model_and_spr(client):
+def test_upload_missing_beam_model(client):
     response = client.post("/upload", data={}, follow_redirects=True)
     assert response.status_code == 200
-    assert b"Beam model and SPR table required" in response.data
+    assert b"Beam model required" in response.data
 
 
 def test_upload_missing_study(client):
@@ -190,8 +190,13 @@ def test_conversion_parameters_defaults():
 
 
 def test_conversion_result_fields():
-    r = ConversionResult(out_files=["topas_field1.txt"], study_name="mystudy")
+    r = ConversionResult(
+        out_files=["topas_field1.txt"],
+        out_file_paths=["/tmp/topas_field1.txt"],
+        study_name="mystudy",
+    )
     assert r.out_files == ["topas_field1.txt"]
+    assert r.out_file_paths == ["/tmp/topas_field1.txt"]
     assert r.selected_structures == []
     assert r.stdout is None
 

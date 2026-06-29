@@ -19,7 +19,7 @@ dependencies = [
     "requests",
     "tqdm",
     "setuptools-scm",
-    "dicomexport @ git+https://github.com/nbassler/dicomexport@v1.2.3",
+    "dicomexport @ git+https://github.com/nbassler/dicomexport@v1.4.0",
 ]
 dynamic = ["version"]
 
@@ -35,7 +35,7 @@ where = ["."]
 include = ["pregdos*"]
 
 [tool.setuptools.package-data]
-pregdos = ["templates/*.html", "static/*"]
+pregdos = ["templates/*.html", "static/*", "data/*.csv", "data/spr_tables/*", "data/beam_models/*"]
 
 [tool.pytest.ini_options]
 log_cli = true

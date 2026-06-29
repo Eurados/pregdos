@@ -1,5 +1,9 @@
 # PregDos
 
+[![CI](https://github.com/Eurados/pregdos/actions/workflows/ci.yml/badge.svg)](https://github.com/Eurados/pregdos/actions/workflows/ci.yml)
+[![Docker](https://github.com/Eurados/pregdos/actions/workflows/docker-pregdos.yml/badge.svg)](https://github.com/Eurados/pregdos/actions/workflows/docker-pregdos.yml)
+[![Dependabot](https://img.shields.io/badge/dependabot-enabled-025E8C?logo=dependabot)](https://github.com/Eurados/pregdos/security/dependabot)
+
 A tool for calculating dose to a fetus in proton therapy.
 Converts DICOM RT plans to [OpenTOPAS](https://github.com/OpenTOPAS/OpenTOPAS)
 Monte Carlo input files and submits them as SLURM jobs.
@@ -87,7 +91,9 @@ See [TODO.md](TODO.md) for the full list of open tasks.
 
 ## Acknowledgements
 
-This work is part of the SONORA project, which has received funding from the
-European Union's EURATOM research and innovation programme under grant
-agreement No 101061037
-(PIANOFORTE – European Partnership for Radiation Protection Research).
+This work is part of the
+[SONORA project](https://pianoforte-partnership.eu/sonora/), which has received
+funding from the European Union's EURATOM research and innovation programme
+under grant agreement No 101061037
+([PIANOFORTE](https://pianoforte-partnership.eu/) - European Partnership for
+Radiation Protection Research).

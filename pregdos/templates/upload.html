@@ -7,27 +7,48 @@
 <section class="card">
   <form method="post" enctype="multipart/form-data" class="form-grid">
     <div class="form-row">
-      <label for="study_zip">DICOM Study (ZIP)</label>
-      <input id="study_zip" type="file" name="study_zip" accept=".zip" />
-      <small class="hint">Option A: Upload a ZIP containing CT, RS, and plan DICOM files. Use either ZIP or Folder (not both).</small>
+      <label>DICOM Study</label>
+      <div class="upload-split">
+        <div class="upload-split-col">
+          <label for="study_zip" class="upload-split-label">ZIP file</label>
+          <input id="study_zip" type="file" name="study_zip" accept=".zip" />
+          <small class="hint">CT, RS, and plan files in a single archive.</small>
+        </div>
+        <div class="upload-split-or">or</div>
+        <div class="upload-split-col">
+          <label for="study_dir" class="upload-split-label">Folder</label>
+          <input id="study_dir" type="file" name="study_dir" webkitdirectory mozdirectory directory multiple />
+          <small class="hint">Select the study folder directly.</small>
+        </div>
+      </div>
     </div>
 
     <div class="form-row">
-      <label for="study_dir">DICOM Study (Folder)</label>
-      <input id="study_dir" type="file" name="study_dir" webkitdirectory mozdirectory directory multiple />
-      <small class="hint">Option B: Select the study folder; all files inside will be uploaded. Use either ZIP or Folder (not both).</small>
+      <label for="beam_model_source">Beam Model (CSV)</label>
+      <select id="beam_model_source" name="beam_model_source" class="select-input" onchange="toggleUpload('beam_model', this.value)">
+        {% for m in builtin_beam_models %}
+          <option value="{{ m.name }}">{{ m.label }}</option>
+        {% endfor %}
+        <option value="upload">Upload from computer…</option>
+      </select>
+      <div id="beam_model_upload_row" style="display:none; margin-top:6px">
+        <input id="beam_model" type="file" name="beam_model" accept=".csv" />
+      </div>
+      <small class="hint">Choose a bundled beam model or upload your own.</small>
     </div>
 
     <div class="form-row">
-      <label for="beam_model">Beam Model (CSV)</label>
-      <input id="beam_model" type="file" name="beam_model" accept=".csv" required />
-      <small class="hint">Example: DCPT_beam_model__v2.csv</small>
-    </div>
-
-    <div class="form-row">
-      <label for="spr_table">SPR-to-Material Table</label>
-      <input id="spr_table" type="file" name="spr_table" accept=".txt,.csv" required />
-      <small class="hint">Example: SPRtoMaterial__Brain.txt</small>
+      <label for="spr_table_source">SPR-to-Material Table</label>
+      <select id="spr_table_source" name="spr_table_source" class="select-input" onchange="toggleUpload('spr_table', this.value)">
+        {% for t in builtin_spr_tables %}
+          <option value="{{ t.name }}">{{ t.label }}</option>
+        {% endfor %}
+        <option value="upload">Upload from computer…</option>
+      </select>
+      <div id="spr_table_upload_row" style="display:none; margin-top:6px">
+        <input id="spr_table" type="file" name="spr_table" accept=".txt,.csv" />
+      </div>
+      <small class="hint">Choose a bundled table or upload your own.</small>
     </div>
 
     <div class="actions">
@@ -35,4 +56,12 @@
     </div>
   </form>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleUpload(field, value) {
+  document.getElementById(field + '_upload_row').style.display = value === 'upload' ? 'block' : 'none';
+}
+</script>
 {% endblock %}

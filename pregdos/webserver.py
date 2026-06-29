@@ -8,6 +8,7 @@ from flask import (
     url_for,
 )
 import importlib.metadata
+import importlib.resources
 import pydicom
 import glob
 
@@ -24,6 +25,56 @@ import copy
 from typing import List
 
 from .models import ConversionParameters, ConversionResult
+from .postprocess import post_process_job
+from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
+
+
+def _builtin_spr_tables() -> list[dict]:
+    """Return metadata for SPR tables bundled with the package.
+
+    Each entry has ``name`` (filename) and ``label`` (display name for the UI).
+    Files live in ``pregdos/data/spr_tables/`` and are included as package data.
+    """
+    spr_dir = importlib.resources.files("pregdos") / "data" / "spr_tables"
+    tables = []
+    for entry in spr_dir.iterdir():
+        if entry.name.endswith((".txt", ".csv")):
+            tables.append({"name": entry.name, "label": entry.name})
+    tables.sort(key=lambda t: t["name"])
+    return tables
+
+
+def _builtin_spr_path(filename: str) -> str:
+    """Copy a bundled SPR table to the upload folder and return its path."""
+    safe = secure_filename(filename)
+    src = importlib.resources.files("pregdos") / "data" / "spr_tables" / safe
+    if not src.is_file():
+        raise FileNotFoundError(f"Unknown built-in SPR table: {filename}")
+    dest = os.path.join(app.config["UPLOAD_FOLDER"], safe)
+    Path(dest).write_bytes(src.read_bytes())
+    return dest
+
+
+def _builtin_beam_models() -> list[dict]:
+    """Return metadata for beam model CSVs bundled with the package."""
+    bm_dir = importlib.resources.files("pregdos") / "data" / "beam_models"
+    models = []
+    for entry in bm_dir.iterdir():
+        if entry.name.endswith(".csv"):
+            models.append({"name": entry.name, "label": entry.name})
+    models.sort(key=lambda m: m["name"], reverse=True)
+    return models
+
+
+def _builtin_beam_model_path(filename: str) -> str:
+    """Copy a bundled beam model CSV to the upload folder and return its path."""
+    safe = secure_filename(filename)
+    src = importlib.resources.files("pregdos") / "data" / "beam_models" / safe
+    if not src.is_file():
+        raise FileNotFoundError(f"Unknown built-in beam model: {filename}")
+    dest = os.path.join(app.config["UPLOAD_FOLDER"], safe)
+    Path(dest).write_bytes(src.read_bytes())
+    return dest
 
 UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER") or os.path.join(tempfile.gettempdir(), "pregdos_uploads")
 JOBS_FOLDER = os.environ.get("JOBS_FOLDER", "/home/slurm/jobs")
@@ -37,7 +88,14 @@ app.secret_key = os.environ.get("PREGDOS_SECRET_KEY", "pregdos_secret_key")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# HTML form moved to templates/upload.html
+
+@app.context_processor
+def inject_pregdos_version():
+    try:
+        version = importlib.metadata.version("pregdos")
+    except importlib.metadata.PackageNotFoundError:
+        version = "dev"
+    return {"pregdos_version": version}
 
 
 def save_single_file(upload, folder):
@@ -199,12 +257,21 @@ def upload_files():
     if request.method == "POST":
         study_zip = request.files.get("study_zip")
         study_dir_files = [f for f in (request.files.getlist("study_dir") or []) if f and f.filename]
+
+        # Beam model: either a bundled file or an upload
+        bm_source = request.form.get("beam_model_source", "upload")
         beam_model = request.files.get("beam_model")
+
+        # SPR table: either a bundled file or an upload
+        spr_source = request.form.get("spr_table_source", "upload")
         spr_table = request.files.get("spr_table")
 
         # Validate input
-        if not (beam_model and beam_model.filename and spr_table and spr_table.filename):
-            flash("Beam model and SPR table required.")
+        if bm_source == "upload" and not (beam_model and beam_model.filename):
+            flash("Beam model required — choose a built-in model or upload one.")
+            return redirect(request.url)
+        if spr_source == "upload" and not (spr_table and spr_table.filename):
+            flash("SPR table required — choose a built-in table or upload one.")
             return redirect(request.url)
         if not study_zip and not study_dir_files:
             flash("Provide either a ZIP or a folder.")
@@ -216,8 +283,22 @@ def upload_files():
 
         upload_folder = app.config["UPLOAD_FOLDER"]
 
-        beam_model_path = save_single_file(beam_model, upload_folder)
-        spr_table_path = save_single_file(spr_table, upload_folder)
+        if bm_source == "upload":
+            beam_model_path = save_single_file(beam_model, upload_folder)
+        else:
+            try:
+                beam_model_path = _builtin_beam_model_path(secure_filename(bm_source))
+            except Exception:
+                flash(f"Bundled beam model not found: {bm_source}")
+                return redirect(request.url)
+        if spr_source == "upload":
+            spr_table_path = save_single_file(spr_table, upload_folder)
+        else:
+            try:
+                spr_table_path = _builtin_spr_path(secure_filename(spr_source))
+            except Exception:
+                flash(f"Bundled SPR table not found: {spr_source}")
+                return redirect(request.url)
 
         if study_zip and study_zip.filename:
             study_dir = extract_zip(study_zip, upload_folder)
@@ -233,15 +314,20 @@ def upload_files():
         if not structures:
             flash("No RS-file or structures found!")
             return redirect(request.url)
-        # Render structure selection template
+        # Render the combined setup page (structure inclusion + scorer selection)
         return render_template(
-            "select_structures.html",
+            "setup.html",
             structures=structures,
             study_dir=study_dir,
             beam_model_path=beam_model_path,
             spr_table_path=spr_table_path,
+            scorer_defs=SCORER_DEFS,
         )
-    return render_template("upload.html")
+    return render_template(
+        "upload.html",
+        builtin_beam_models=_builtin_beam_models(),
+        builtin_spr_tables=_builtin_spr_tables(),
+    )
 
 
 def run_conversion(params: ConversionParameters, selected_structures: List[str]) -> ConversionResult:
@@ -269,26 +355,24 @@ def run_conversion(params: ConversionParameters, selected_structures: List[str])
         msg = "".join([part for part in (err, out) if part])
         raise RuntimeError(f"Error running dicomexport: {msg}") from e
 
-    search_dirs = {Path(study_to_use), Path(params.study_dir), Path(output_base).parent}
-    found = []
+    # dicomexport may write output files into the study dir, the filtered copy,
+    # or the parent of output_base depending on the version.  Search all three
+    # locations and deduplicate by filename to be robust across versions.
+    search_dirs = [Path(study_to_use), Path(params.study_dir), Path(output_base).parent]
+    found_paths: dict[str, str] = {}  # basename → absolute path (first-seen wins)
     for d in search_dirs:
         if not d.exists():
             continue
         for f in os.listdir(d):
-            if f.startswith("topas") and f.endswith(".txt"):
-                found.append(f)
-    # Deduplicate basenames
-    out_files = []
-    seen = set()
-    for f in found:
-        if f not in seen:
-            seen.add(f)
-            out_files.append(f)
-    if not out_files:
+            if f.startswith("topas") and f.endswith(".txt") and f not in found_paths:
+                found_paths[f] = str(d / f)
+    if not found_paths:
         raise RuntimeError("No output files generated by dicomexport.")
 
+    sorted_names = sorted(found_paths.keys())
     return ConversionResult(
-        out_files=out_files,
+        out_files=sorted_names,
+        out_file_paths=[found_paths[n] for n in sorted_names],
         study_name=Path(params.study_dir).name,
         selected_structures=list(selected_structures),
         stdout=proc.stdout,
@@ -301,7 +385,13 @@ def convert():
     study_dir = request.form["study_dir"]
     beam_model_path = request.form["beam_model_path"]
     spr_table_path = request.form["spr_table_path"]
-    selected_structures = request.form.getlist("structures")
+    # Any structure with at least one scorer checked is included in the RTSTRUCT filter
+    selected_structures = sorted({
+        s
+        for sc_def in SCORER_DEFS
+        for s in request.form.getlist(f'score_{sc_def["id"]}')
+        if s
+    })
     params = ConversionParameters(
         study_dir=study_dir,
         beam_model_path=beam_model_path,
@@ -315,6 +405,20 @@ def convert():
     except RuntimeError as err:
         flash(str(err))
         return redirect(url_for("upload_files"))
+
+    # Parse the scorer choices the user made on the setup page.
+    # append_scorers() modifies each TOPAS file in-place: it injects the
+    # requested out-of-field scorer blocks and optionally removes the
+    # DoseToWater scorer that dicomexport always writes.
+    scorer_config = scorer_config_from_form(request.form)
+    if scorer_config.scorers or not scorer_config.keep_infield:
+        for fpath in result.out_file_paths:
+            try:
+                append_scorers(fpath, scorer_config)
+            except Exception as err:
+                # Non-fatal: the original file is still usable; alert the user
+                flash(f"Warning: scorer post-processing failed for {os.path.basename(fpath)}: {err}")
+
     return render_template(
         "convert_success.html",
         out_files=result.out_files,
@@ -407,6 +511,8 @@ def submit_job():
             job_ids.append((safe_fname, job_id))
         else:
             errors.append(f"sbatch failed for {safe_fname}: {result.stderr.strip()}")
+
+    post_process_job(job_dir)
 
     for fname, jid in job_ids:
         flash(f"Submitted {fname} → SLURM job {jid}")
