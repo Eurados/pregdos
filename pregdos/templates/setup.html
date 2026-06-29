@@ -11,6 +11,17 @@
   <input type="hidden" name="beam_model_path" value="{{ beam_model_path }}">
   <input type="hidden" name="spr_table_path" value="{{ spr_table_path }}">
 
+  {# ── Output basename ──────────────────────────────────────────────── #}
+  <section class="card">
+    <div class="form-row">
+      <label for="output_basename">Output file basename</label>
+      <input type="text" id="output_basename" name="output_basename" value="topas"
+             pattern="[A-Za-z0-9_\-]+" title="Letters, digits, underscores, and hyphens only"
+             required>
+      <small class="hint">Base name for generated TOPAS input files (e.g. <em>topas</em> → <em>topas_field1.txt</em>).</small>
+    </div>
+  </section>
+
   {# ── In-field scorer ──────────────────────────────────────────────── #}
   <section class="card">
     <div class="form-row">
