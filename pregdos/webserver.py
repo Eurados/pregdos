@@ -172,8 +172,15 @@ def filter_rtstruct_keep_rois(orig_study_dir, selected_rois):
     # make a temp dir sibling to original
     parent = Path(orig_study_dir).parent
     tmpdir = tempfile.mkdtemp(prefix=Path(orig_study_dir).name + "_filtered_", dir=str(parent))
-    # copy all files into tmpdir
-    shutil.copytree(orig_study_dir, tmpdir, dirs_exist_ok=True)
+    # Copy only the DICOM inputs into the filtered dir, excluding generated
+    # TOPAS files (*.txt).  On a re-run the original study dir may already
+    # contain topas_field*.txt from a previous conversion; copying those into
+    # the filtered dir would let them shadow the freshly generated output during
+    # file discovery in run_conversion(), so the post-processed scorers would be
+    # written to a throwaway copy while submit/download keep the stale file (#36).
+    shutil.copytree(
+        orig_study_dir, tmpdir, dirs_exist_ok=True, ignore=shutil.ignore_patterns("*.txt")
+    )
 
     # find RTST in copy
     rs_files = glob.glob(os.path.join(tmpdir, "RS*.dcm"))

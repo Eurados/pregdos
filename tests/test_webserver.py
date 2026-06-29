@@ -1,5 +1,7 @@
 import io
 import zipfile
+from pathlib import Path
+from unittest.mock import MagicMock
 import pytest
 
 from pregdos.webserver import app, allowed_file
@@ -227,6 +229,73 @@ def test_convert_basename_with_spaces_flashes_error(client, tmp_path):
     resp = client.post("/convert", data=data, follow_redirects=True)
     assert resp.status_code == 200
     assert b"Invalid output basename" in resp.data
+
+
+# --- /convert scorer post-processing (issue #36) ---
+
+# Minimal stand-in for a dicomexport-generated TOPAS file: a SCORER SET UP
+# block holding only the in-field DoseToWater scorer, followed by a TIME
+# FEATURES banner.  append_scorers() keys off both banners.
+_FAKE_TOPAS = (
+    '# fake dicomexport output\n'
+    's:Ge/Patient/DicomDirectory = "study"\n'
+    '\n'
+    '##############################################\n'
+    '###       S C O R E R    S E T U P         ###\n'
+    '##############################################\n'
+    's:Sc/Dose/Quantity                   = "DoseToWater"\n'
+    's:Sc/Dose/Component                  = "Patient/RTDoseGrid"\n'
+    's:Sc/Dose/OutputFile                 = "topas_field1"\n'
+    '\n'
+    '##############################################\n'
+    '###       T I M E   F E A T U R E S        ###\n'
+    '##############################################\n'
+    'd:Tf/TimelineEnd = 1 ms\n'
+)
+
+
+def _fake_dicomexport(cmd, *args, **kwargs):
+    """subprocess.run side_effect mimicking dicomexport: write a fresh
+    topas_field01.txt (in-field scorer only) to the output_base location,
+    overwriting any existing file exactly as the real tool does."""
+    output_base = cmd[-1]
+    Path(f"{output_base}_field01.txt").write_text(_FAKE_TOPAS)
+    result = MagicMock()
+    result.returncode = 0
+    result.stdout = "ok"
+    result.stderr = ""
+    return result
+
+
+def test_convert_appends_selected_scorers_and_survives_rerun(client, tmp_path, mocker):
+    """Selecting multiple quantities for one structure appends those scorer
+    blocks to the generated file, and a re-run of the same study does not
+    silently drop them (regression for issue #36)."""
+    study_dir = tmp_path / "study"
+    study_dir.mkdir()
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+
+    form = {
+        "study_dir": str(study_dir),
+        "beam_model_path": str(tmp_path / "beam.csv"),
+        "spr_table_path": str(tmp_path / "spr.txt"),
+        "nstat": "1000000",
+        "output_basename": "topas",
+        "keep_infield": "1",
+        "score_neutron": "CTV",
+        "score_gamma": "CTV",
+    }
+    generated = study_dir / "topas_field01.txt"
+
+    for run in ("first", "rerun"):
+        resp = client.post("/convert", data=form, follow_redirects=True)
+        assert resp.status_code == 200, run
+        text = generated.read_text()
+        # original in-field scorer preserved …
+        assert "DoseToWater" in text, run
+        # … plus both selected out-of-field scorers for the chosen structure
+        assert "AmBDose_CTV" in text, run
+        assert "DoseGamma_CTV" in text, run
 
 
 # --- Models smoke tests ---
