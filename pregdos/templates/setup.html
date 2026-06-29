@@ -11,16 +11,54 @@
   <input type="hidden" name="beam_model_path" value="{{ beam_model_path }}">
   <input type="hidden" name="spr_table_path" value="{{ spr_table_path }}">
 
-  {# ── Output basename ──────────────────────────────────────────────── #}
-  <section class="card">
-    <div class="form-row">
-      <label for="output_basename">Output file basename</label>
-      <input type="text" id="output_basename" name="output_basename" value="topas"
-             pattern="[A-Za-z0-9_\-]+" title="Letters, digits, underscores, and hyphens only"
-             required>
-      <small class="hint">Base name for generated TOPAS input files (e.g. <em>topas</em> → <em>topas_field1.txt</em>).</small>
-    </div>
-  </section>
+  {# ── Output basename + Number of primaries (side by side) ────────── #}
+  <div class="card-pair">
+
+    <section class="card">
+      <div class="form-row">
+        <label for="output_basename">Output file basename</label>
+        <input type="text" id="output_basename" name="output_basename" value="topas"
+               pattern="[A-Za-z0-9_\-]+" title="Letters, digits, underscores, and hyphens only"
+               required>
+        <small class="hint">Base name for generated TOPAS input files (e.g. <em>topas</em> → <em>topas_field1.txt</em>).</small>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="form-row">
+        <label>Number of primary proton histories</label>
+        <div class="radio-group">
+          <div class="radio-group-row">
+            <label class="radio-label">
+              <input type="radio" name="nstat" value="1000000" checked>
+              <span>10<sup>6</sup></span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="nstat" value="10000000">
+              <span>10<sup>7</sup></span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="nstat" value="100000000">
+              <span>10<sup>8</sup></span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="nstat" value="1000000000">
+              <span>10<sup>9</sup></span>
+            </label>
+          </div>
+          <label class="radio-label">
+            <input type="radio" name="nstat" value="custom" id="nstat_custom_radio">
+            Custom:
+            <input type="number" name="nstat_custom" id="nstat_custom_input"
+                   min="1" step="1" placeholder="e.g. 5000000"
+                   onclick="document.getElementById('nstat_custom_radio').checked=true">
+          </label>
+        </div>
+        <small class="hint">More primaries give better statistics at the cost of longer runtime.</small>
+      </div>
+    </section>
+
+  </div>
 
   {# ── In-field scorer ──────────────────────────────────────────────── #}
   <section class="card">

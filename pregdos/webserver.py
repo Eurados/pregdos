@@ -393,6 +393,18 @@ def convert():
         for s in request.form.getlist(f'score_{sc_def["id"]}')
         if s
     })
+    nstat_val = request.form.get("nstat", "1000000")
+    if nstat_val == "custom":
+        try:
+            nstat = int(request.form.get("nstat_custom", "").strip())
+            if nstat < 1:
+                raise ValueError
+        except ValueError:
+            flash("Invalid number of primaries — must be a positive integer.")
+            return redirect(url_for("upload_files"))
+    else:
+        nstat = int(nstat_val)
+
     raw_basename = request.form.get("output_basename", "topas").strip()
     output_basename = secure_filename(raw_basename) or "topas"
     params = ConversionParameters(
@@ -401,7 +413,7 @@ def convert():
         spr_table_path=spr_table_path,
         output_base=os.path.join(study_dir, output_basename),
         field_nr=None,
-        nstat=None,
+        nstat=nstat,
     )
     try:
         result = run_conversion(params, selected_structures)

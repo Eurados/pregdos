@@ -418,6 +418,57 @@ button:focus-visible,
    Layout Helpers
    ---------------------------------------------------------- */
 
+.card-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 600px) {
+  .card-pair {
+    grid-template-columns: 1fr;
+  }
+}
+
+.radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.radio-group-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.radio-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.form-row .radio-label {
+  font-weight: normal;
+}
+
+.radio-label input[type="radio"] {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  min-height: unset;
+  padding: 0;
+  border-radius: 50%;
+}
+
+.radio-label input[type="number"] {
+  width: 130px;
+  padding: 4px 8px;
+  min-height: unset;
+}
+
 .actions {
   display: flex;
   gap: 12px;
