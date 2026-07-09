@@ -519,6 +519,75 @@ button:focus-visible,
 }
 
 /* ----------------------------------------------------------
+   Results / study tiles
+   ---------------------------------------------------------- */
+
+/* Destructive action.  Deliberately quiet until hovered: deleting a study wipes the
+   uploaded DICOM and every result, so the button should not invite an idle click. */
+.btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid rgba(214, 69, 69, 0.35);
+}
+
+.btn-danger:hover {
+  background: var(--danger);
+  color: #fff;
+  border-color: var(--danger);
+}
+
+.study-tile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.study-tile-head h2 {
+  margin: 0;
+}
+
+.study-tile-head form {
+  margin: 0;
+}
+
+/* ----------------------------------------------------------
+   Funding acknowledgement logos (About page)
+   ---------------------------------------------------------- */
+
+.funding-logos {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin-top: 16px;
+}
+
+.funding-logo {
+  height: 46px;
+  width: auto;
+  max-width: 100%;
+  display: block;
+  border-radius: 3px;
+}
+
+@media (prefers-color-scheme: dark) {
+  /* Only transparent logos with dark lettering need a light backing.  The EU flag has its
+     own blue field and would look wrong in a white box. */
+  .funding-logo.plated {
+    background: #fff;
+    padding: 5px 9px;
+    border-radius: 6px;
+  }
+}
+
+@media (max-width: 600px) {
+  .funding-logo {
+    height: 36px;
+  }
+}
+
+/* ----------------------------------------------------------
    Dashboard
    ---------------------------------------------------------- */
 

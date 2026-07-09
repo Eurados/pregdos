@@ -1,4 +1,5 @@
 import io
+import json
 import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -474,20 +475,153 @@ def test_convert_failure_removes_the_run_dir(client, tmp_path, mocker):
     assert studies.list_runs(tmp_path, "mystudy") == []
 
 
-# --- /jobs listing ---
+# --- results viewer (#32) ---
 
-def test_list_jobs_shows_runs_across_studies(client, tmp_path):
-    _make_study(tmp_path, "alpha")
-    _make_study(tmp_path, "beta")
-    run_a, dir_a = studies.create_run(tmp_path, "alpha")
-    (dir_a / "topas_field01.txt").write_text("x")
+_REAL_CSV = Path(__file__).parent / "data" / "topas_field01_neutron_BrainStem.csv"
+_REAL_TOPAS = Path(__file__).parent / "data" / "topas_field01.txt"
 
-    resp = client.get("/jobs")
+
+def _completed_run(tmp_path, study="alpha"):
+    """A study with one finished run holding a real scorer CSV."""
+    _make_study(tmp_path, study)
+    run_id, run_dir = studies.create_run(tmp_path, study)
+    for src in (_REAL_CSV, _REAL_TOPAS):
+        (run_dir / src.name).write_bytes(src.read_bytes())
+    (run_dir / "topas_field01.exit_code").write_text("0\n")
+    (run_dir / "run.json").write_text(json.dumps({
+        "backend": "local", "submitted": "2026-07-09T21:05:06",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": "1"}],
+    }))
+    return run_id, run_dir
+
+
+def test_studies_page_lists_tiles_with_status(client, tmp_path):
+    run_id, _ = _completed_run(tmp_path, "alpha")
+    _make_study(tmp_path, "beta")  # uploaded, never converted
+
+    resp = client.get("/studies")
     assert resp.status_code == 200
     body = resp.data.decode()
-    assert "alpha" in body and run_a in body
-    # beta has no runs yet, so it contributes no rows
-    assert body.count("run_") >= 1
+    assert "alpha" in body and run_id in body and "completed" in body
+    assert "beta" in body and "not converted yet" in body
+
+
+def test_jobs_url_redirects_to_studies(client, tmp_path):
+    resp = client.get("/jobs")
+    assert resp.status_code == 302
+    assert "/studies" in resp.headers["Location"]
+
+
+def test_run_detail_shows_scaled_scorer_results(client, tmp_path):
+    run_id, _ = _completed_run(tmp_path)
+    resp = client.get(f"/studies/alpha/{run_id}")
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "AmBDose_BrainStem" in body and "BrainStem" in body and "Sv" in body
+    # 1.049973996636311e-11 Sv * 953656.09 = 1.0013e-05
+    assert "1.001e-05" in body
+    assert "not yet trustworthy" in body      # the #50 caveat is surfaced
+
+
+def test_run_detail_of_running_job_says_so(client, tmp_path):
+    _make_study(tmp_path, "alpha")
+    run_id, run_dir = studies.create_run(tmp_path, "alpha")
+    (run_dir / "run.json").write_text(json.dumps({
+        "backend": "local", "submitted": "now",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": "1"}],
+    }))
+    resp = client.get(f"/studies/alpha/{run_id}")
+    assert b"still going" in resp.data
+
+
+def test_run_detail_unparseable_csv_warns_not_500(client, tmp_path):
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "broken.csv").write_text("# nothing useful\n")
+    resp = client.get(f"/studies/alpha/{run_id}")
+    assert resp.status_code == 200
+    assert b"Could not read scorer output" in resp.data
+    assert b"AmBDose_BrainStem" in resp.data      # the good CSV still renders
+
+
+def test_run_detail_missing_run_redirects(client, tmp_path):
+    _make_study(tmp_path, "alpha")
+    resp = client.get("/studies/alpha/run_20260101_000000", follow_redirects=True)
+    assert b"Run directory not found" in resp.data
+
+
+def test_report_csv_download(client, tmp_path):
+    run_id, _ = _completed_run(tmp_path)
+    resp = client.get(f"/studies/alpha/{run_id}/report.csv")
+    assert resp.status_code == 200
+    assert resp.mimetype == "text/csv"
+    assert "attachment" in resp.headers["Content-Disposition"]
+    body = resp.data.decode()
+    assert "AmBDose_BrainStem" in body and "AmbientDoseEquivalent" in body
+    assert "#50" in body                          # caveat travels with the data
+
+
+def test_report_csv_marks_nan_rows_unusable(client, tmp_path):
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "old.csv").write_text(
+        "# Parameter File: topas_field01.txt\n"
+        "# Results for scorer: AmBDose_Fetus\n"
+        "# AmbientDoseEquivalent ( Sv ) : Sum   Standard_Deviation   \n"
+        "-nan, 1e-15\n"
+    )
+    body = client.get(f"/studies/alpha/{run_id}/report.csv").data.decode()
+    assert "AmBDose_Fetus" in body and "4.2.3" in body   # flagged, not rendered as a dose
+
+    page = client.get(f"/studies/alpha/{run_id}").data.decode()
+    assert "unusable" in page
+    assert "-nan" not in page and "nan," not in page
+
+
+# --- delete study ---
+
+def test_delete_study_removes_everything(client, tmp_path, mocker):
+    _completed_run(tmp_path, "alpha")
+    _make_study(tmp_path, "beta")
+    cancel = mocker.patch("pregdos.webserver.executor.cancel_run")
+
+    resp = client.post("/studies/alpha/delete", follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Deleted study alpha" in resp.data
+    assert studies.list_studies(tmp_path) == ["beta"]
+    cancel.assert_not_called()          # the run had finished
+
+
+def test_delete_study_cancels_an_unfinished_run(client, tmp_path, mocker):
+    """A TOPAS job left running would keep writing into a directory we just removed."""
+    _make_study(tmp_path, "alpha")
+    run_id, run_dir = studies.create_run(tmp_path, "alpha")
+    (run_dir / "run.json").write_text(json.dumps({
+        "backend": "local", "submitted": "now",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": "999"}],
+    }))
+    cancel = mocker.patch("pregdos.webserver.executor.cancel_run")
+
+    resp = client.post("/studies/alpha/delete", follow_redirects=True)
+    assert b"Cancelled 1 unfinished run" in resp.data
+    cancel.assert_called_once()
+    assert studies.list_studies(tmp_path) == []
+
+
+def test_delete_unknown_study_flashes(client, tmp_path):
+    resp = client.post("/studies/ghost/delete", follow_redirects=True)
+    assert b"Study not found" in resp.data
+
+
+def test_delete_is_not_reachable_by_get(client, tmp_path):
+    """A GET must never destroy anything -- crawlers, prefetchers and history all issue GETs.
+
+    /studies/<study>/delete is POST-only, so on GET it falls through to run_detail with
+    run_id="delete", which the run-id validator rejects.  Either way, nothing is removed.
+    """
+    _make_study(tmp_path, "alpha")
+    resp = client.get("/studies/alpha/delete", follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Run directory not found" in resp.data
+    assert studies.list_studies(tmp_path) == ["alpha"]
 
 
 # --- Models smoke tests ---

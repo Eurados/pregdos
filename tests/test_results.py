@@ -1,0 +1,234 @@
+"""Tests for scorer CSV parsing and plan scaling (issue #32).
+
+The fixtures in ``tests/data/`` are verbatim output from a real OpenTOPAS 4.2.3 run of
+``res/test_studies/DCPT_headphantom`` (field 1, nstat=20000).  Parsing ground truth beats
+parsing a CSV we invented -- the original issue assumed an ``X, Y, Z, Sum, Standard_Deviation``
+layout that structure-average scorers do not produce.
+"""
+
+import math
+from pathlib import Path
+
+import pytest
+
+from pregdos import results
+from pregdos.results import ResultsError, parse_plan_scaling, parse_scorer_csv
+
+DATA = Path(__file__).parent / "data"
+NEUTRON = DATA / "topas_field01_neutron_BrainStem.csv"
+PROTON = DATA / "topas_field01_proton_primary_CTV.csv"
+TOPAS_INPUT = DATA / "topas_field01.txt"
+
+
+# --- real scorer CSVs ---
+
+def test_parses_real_neutron_csv():
+    r = parse_scorer_csv(NEUTRON)
+    assert r.scorer == "AmBDose_BrainStem"
+    assert r.quantity == "AmbientDoseEquivalent"
+    assert r.unit == "Sv"
+    assert r.structure == "BrainStem"
+    assert r.parameter_file == "topas_field01.txt"
+    assert r.topas_version == "4.2.p3"
+    assert r.columns == ["Sum", "Standard_Deviation"]
+    assert r.raw_sum == pytest.approx(1.049973996636311e-11)
+    assert r.raw_standard_deviation == pytest.approx(5.038408614663083e-15)
+    assert r.usable and r.problem is None
+
+
+def test_parses_real_proton_csv():
+    r = parse_scorer_csv(PROTON)
+    assert r.scorer == "DoseProtonPrimary_CTV"
+    assert r.quantity == "DoseToMedium"
+    assert r.unit == "Gy"
+    assert r.structure == "CTV"
+    assert r.raw_sum == pytest.approx(1.355829448712598e-09)
+
+
+def test_structure_mode_has_no_index_columns():
+    """The issue assumed `X, Y, Z, Sum, SD`.  A 1x1x1 scorer emits only the reported columns."""
+    r = parse_scorer_csv(NEUTRON)
+    assert r.is_single_bin
+    index, values = r.rows[0]
+    assert index == ()
+    assert set(values) == {"Sum", "Standard_Deviation"}
+
+
+def test_multi_bin_rows_carry_bin_indices(tmp_path):
+    """A grid scorer prepends X, Y, Z.  Column count is derived, never assumed."""
+    p = tmp_path / "grid.csv"
+    p.write_text(
+        "# TOPAS Version: 4.2.p3\n"
+        "# Results for scorer: DoseGrid\n"
+        "# DoseToMedium ( Gy ) : Sum   Standard_Deviation   \n"
+        "0, 0, 0, 1.5e-9, 2.0e-12\n"
+        "0, 0, 1, 2.5e-9, 3.0e-12\n"
+    )
+    r = parse_scorer_csv(p)
+    assert not r.is_single_bin
+    assert r.rows[0][0] == (0, 0, 0)
+    assert r.rows[1][1]["Sum"] == pytest.approx(2.5e-9)
+    # a grid is not summarised as one dose
+    assert r.raw_sum is None and r.problem is None
+
+
+def test_unfiltered_scorer_has_no_structure(tmp_path):
+    p = tmp_path / "s.csv"
+    p.write_text("# Results for scorer: All\n# DoseToMedium ( Gy ) : Sum   \n1.0e-9\n")
+    assert parse_scorer_csv(p).structure == ""
+
+
+_MINIMAL = "# Results for scorer: A\n# AmbientDoseEquivalent ( Sv ) : Sum   \n1.0e-11\n"
+
+
+def test_increment_suffix_is_recorded(tmp_path):
+    """`IfOutputFileAlreadyExists = Increment` yields `..._1.csv` on a repeated run."""
+    (tmp_path / "topas_field01_neutron_Fetus.csv").write_text(_MINIMAL)
+    p = tmp_path / "topas_field01_neutron_Fetus_1.csv"
+    p.write_text(_MINIMAL)
+    assert parse_scorer_csv(p).run_index == 1
+
+
+def test_structure_name_ending_in_a_number_is_not_an_increment(tmp_path):
+    """A structure legitimately named `PTV_2` must not be read as a re-run of `PTV`."""
+    p = tmp_path / "topas_field01_gamma_PTV_2.csv"
+    p.write_text(_MINIMAL)
+    assert parse_scorer_csv(p).run_index is None    # no `..._gamma_PTV.csv` sibling exists
+
+
+# --- NaN / bad input ---
+
+def test_nan_sum_is_flagged_as_a_version_problem(tmp_path):
+    """A NaN Sum means OpenTOPAS < 4.2.3 corrupted the scorer merge (#49).  It is not a dose,
+    and it must never be rendered as one."""
+    p = tmp_path / "old.csv"
+    p.write_text(
+        "# TOPAS Version: 3.9\n"
+        "# Results for scorer: AmBDose_Fetus\n"
+        "# AmbientDoseEquivalent ( Sv ) : Sum   Standard_Deviation   \n"
+        "-nan, 4.148248342996396e-15\n"
+    )
+    r = parse_scorer_csv(p)
+    assert math.isnan(r.raw_sum)
+    assert not r.usable
+    assert "4.2.3" in r.problem and "#49" in r.problem
+    assert r.scaled(None) == (None, None)
+
+
+def test_infinite_sum_is_flagged(tmp_path):
+    p = tmp_path / "inf.csv"
+    p.write_text("# Results for scorer: A\n# DoseToMedium ( Gy ) : Sum   \ninf\n")
+    assert not parse_scorer_csv(p).usable
+
+
+@pytest.mark.parametrize("body,match", [
+    ("# Results for scorer: A\n1.0\n", "no quantity/column header"),
+    ("# DoseToMedium ( Gy ) : Sum   \n", "no data rows"),
+    ("# DoseToMedium ( Gy ) : Sum   Standard_Deviation   \n1.0\n", "expected at least"),
+    ("# DoseToMedium ( Gy ) : Sum   \nnot-a-number\n", "unparseable row"),
+])
+def test_bad_csv_raises_results_error(tmp_path, body, match):
+    p = tmp_path / "bad.csv"
+    p.write_text(body)
+    with pytest.raises(ResultsError, match=match):
+        parse_scorer_csv(p)
+
+
+def test_missing_file_raises_results_error(tmp_path):
+    with pytest.raises(ResultsError, match="cannot read"):
+        parse_scorer_csv(tmp_path / "nope.csv")
+
+
+# --- plan scaling ---
+
+def test_parses_plan_scaling_from_real_header():
+    s = parse_plan_scaling(TOPAS_INPUT)
+    assert s.particle_scaling == pytest.approx(953179.27)
+    assert s.requested_histories == 20000
+    assert s.total_particles == pytest.approx(19063585498)
+    # TOPAS runs sum(spotWeight), not REQUESTED_HISTORIES: the weights are integers
+    assert s.simulated_histories == 19990
+
+
+def test_scaling_factor_corrects_for_integer_spot_weights():
+    s = parse_plan_scaling(TOPAS_INPUT)
+    assert s.factor == pytest.approx(953179.27 * 20000 / 19990)
+    assert s.factor == pytest.approx(953656.09, rel=1e-6)
+    # the naive TOTAL/REQUESTED ratio understates it
+    assert s.factor > s.particle_scaling
+    assert s.rounding_correction == pytest.approx(20000 / 19990)
+
+
+def test_scaling_falls_back_when_spot_weights_absent(tmp_path):
+    p = tmp_path / "t.txt"
+    p.write_text("# REQUESTED_HISTORIES: 1000\n# PARTICLE_SCALING: 42.0\n")
+    s = parse_plan_scaling(p)
+    assert s.simulated_histories == 0
+    assert s.factor == 42.0          # no correction available; do not divide by zero
+    assert s.rounding_correction == 1.0
+
+
+@pytest.mark.parametrize("text", [
+    "",                                            # no header at all
+    "# TOTAL_NUMBER_OF_PARTICLES: 5\n",            # incomplete
+    "# REQUESTED_HISTORIES: abc\n# PARTICLE_SCALING: 1\n",
+])
+def test_unscalable_header_returns_none(tmp_path, text):
+    p = tmp_path / "t.txt"
+    p.write_text(text)
+    assert parse_plan_scaling(p) is None
+
+
+def test_missing_topas_input_returns_none(tmp_path):
+    assert parse_plan_scaling(tmp_path / "absent.txt") is None
+
+
+def test_scaled_values_use_the_corrected_factor():
+    r = parse_scorer_csv(PROTON)
+    s = parse_plan_scaling(TOPAS_INPUT)
+    total, sd = r.scaled(s)
+    assert total == pytest.approx(1.355829448712598e-09 * s.factor)
+    assert sd == pytest.approx(1.271278408327433e-13 * s.factor)
+    # sanity: a per-field CTV dose in the mGy range at these (deliberately low) statistics
+    assert 1e-4 < total < 1e-2
+
+
+def test_scaled_without_scaling_is_the_raw_value():
+    r = parse_scorer_csv(NEUTRON)
+    assert r.scaled(None)[0] == pytest.approx(r.raw_sum)
+
+
+# --- collect_results ---
+
+def test_collect_results_reads_a_run_dir(tmp_path):
+    for src in (NEUTRON, PROTON, TOPAS_INPUT):
+        (tmp_path / src.name).write_bytes(src.read_bytes())
+    found, warnings = results.collect_results(tmp_path)
+    assert warnings == []
+    assert [r.structure for r in found] == ["BrainStem", "CTV"]   # sorted, stable
+
+
+def test_collect_results_warns_but_does_not_raise(tmp_path):
+    (tmp_path / "good.csv").write_bytes(NEUTRON.read_bytes())
+    (tmp_path / "broken.csv").write_text("# nothing useful here\n")
+    found, warnings = results.collect_results(tmp_path)
+    assert len(found) == 1
+    assert len(warnings) == 1 and "broken.csv" in warnings[0]
+
+
+def test_collect_results_on_empty_dir(tmp_path):
+    assert results.collect_results(tmp_path) == ([], [])
+
+
+def test_scaling_for_uses_the_parameter_file_named_in_the_csv(tmp_path):
+    for src in (NEUTRON, TOPAS_INPUT):
+        (tmp_path / src.name).write_bytes(src.read_bytes())
+    r = parse_scorer_csv(tmp_path / NEUTRON.name)
+    s = results.scaling_for(r, tmp_path)
+    assert s is not None and s.simulated_histories == 19990
+
+
+def test_scaling_for_missing_parameter_file(tmp_path):
+    p = tmp_path / "s.csv"
+    p.write_text("# Results for scorer: A\n# DoseToMedium ( Gy ) : Sum   \n1.0\n")
+    assert results.scaling_for(parse_scorer_csv(p), tmp_path) is None

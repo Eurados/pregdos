@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}{{ study }} / {{ run_id }} · PregDos{% endblock %}
+{% block heading %}{{ study }}{% endblock %}
+{% block subtitle %}Run {{ run_id }}{% endblock %}
+
+{% block content %}
+<section class="card">
+  <p>
+    <strong>Status:</strong>
+    {% if status == 'completed' %}<span class="badge success">completed</span>
+    {% elif status == 'failed' %}<span class="badge danger">failed</span>
+    {% elif status == 'running' %}<span class="badge warning">running</span>
+    {% elif status == 'queued' %}<span class="badge warning">queued</span>
+    {% else %}<span class="badge">{{ status }}</span>{% endif %}
+    {% if backend %} · <strong>Backend:</strong> {{ backend }}{% endif %}
+    {% if submitted %} · <strong>Submitted:</strong> {{ submitted }}{% endif %}
+  </p>
+  {% if status == 'failed' and logs %}
+    <p class="hint">The run failed. Check the log for the reason:
+      {% for log in logs %}
+        <a href="{{ url_for('download_job_file', study=study, run_id=run_id, filename=log) }}">{{ log }}</a>{% if not loop.last %}, {% endif %}
+      {% endfor %}
+    </p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Scorer results</h2>
+  {% if rows %}
+    <div class="scorer-table-wrap">
+      <table class="scorer-table">
+        <thead>
+          <tr>
+            <th>Scorer</th><th>Structure</th><th>Quantity</th>
+            <th>Dose (Sum)</th><th>Uncertainty (SD)</th><th>Unit</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+            <tr>
+              <td><code>{{ r.scorer }}</code></td>
+              <td>{{ r.structure }}</td>
+              <td>{{ r.quantity }}</td>
+              {% if r.problem %}
+                <td colspan="3"><span class="badge danger">unusable</span> {{ r.problem }}</td>
+              {% elif r.sum is none %}
+                <td colspan="3" class="hint">multi-bin grid — download the CSV</td>
+              {% else %}
+                <td>{{ '%.4g' % r.sum }}</td>
+                <td>{{ '%.3g' % r.sd if r.sd is not none else '—' }}</td>
+                <td>{{ r.unit }}</td>
+              {% endif %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <p class="hint">
+      Values are scaled from the simulated histories to the full plan, using
+      <code>PARTICLE_SCALING × REQUESTED_HISTORIES / Σ spotWeight</code> from the generated
+      TOPAS input.
+    </p>
+    <p class="hint">
+      <strong>⚠ Absolute doses are not yet trustworthy.</strong> The structure-average scorers
+      normalise by a mass that is not the structure's, and the error factor differs per
+      structure — so comparisons between structures are unsafe too. See issue #50.
+    </p>
+
+    <div class="actions">
+      <a class="btn primary" href="{{ url_for('download_report', study=study, run_id=run_id) }}">Download CSV report</a>
+    </div>
+  {% elif status in ('running', 'queued') %}
+    <p>No results yet — the run is still going.</p>
+  {% else %}
+    <p>No scorer output found in this run.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Files</h2>
+  {% if files %}
+    <table>
+      <thead><tr><th>File</th><th>Size</th><th></th></tr></thead>
+      <tbody>
+        {% for f in files %}
+          <tr>
+            <td><code>{{ f.name }}</code></td>
+            <td>{{ (f.size / 1024) | round(1) }} kB</td>
+            <td><a class="btn btn-secondary"
+                   href="{{ url_for('download_job_file', study=study, run_id=run_id, filename=f.name) }}">Download</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No files yet.</p>
+  {% endif %}
+
+  <div class="actions">
+    <a class="btn btn-secondary" href="{{ url_for('list_studies') }}">All studies</a>
+    <a class="btn btn-secondary" href="{{ url_for('upload_files') }}">New simulation</a>
+  </div>
+</section>
+{% endblock %}

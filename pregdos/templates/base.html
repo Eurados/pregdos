@@ -18,9 +18,9 @@
            class="tab-nav-tab{% if request.path.startswith('/upload') or request.path == '/' %} active{% endif %}">
           New simulation
         </a>
-        <a href="{{ url_for('list_jobs') }}"
-           class="tab-nav-tab{% if request.path.startswith('/jobs') %} active{% endif %}">
-          Jobs
+        <a href="{{ url_for('list_studies') }}"
+           class="tab-nav-tab{% if request.path.startswith('/studies') or request.path.startswith('/jobs') %} active{% endif %}">
+          Results
         </a>
         <a href="{{ url_for('about') }}"
            class="tab-nav-tab{% if request.path == '/about' %} active{% endif %}">

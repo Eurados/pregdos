@@ -1,5 +1,6 @@
 from flask import (
     Flask,
+    Response,
     request,
     render_template,
     send_from_directory,
@@ -11,6 +12,8 @@ import importlib.metadata
 import importlib.resources
 import pydicom
 
+import csv
+import io
 import zipfile
 import os
 from werkzeug.utils import secure_filename
@@ -20,7 +23,7 @@ import sys
 import shutil
 import tempfile
 
-from . import executor, studies
+from . import executor, results, studies, versions
 from .models import ConversionParameters, ConversionResult
 from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
@@ -501,80 +504,198 @@ def about():
         try:
             return importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
-            return "unknown"
+            return versions.UNKNOWN
 
-    def explicit_version(env_name, marker_name):
-        env_value = (os.environ.get(env_name) or "").strip()
-        if env_value:
-            return env_value
-        marker = Path("/etc/pregdos") / marker_name
-        try:
-            if marker.is_file():
-                marker_value = marker.read_text(encoding="utf-8").strip()
-                if marker_value:
-                    return marker_value
-        except OSError:
-            pass
-        return "unknown"
+    # TOPAS and Geant4 are interrogated at runtime (env/marker first, then the binary
+    # itself), so the page reports what will actually run, not what was configured.
+    env = versions.summary()
+    env["pregdos"] = pkg_version("pregdos")
+    env["dicomexport"] = pkg_version("dicomexport")
+    return render_template("about.html", versions=env, logos=_funding_logos())
 
-    versions = {
-        "pregdos": pkg_version("pregdos"),
-        "dicomexport": pkg_version("dicomexport"),
-        "topas": explicit_version("TOPAS_VERSION", "TOPAS_VERSION"),
-        "geant4": explicit_version("GEANT4_VERSION", "GEANT4_VERSION"),
-    }
-    return render_template("about.html", versions=versions)
+
+# Funding acknowledgement logos, shown on the About page when present.  Absent files are
+# simply not rendered, so a source checkout without them shows text rather than a broken image.
+#
+# `plate`: the logo is transparent with dark lettering, so it needs a light backing in dark
+# mode.  The EU flag carries its own blue field and must not be plated.
+_FUNDING_LOGOS = (
+    {"file": "pianoforte-logo.png", "alt": "PIANOFORTE Partnership",
+     "href": "https://pianoforte-partnership.eu/", "plate": True},
+    {"file": "eu-flag.png", "alt": "Funded by the European Union",
+     "href": None, "plate": False},
+)
+
+
+def _funding_logos() -> list[dict]:
+    static_dir = Path(app.static_folder or "")
+    return [logo for logo in _FUNDING_LOGOS if (static_dir / "img" / logo["file"]).is_file()]
+
+
+NOT_SUBMITTED = "not submitted"
+
+
+def _run_status(run_dir: Path) -> str:
+    """Status of one run, read entirely from files on disk (see :mod:`pregdos.executor`)."""
+    if executor.read_run_metadata(run_dir) is None:
+        return NOT_SUBMITTED
+    return executor.run_status(run_dir)
+
+
+def _resolve_run(study, run_id):
+    """Resolve a run directory from URL parameters, or return None."""
+    try:
+        run_dir = studies.run_path(studies_root(), study, run_id)
+    except StudyError:
+        return None
+    return run_dir if run_dir.is_dir() else None
 
 
 @app.route("/jobs")
 def list_jobs():
-    """List every conversion run across all studies.
+    """Backwards-compatible alias for the results page."""
+    return redirect(url_for("list_studies"))
 
-    Superseded by the per-study results view in #32; kept simple here so the app stays
-    coherent after runs moved from a separate jobs tree into the study directories.
-    """
+
+@app.route("/studies")
+def list_studies():
+    """One tile per study, each listing its conversion runs and their status."""
     root = studies_root()
-    jobs = []
+    tiles = []
     for study in studies.list_studies(root):
+        runs = []
         for run_id in studies.list_runs(root, study):
             run_dir = studies.run_path(root, study, run_id)
-            submitted = executor.read_run_metadata(run_dir) is not None
-            jobs.append({
-                "study": study,
+            runs.append({
                 "run_id": run_id,
+                "status": _run_status(run_dir),
                 "file_count": sum(1 for p in run_dir.iterdir() if p.is_file()),
-                # Status is read from the exit-code sentinels on disk, so it stays correct
-                # across a webserver restart.  A run that was never submitted has none.
-                "status": executor.run_status(run_dir) if submitted else "not submitted",
             })
-    jobs.sort(key=lambda j: (j["run_id"], j["study"]), reverse=True)
-    return render_template("jobs.html", jobs=jobs)
+        tiles.append({"name": study, "runs": runs, "active": any(r["status"] in
+                     (executor.RUNNING, executor.QUEUED) for r in runs)})
+    return render_template("studies.html", tiles=tiles)
 
 
-@app.route("/jobs/<study>/<run_id>")
-def job_files(study, run_id):
+@app.route("/studies/<study>/<run_id>")
+def run_detail(study, run_id):
+    """Scorer results for one run, plus its raw files.
+
+    The CSVs are parsed at render time rather than at submit time: when /submit runs, the
+    job has not produced anything yet.  Parsing a handful of single-voxel CSVs per page view
+    costs nothing.
+    """
+    run_dir = _resolve_run(study, run_id)
+    if run_dir is None:
+        flash("Run directory not found.")
+        return redirect(url_for("list_studies"))
+
+    rows, warnings = _result_rows(run_dir)
+    for w in warnings:
+        flash(f"Could not read scorer output: {w}")
+
+    files = [{"name": p.name, "size": p.stat().st_size} for p in sorted(run_dir.iterdir()) if p.is_file()]
+    info = executor.read_run_metadata(run_dir)
+    return render_template(
+        "run_detail.html",
+        study=study,
+        run_id=run_id,
+        status=_run_status(run_dir),
+        rows=rows,
+        files=files,
+        backend=info.backend if info else None,
+        submitted=info.submitted if info else None,
+        logs=[f["name"] for f in files if f["name"].endswith(".log")],
+    )
+
+
+def _result_rows(run_dir: Path):
+    """Parsed, plan-scaled scorer rows for one run, ready for the results table."""
+    parsed, warnings = results.collect_results(run_dir)
+    rows = []
+    for r in parsed:
+        scaling = results.scaling_for(r, run_dir)
+        total, sd = r.scaled(scaling)
+        rows.append({
+            "scorer": r.scorer,
+            "structure": r.structure or "—",
+            "quantity": r.quantity,
+            "unit": r.unit,
+            "sum": total,
+            "sd": sd,
+            "raw_sum": r.raw_sum,
+            "problem": r.problem,
+            "scale": scaling.factor if scaling else None,
+            "csv_name": r.csv_name,
+        })
+    return rows, warnings
+
+
+@app.route("/studies/<study>/<run_id>/report.csv")
+def download_report(study, run_id):
+    """Aggregate every scorer in the run into one plan-scaled CSV report."""
+    run_dir = _resolve_run(study, run_id)
+    if run_dir is None:
+        flash("Run directory not found.")
+        return redirect(url_for("list_studies"))
+
+    rows, _ = _result_rows(run_dir)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["# PregDos report", f"study={study}", f"run={run_id}"])
+    writer.writerow(["# Doses are scaled to the full plan; see issue #50 before trusting absolute values."])
+    writer.writerow(["scorer", "structure", "quantity", "unit", "sum", "standard_deviation", "scale_factor", "note"])
+    for r in rows:
+        writer.writerow([
+            r["scorer"], r["structure"], r["quantity"], r["unit"],
+            "" if r["sum"] is None else repr(r["sum"]),
+            "" if r["sd"] is None else repr(r["sd"]),
+            "" if r["scale"] is None else repr(r["scale"]),
+            r["problem"] or "",
+        ])
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{secure_filename(study)}_{run_id}_report.csv"'},
+    )
+
+
+@app.route("/studies/<study>/delete", methods=["POST"])
+def delete_study(study):
+    """Remove a study and everything under it.
+
+    An unfinished run is cancelled first: TOPAS jobs take hours, and one left running would
+    keep writing into a directory that has just been deleted.
+    """
+    root = studies_root()
     try:
-        run_dir = studies.run_path(studies_root(), study, run_id)
+        study_dir = studies.study_path(root, study)
     except StudyError:
-        flash("Invalid job directory.")
-        return redirect(url_for("list_jobs"))
-    if not run_dir.is_dir():
-        flash("Job directory not found.")
-        return redirect(url_for("list_jobs"))
-    files = [
-        {"name": p.name, "size": p.stat().st_size}
-        for p in sorted(run_dir.iterdir()) if p.is_file()
-    ]
-    return render_template("job_files.html", study=study, run_id=run_id, files=files)
+        flash("Invalid study path.")
+        return redirect(url_for("list_studies"))
+    if not study_dir.is_dir():
+        flash("Study not found.")
+        return redirect(url_for("list_studies"))
+
+    cancelled = 0
+    for run_id in studies.list_runs(root, study):
+        run_dir = studies.run_path(root, study, run_id)
+        if _run_status(run_dir) in (executor.RUNNING, executor.QUEUED):
+            executor.cancel_run(run_dir)
+            cancelled += 1
+
+    shutil.rmtree(study_dir, ignore_errors=True)
+    if cancelled:
+        flash(f"Cancelled {cancelled} unfinished run(s).")
+    flash(f"Deleted study {study}.")
+    return redirect(url_for("list_studies"))
 
 
-@app.route("/jobs/download/<study>/<run_id>/<filename>")
+@app.route("/studies/download/<study>/<run_id>/<filename>")
 def download_job_file(study, run_id, filename):
-    try:
-        run_dir = studies.run_path(studies_root(), study, run_id)
-    except StudyError:
-        flash("Invalid job directory.")
-        return redirect(url_for("list_jobs"))
+    run_dir = _resolve_run(study, run_id)
+    if run_dir is None:
+        flash("Run directory not found.")
+        return redirect(url_for("list_studies"))
     return send_from_directory(str(run_dir), secure_filename(filename), as_attachment=True)
 
 
