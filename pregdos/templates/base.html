@@ -1,3 +1,4 @@
+{% import "_funding.html" as funding %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -12,10 +13,15 @@
 <body>
   <nav class="tab-nav">
     <div class="container tab-nav-inner">
-      <a class="tab-nav-brand" href="{{ url_for('index') }}">PregDos</a>
+      {# The brand is a nav destination in its own right (the dashboard), so it carries the
+         active indicator on "/" instead of lending it to New simulation. #}
+      <a class="tab-nav-brand{% if request.path == '/' %} active{% endif %}"
+         href="{{ url_for('index') }}">
+        PregDos<span class="tab-nav-version" title="{{ pregdos_version }}">v{{ pregdos_version_short }}</span>
+      </a>
       <div class="tab-nav-tabs">
         <a href="{{ url_for('upload_files') }}"
-           class="tab-nav-tab{% if request.path.startswith('/upload') or request.path == '/' %} active{% endif %}">
+           class="tab-nav-tab{% if request.path.startswith('/upload') or request.path.startswith('/convert') %} active{% endif %}">
           New simulation
         </a>
         <a href="{{ url_for('list_studies') }}"
@@ -53,8 +59,15 @@
     {% block content %}{% endblock %}
   </main>
 
-  <footer class="footer container">
-    <p><a href="https://github.com/Eurados/pregdos" target="_blank" rel="noopener">PregDos</a> {{ pregdos_version }}</p>
+  <footer class="footer container funding-strip">
+    {{ funding.funding_logos(funding_logos, compact=true) }}
+    <p class="hint">
+      Part of the
+      <a href="https://pianoforte-partnership.eu/sonora/" target="_blank" rel="noopener noreferrer">SONORA</a>
+      project, funded by the European Union under
+      <a href="https://pianoforte-partnership.eu/" target="_blank" rel="noopener noreferrer">PIANOFORTE</a>
+      (grant No 101061037).
+    </p>
   </footer>
 
   {% block scripts %}{% endblock %}

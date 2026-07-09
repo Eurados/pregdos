@@ -31,13 +31,18 @@
       <table class="scorer-table">
         <thead>
           <tr>
-            <th>Scorer</th><th>Structure</th><th>Quantity</th>
+            <th>Field</th><th>Scorer</th><th>Structure</th><th>Quantity</th>
             <th>Dose (Sum)</th><th>Uncertainty (SD)</th><th>Unit</th>
           </tr>
         </thead>
         <tbody>
           {% for r in rows %}
             <tr>
+              <td>
+                {% if r.field is not none %}
+                  {{ r.field }}{% if r.field_name %} &mdash; {{ r.field_name }}{% endif %}
+                {% else %}&mdash;{% endif %}
+              </td>
               <td><code>{{ r.scorer }}</code></td>
               <td>{{ r.structure }}</td>
               <td>{{ r.quantity }}</td>

@@ -74,6 +74,11 @@ _STANDARD_DEVIATION = "Standard_Deviation"
 # index, so `topas_field01_neutron_Fetus_1.csv` is the same scorer, run again.
 _INCREMENT_RE = re.compile(r"^(?P<stem>.+?)_(?P<index>\d+)$")
 
+# dicomexport names its output `<base>_field<NN>.txt`, where NN is the DICOM **BeamNumber**
+# -- not the beam's position in the plan.  So the number in the filename maps straight onto
+# the RTPLAN, and the two can never drift apart.
+_FIELD_NUMBER_RE = re.compile(r"_field(?P<number>\d+)\.txt$")
+
 
 class ResultsError(Exception):
     """A scorer CSV could not be understood.  Callers flash this, they do not crash on it."""
@@ -129,6 +134,13 @@ class ScorerResult:
     topas_version: str = ""
     run_index: Optional[int] = None
     """Set when `IfOutputFileAlreadyExists = Increment` produced `..._1.csv` etc."""
+
+    @property
+    def field_number(self) -> Optional[int]:
+        """DICOM BeamNumber of the field that produced this scorer, from the TOPAS input name."""
+        if (m := _FIELD_NUMBER_RE.search(self.parameter_file)):
+            return int(m.group("number"))
+        return None
 
     @property
     def is_single_bin(self) -> bool:
@@ -303,6 +315,36 @@ def parse_scorer_csv(path: str | Path) -> ScorerResult:
     )
 
 
+def beam_names(rtplan_path: Optional[str | Path]) -> Dict[int, str]:
+    """Map DICOM ``BeamNumber`` to ``BeamName`` from an RTPLAN.
+
+    Clinicians identify a field by its name ("RPO", "Field 2"), not by the order it happens
+    to appear in the plan -- and the two need not agree.  dicomexport encodes the BeamNumber
+    in the TOPAS filename, so the lookup is exact.
+
+    Proton plans are *RT Ion Plan* and use ``IonBeamSequence``; photon plans use
+    ``BeamSequence``.  Returns an empty mapping when the plan is missing or unreadable, so a
+    results page still renders with bare field numbers.
+    """
+    if rtplan_path is None:
+        return {}
+    try:
+        import pydicom
+
+        ds = pydicom.dcmread(str(rtplan_path), stop_before_pixels=True)
+    except Exception:  # noqa: BLE001 - a bad RTPLAN must not break the results page
+        return {}
+
+    names: Dict[int, str] = {}
+    for attr in ("IonBeamSequence", "BeamSequence"):
+        for beam in getattr(ds, attr, []) or []:
+            number = getattr(beam, "BeamNumber", None)
+            name = getattr(beam, "BeamName", None) or getattr(beam, "BeamDescription", None)
+            if number is not None and name:
+                names[int(number)] = str(name).strip()
+    return names
+
+
 def collect_results(run_dir: str | Path) -> Tuple[List[ScorerResult], List[str]]:
     """Parse every scorer CSV in a run directory.
 
@@ -319,7 +361,8 @@ def collect_results(run_dir: str | Path) -> Tuple[List[ScorerResult], List[str]]
         except ResultsError as e:
             warnings.append(str(e))
 
-    results.sort(key=lambda r: (r.structure, r.quantity, r.scorer, r.run_index or 0))
+    # Group by field first: a clinician reads the table one field at a time.
+    results.sort(key=lambda r: (r.field_number or 0, r.structure, r.quantity, r.scorer, r.run_index or 0))
     return results, warnings
 
 

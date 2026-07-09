@@ -80,6 +80,28 @@ body {
   padding: 14px 0;
   margin-right: 16px;
   flex-shrink: 0;
+  white-space: nowrap;
+  /* The brand links to the dashboard, so it takes the same active underline as a tab
+     rather than handing it to a neighbour. */
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: border-color 0.15s ease;
+}
+
+.tab-nav-brand.active {
+  border-bottom-color: var(--brand);
+}
+
+/* The version rides with the brand so it appears in every screenshot and bug report.
+   Only the public part is shown; the full setuptools-scm string (with the commit hash)
+   is on the title attribute. */
+.tab-nav-version {
+  margin-left: 6px;
+  font-weight: 500;
+  font-size: 0.75rem;
+  color: var(--muted);
+  letter-spacing: 0.01em;
+  vertical-align: 1px;
 }
 
 .tab-nav-tabs {
@@ -584,6 +606,46 @@ button:focus-visible,
 @media (max-width: 600px) {
   .funding-logo {
     height: 36px;
+  }
+}
+
+/* Persistent acknowledgement strip in the site footer: present on every page, but never
+   competing with the page's own content. */
+.funding-strip {
+  padding-top: 20px;
+  border-top: 1px solid var(--ring);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.funding-strip .hint {
+  margin: 0;
+  max-width: 640px;
+}
+
+.funding-logos.compact {
+  gap: 16px;
+  margin-top: 0;
+  justify-content: center;
+}
+
+.funding-logos.compact .funding-logo {
+  height: 30px;
+  opacity: 0.85;
+  transition: opacity 0.15s ease;
+}
+
+.funding-logos.compact a:hover .funding-logo,
+.funding-logos.compact .funding-logo:hover {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .funding-logos.compact .funding-logo {
+    transition: none;
   }
 }
 

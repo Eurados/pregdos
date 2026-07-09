@@ -184,12 +184,22 @@ def allowed_file(filename):
 
 
 @app.context_processor
-def inject_pregdos_version():
+def inject_layout_context():
+    """Values every page needs: the version shown in the nav, and the funding logos.
+
+    setuptools-scm produces versions like ``0.3.0.post33+g1a87f860.d20260709``.  The local
+    part after ``+`` identifies the exact commit, which is valuable in a bug report but too
+    long for a nav bar, so the short form is shown and the full one hangs off the tooltip.
+    """
     try:
         version = importlib.metadata.version("pregdos")
     except importlib.metadata.PackageNotFoundError:
         version = "dev"
-    return {"pregdos_version": version}
+    return {
+        "pregdos_version": version,
+        "pregdos_version_short": version.split("+", 1)[0],
+        "funding_logos": _funding_logos(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -511,7 +521,7 @@ def about():
     env = versions.summary()
     env["pregdos"] = pkg_version("pregdos")
     env["dicomexport"] = pkg_version("dicomexport")
-    return render_template("about.html", versions=env, logos=_funding_logos())
+    return render_template("about.html", versions=env)
 
 
 # Funding acknowledgement logos, shown on the About page when present.  Absent files are
@@ -589,7 +599,7 @@ def run_detail(study, run_id):
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
 
-    rows, warnings = _result_rows(run_dir)
+    rows, warnings = _result_rows(run_dir, study)
     for w in warnings:
         flash(f"Could not read scorer output: {w}")
 
@@ -608,14 +618,26 @@ def run_detail(study, run_id):
     )
 
 
-def _result_rows(run_dir: Path):
+def _result_rows(run_dir: Path, study: str):
     """Parsed, plan-scaled scorer rows for one run, ready for the results table."""
     parsed, warnings = results.collect_results(run_dir)
+
+    # Field names come from the study's RTPLAN.  A field is identified by its DICOM
+    # BeamNumber, which need not match its position in the plan -- so show the name a
+    # clinician would recognise, not just an index.
+    try:
+        names = results.beam_names(studies.find_rtplan(studies_root(), study))
+    except StudyError:
+        names = {}
+
     rows = []
     for r in parsed:
         scaling = results.scaling_for(r, run_dir)
         total, sd = r.scaled(scaling)
+        number = r.field_number
         rows.append({
+            "field": number,
+            "field_name": names.get(number, ""),
             "scorer": r.scorer,
             "structure": r.structure or "—",
             "quantity": r.quantity,
@@ -638,14 +660,16 @@ def download_report(study, run_id):
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
 
-    rows, _ = _result_rows(run_dir)
+    rows, _ = _result_rows(run_dir, study)
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["# PregDos report", f"study={study}", f"run={run_id}"])
     writer.writerow(["# Doses are scaled to the full plan; see issue #50 before trusting absolute values."])
-    writer.writerow(["scorer", "structure", "quantity", "unit", "sum", "standard_deviation", "scale_factor", "note"])
+    writer.writerow(["field", "field_name", "scorer", "structure", "quantity", "unit",
+                     "sum", "standard_deviation", "scale_factor", "note"])
     for r in rows:
         writer.writerow([
+            "" if r["field"] is None else r["field"], r["field_name"],
             r["scorer"], r["structure"], r["quantity"], r["unit"],
             "" if r["sum"] is None else repr(r["sum"]),
             "" if r["sd"] is None else repr(r["sd"]),

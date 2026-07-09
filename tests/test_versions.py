@@ -1,5 +1,6 @@
 """Tests for runtime version discovery (TOPAS, Geant4) and the #49 version floor."""
 
+import re
 import subprocess
 
 import pytest
@@ -203,6 +204,98 @@ def test_about_page_shows_funding_logos_when_present(monkeypatch, tmp_path):
     assert "funding-logos" in body
     assert "img/eu-flag.png" in body and "img/pianoforte-logo.png" in body
     assert 'alt="Funded by the European Union"' in body
+
+
+def _with_logos(monkeypatch, tmp_path):
+    from pregdos.webserver import app
+    img = tmp_path / "img"
+    img.mkdir()
+    (img / "eu-flag.png").write_bytes(b"\x89PNG")
+    (img / "pianoforte-logo.png").write_bytes(b"\x89PNG")
+    monkeypatch.setattr(app, "static_folder", str(tmp_path))
+    app.config["TESTING"] = True
+    return app
+
+
+@pytest.mark.parametrize("path", ["/", "/about", "/studies", "/upload"])
+def test_funding_strip_is_on_every_page(monkeypatch, tmp_path, path):
+    """The acknowledgement lives in base.html's footer, so it cannot be forgotten on a
+    page added later."""
+    app = _with_logos(monkeypatch, tmp_path)
+    app.config["UPLOAD_FOLDER"] = str(tmp_path / "studies")
+    with app.test_client() as c:
+        body = c.get(path).data.decode()
+    assert "funding-logos compact" in body
+    assert "pianoforte-partnership.eu" in body        # hyperlinked
+    assert 'class="funding-logo plated"' in body      # only the transparent logo is plated
+
+
+def test_pages_without_logos_render_no_images(monkeypatch, tmp_path):
+    from pregdos.webserver import app
+    monkeypatch.setattr(app, "static_folder", str(tmp_path))
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        body = c.get("/").data.decode()
+    assert "funding-logos" not in body
+    assert "PIANOFORTE" in body                       # the text acknowledgement remains
+
+
+@pytest.mark.parametrize("path", ["/", "/about"])
+def test_version_is_in_the_nav_bar(monkeypatch, tmp_path, path):
+    """Shown on every page so it lands in screenshots and bug reports."""
+    from pregdos import webserver
+    from pregdos.webserver import app
+    monkeypatch.setattr(webserver.importlib.metadata, "version",
+                        lambda name: "0.3.0.post33+g1a87f860.d20260709")
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        body = c.get(path).data.decode()
+    # short form shown, full string (with commit hash) on the tooltip
+    assert 'class="tab-nav-version" title="0.3.0.post33+g1a87f860.d20260709">v0.3.0.post33<' in body
+
+
+def _active_nav_items(html):
+    """Labels of the nav entries currently carrying the active underline."""
+    return re.findall(r'class="tab-nav-(?:brand|tab) active"[^>]*>\s*([^<\n]+?)\s*[<\n]', html)
+
+
+@pytest.mark.parametrize("path,expected", [
+    ("/", "PregDos"),                 # the dashboard highlights the brand, not a neighbour
+    ("/upload", "New simulation"),
+    ("/studies", "Results"),
+    ("/about", "About"),
+])
+def test_exactly_one_nav_item_is_active(monkeypatch, tmp_path, path, expected):
+    from pregdos.webserver import app
+    app.config["TESTING"] = True
+    app.config["UPLOAD_FOLDER"] = str(tmp_path / "studies")
+    with app.test_client() as c:
+        html = c.get(path).data.decode()
+    assert _active_nav_items(html) == [expected]
+
+
+def test_footer_no_longer_repeats_the_version(monkeypatch, tmp_path):
+    """The short version is in the nav and the full one is on About; the footer stops there."""
+    app = _with_logos(monkeypatch, tmp_path)
+    with app.test_client() as c:
+        footer = c.get("/").data.decode().split("<footer")[1]
+    assert "research use only" not in footer
+    assert "post" not in footer                       # no version string in the footer
+    assert "pianoforte-partnership.eu" in footer      # the acknowledgement stays
+
+
+def test_version_falls_back_when_package_metadata_is_absent(monkeypatch):
+    from pregdos import webserver
+    from pregdos.webserver import app
+
+    def boom(name):
+        raise webserver.importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(webserver.importlib.metadata, "version", boom)
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        body = c.get("/").data.decode()
+    assert ">vdev<" in body
 
 
 def test_about_page_warns_about_missing_g4_data(monkeypatch, tmp_path):

@@ -96,6 +96,94 @@ def test_structure_name_ending_in_a_number_is_not_an_increment(tmp_path):
     assert parse_scorer_csv(p).run_index is None    # no `..._gamma_PTV.csv` sibling exists
 
 
+# --- field number and beam name ---
+
+def test_field_number_comes_from_the_parameter_file():
+    """dicomexport names its output by DICOM BeamNumber, so the filename maps onto the plan."""
+    assert parse_scorer_csv(NEUTRON).field_number == 1
+
+
+def test_field_number_is_none_without_a_parameter_file(tmp_path):
+    p = tmp_path / "s.csv"
+    p.write_text("# Results for scorer: A\n# DoseToMedium ( Gy ) : Sum   \n1.0\n")
+    assert parse_scorer_csv(p).field_number is None
+
+
+def _rtplan(tmp_path, beams, sequence="IonBeamSequence"):
+    """Write a minimal but well-formed RTPLAN carrying BeamNumber -> BeamName.
+
+    The file gets a real File Meta header, as any clinical RTPLAN would -- a headerless
+    dataset is rejected by pydicom, and `beam_names()` is meant to reject it too.
+    """
+    import pydicom
+    from pydicom.dataset import Dataset, FileMetaDataset
+
+    sop_class = pydicom.uid.RTIonPlanStorage
+    ds = Dataset()
+    ds.file_meta = FileMetaDataset()
+    ds.file_meta.MediaStorageSOPClassUID = sop_class
+    ds.file_meta.MediaStorageSOPInstanceUID = pydicom.uid.generate_uid()
+    ds.file_meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
+    ds.SOPClassUID = sop_class
+    ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID
+    ds.Modality = "RTPLAN"
+
+    seq = []
+    for number, name in beams:
+        beam = Dataset()
+        beam.BeamNumber = number
+        beam.BeamName = name
+        seq.append(beam)
+    setattr(ds, sequence, seq)
+
+    path = tmp_path / "RN.plan.dcm"
+    ds.save_as(str(path), enforce_file_format=True)
+    return path
+
+
+def test_beam_names_from_ion_plan(tmp_path):
+    """Proton plans are RT Ion Plan and use IonBeamSequence."""
+    path = _rtplan(tmp_path, [(1, "Field 1"), (2, "RPO"), (3, "LAO")])
+    assert results.beam_names(path) == {1: "Field 1", 2: "RPO", 3: "LAO"}
+
+
+def test_beam_names_from_photon_plan(tmp_path):
+    path = _rtplan(tmp_path, [(7, "AP")], sequence="BeamSequence")
+    assert results.beam_names(path) == {7: "AP"}
+
+
+def test_beam_numbers_need_not_match_plan_order(tmp_path):
+    """The whole point of the lookup: beam 2 may be listed first, or numbered arbitrarily."""
+    path = _rtplan(tmp_path, [(5, "Posterior"), (2, "Anterior")])
+    names = results.beam_names(path)
+    assert names[5] == "Posterior" and names[2] == "Anterior"
+
+
+def test_beam_names_missing_plan_is_empty(tmp_path):
+    assert results.beam_names(None) == {}
+    assert results.beam_names(tmp_path / "absent.dcm") == {}
+
+
+def test_beam_names_unreadable_plan_is_empty(tmp_path):
+    """A corrupt RTPLAN must not take down the results page."""
+    bad = tmp_path / "RN.bad.dcm"
+    bad.write_text("not dicom")
+    assert results.beam_names(bad) == {}
+
+
+def test_results_are_grouped_by_field(tmp_path):
+    for src in (NEUTRON, PROTON):
+        (tmp_path / src.name).write_bytes(src.read_bytes())
+    # a second field's scorer, which must sort after field 1
+    (tmp_path / "topas_field02_gamma_CTV.csv").write_text(
+        "# Parameter File: topas_field02.txt\n"
+        "# Results for scorer: DoseGamma_CTV\n"
+        "# DoseToMedium ( Gy ) : Sum   \n1.0e-9\n"
+    )
+    found, _ = results.collect_results(tmp_path)
+    assert [r.field_number for r in found] == [1, 1, 2]
+
+
 # --- NaN / bad input ---
 
 def test_nan_sum_is_flagged_as_a_version_problem(tmp_path):

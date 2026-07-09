@@ -95,20 +95,6 @@
         - European Partnership for Radiation Protection Research).
     </p>
 
-    {% if logos %}
-      <div class="funding-logos">
-        {% for logo in logos %}
-          {% set img %}
-            <img class="funding-logo{% if logo.plate %} plated{% endif %}"
-                 src="{{ url_for('static', filename='img/' ~ logo.file) }}" alt="{{ logo.alt }}">
-          {% endset %}
-          {% if logo.href %}
-            <a href="{{ logo.href }}" target="_blank" rel="noopener noreferrer">{{ img }}</a>
-          {% else %}
-            {{ img }}
-          {% endif %}
-        {% endfor %}
-      </div>
-    {% endif %}
+    {# The logos live in the persistent footer; this panel keeps the full attribution text. #}
 </section>
 {% endblock %}
