@@ -192,6 +192,51 @@ def test_corrupt_metadata_does_not_raise(run_dir):
     assert executor.read_run_metadata(run_dir) is None
 
 
+@pytest.mark.parametrize("payload", [
+    '[1, 2, 3]',                                        # valid JSON, wrong shape
+    '"a string"',
+    'null',
+    '{"fields": "not a list"}',
+    '{"fields": [1, 2]}',                               # entries not objects
+    '{"fields": [{"ident": "5"}]}',                     # entry missing topas_file
+    '{"fields": [{"topas_file": null, "ident": "5"}]}',
+    '{"fields": [{"topas_file": "", "ident": "5"}]}',
+])
+def test_malformed_metadata_never_raises(run_dir, payload):
+    """run.json may be truncated by a crash or half-written while we read it.  Every caller
+    is a page render, so a bad shape must not 500 the jobs page."""
+    (run_dir / executor.RUN_METADATA).write_text(payload)
+    info = executor.read_run_metadata(run_dir)          # must not raise
+    assert info is None or info.fields == []
+    assert executor.run_status(run_dir) == executor.QUEUED
+    executor.cancel_run(run_dir)                        # must not raise either
+
+
+def test_malformed_entries_are_skipped_not_fatal(run_dir):
+    """A partially valid file still yields the fields we can understand."""
+    (run_dir / executor.RUN_METADATA).write_text(json.dumps({
+        "backend": "local", "submitted": "2026-07-09T12:00:00",
+        "fields": [
+            {"ident": "1"},                             # no topas_file -> skipped
+            {"topas_file": "topas_field01.txt", "ident": "2"},
+            "garbage",                                  # not an object -> skipped
+        ],
+    }))
+    info = executor.read_run_metadata(run_dir)
+    assert [f.topas_file for f in info.fields] == ["topas_field01.txt"]
+
+
+def test_unknown_backend_falls_back_to_local(run_dir):
+    (run_dir / executor.RUN_METADATA).write_text(json.dumps({
+        "backend": "kubernetes", "submitted": 12345,
+        "fields": [{"topas_file": "f.txt"}],
+    }))
+    info = executor.read_run_metadata(run_dir)
+    assert info.backend == executor.LOCAL
+    assert info.submitted == ""
+    assert info.fields[0].ident == ""
+
+
 # --- cancellation ---
 
 def test_cancel_local_run_kills_the_process_group(run_dir, monkeypatch, mocker):

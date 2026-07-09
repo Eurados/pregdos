@@ -53,6 +53,10 @@ DICOM_SUBDIR = "dicom"
 RUN_PREFIX = "run_"
 _RUN_ID_RE = re.compile(r"^run_\d{8}_\d{6}(?:_\d+)?$")
 
+# Upper bound on the `name`, `name_2`, `name_3`, ... search when de-duplicating a study or
+# run directory name.  Also bounds the retry loop when another request wins the race.
+_MAX_NAME_ATTEMPTS = 1000
+
 
 class StudyError(ValueError):
     """A study or run name could not be resolved to a path inside the studies root."""
@@ -103,7 +107,7 @@ def allocate_study_name(root: str | os.PathLike, raw: str) -> str:
     root = Path(root)
     if not (root / base).exists():
         return base
-    for n in range(2, 1000):
+    for n in range(2, _MAX_NAME_ATTEMPTS):
         candidate = f"{base}_{n}"
         if not (root / candidate).exists():
             return candidate
@@ -148,11 +152,22 @@ def create_study(root: str | os.PathLike, raw_name: str) -> Tuple[str, Path]:
 
     Returns the allocated name and the study path.  The name may differ from ``raw_name``
     if a study of that name already existed -- see :func:`allocate_study_name`.
+
+    ``mkdir()`` *is* the claim on the name: it fails atomically if another request won the
+    race, and we then re-derive the next free name.  Asking ``exists()`` first and creating
+    afterwards would let two concurrent uploads agree on the same name -- Flask serves
+    requests in threads, so that is reachable, not theoretical.
     """
-    name = allocate_study_name(root, raw_name)
-    path = Path(root) / name
-    (path / DICOM_SUBDIR).mkdir(parents=True)
-    return name, path
+    for _ in range(_MAX_NAME_ATTEMPTS):
+        name = allocate_study_name(root, raw_name)
+        path = Path(root) / name
+        try:
+            path.mkdir(parents=True)  # parents for the studies root; the leaf must be new
+        except FileExistsError:
+            continue  # lost the race for this name; try the next one
+        (path / DICOM_SUBDIR).mkdir()
+        return name, path
+    raise StudyError(f"Could not allocate a directory for study {safe_study_name(raw_name)!r}.")
 
 
 def create_run(root: str | os.PathLike, name: str) -> Tuple[str, Path]:
@@ -162,21 +177,22 @@ def create_run(root: str | os.PathLike, name: str) -> Tuple[str, Path]:
     generated TOPAS files are simply *the contents of that directory*.  There is nothing
     to glob across, nothing to deduplicate, and no way for a previous run's output to be
     mistaken for this one's -- which is what issue #41 was about.
+
+    That guarantee rests on the directory being genuinely new, so -- as in
+    :func:`create_study` -- the ``mkdir()`` is the claim.  Two conversions of one study
+    starting in the same second get ``run_<stamp>`` and ``run_<stamp>_2``.
     """
     study = study_path(root, name)
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_id = f"{RUN_PREFIX}{stamp}"
-    # Two conversions of the same study within one second would collide.
-    if (study / run_id).exists():
-        for n in range(2, 1000):
-            if not (study / f"{run_id}_{n}").exists():
-                run_id = f"{run_id}_{n}"
-                break
-        else:
-            raise StudyError("Too many runs started in the same second.")
-    path = study / run_id
-    path.mkdir()
-    return run_id, path
+    base = f"{RUN_PREFIX}{stamp}"
+    for suffix in ("", *(f"_{n}" for n in range(2, _MAX_NAME_ATTEMPTS))):
+        path = study / (base + suffix)
+        try:
+            path.mkdir()
+        except FileExistsError:
+            continue
+        return path.name, path
+    raise StudyError("Too many runs started in the same second.")
 
 
 # ---------------------------------------------------------------------------

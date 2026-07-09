@@ -137,7 +137,13 @@ def _write_run_metadata(run_dir: Path, info: RunInfo) -> None:
 
 
 def read_run_metadata(run_dir: str | os.PathLike) -> Optional[RunInfo]:
-    """Load ``run.json``, or None when the run was never submitted."""
+    """Load ``run.json``, or None when the run was never submitted.
+
+    Every caller is a page render or a status poll, so this must never raise on a file that
+    is corrupt, truncated by a crash, or half-written while we read it.  Anything we cannot
+    make sense of is skipped; a metadata file with no usable fields reads as "not submitted"
+    rather than taking the jobs page down with a 500.
+    """
     path = Path(run_dir) / RUN_METADATA
     if not path.is_file():
         return None
@@ -145,10 +151,25 @@ def read_run_metadata(run_dir: str | os.PathLike) -> Optional[RunInfo]:
         raw = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return None
+    if not isinstance(raw, dict):
+        return None
+
+    fields: List[FieldJob] = []
+    entries = raw.get("fields")
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        topas_file = entry.get("topas_file")
+        if not isinstance(topas_file, str) or not topas_file:
+            continue
+        fields.append(FieldJob(topas_file, str(entry.get("ident", ""))))
+
+    backend = raw.get("backend")
+    submitted = raw.get("submitted")
     return RunInfo(
-        backend=raw.get("backend", LOCAL),
-        submitted=raw.get("submitted", ""),
-        fields=[FieldJob(f["topas_file"], str(f.get("ident", ""))) for f in raw.get("fields", [])],
+        backend=backend if backend in (SLURM, LOCAL) else LOCAL,
+        submitted=submitted if isinstance(submitted, str) else "",
+        fields=fields,
     )
 
 

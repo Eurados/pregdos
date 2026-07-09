@@ -54,6 +54,99 @@ def test_create_run_is_always_fresh(tmp_path):
     assert (path_a / "topas_field01.txt").read_text() == "stale"
 
 
+def test_create_study_survives_a_lost_race(tmp_path, monkeypatch):
+    """Flask serves requests in threads, so two uploads can agree on the same free name.
+    The mkdir() must be the claim: the loser retries rather than raising FileExistsError."""
+    real_mkdir = studies.Path.mkdir
+    calls = []
+
+    def racing_mkdir(self, *args, **kwargs):
+        # First claim of "headphantom" loses: simulate another request creating it first.
+        if not calls and self.name == "headphantom":
+            calls.append(self)
+            real_mkdir(self, *args, **kwargs)
+            raise FileExistsError(str(self))
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(studies.Path, "mkdir", racing_mkdir)
+    name, path = studies.create_study(tmp_path, "headphantom")
+
+    assert name == "headphantom_2"       # stepped aside instead of crashing
+    assert (path / "dicom").is_dir()
+
+
+def test_create_study_concurrently_never_collides(tmp_path):
+    """Real threads, real filesystem: every winner gets a distinct directory."""
+    import threading
+    names, errors = [], []
+    barrier = threading.Barrier(8)
+
+    def worker():
+        barrier.wait()               # maximise the overlap
+        try:
+            names.append(studies.create_study(tmp_path, "study")[0])
+        except Exception as e:       # noqa: BLE001 - surfaced below
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert sorted(names) == sorted(set(names))   # no two threads got the same name
+    assert len(names) == 8
+    for n in names:
+        assert (studies.study_path(tmp_path, n) / "dicom").is_dir()
+
+
+def test_create_run_survives_a_lost_race(tmp_path, monkeypatch):
+    """Two conversions of one study in the same second must not raise FileExistsError."""
+    studies.create_study(tmp_path, "s")
+    real_mkdir = studies.Path.mkdir
+    tripped = []
+
+    def racing_mkdir(self, *args, **kwargs):
+        if not tripped and self.name.startswith(studies.RUN_PREFIX):
+            tripped.append(self)
+            real_mkdir(self, *args, **kwargs)
+            raise FileExistsError(str(self))
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(studies.Path, "mkdir", racing_mkdir)
+    run_id, path = studies.create_run(tmp_path, "s")
+
+    assert run_id.endswith("_2")
+    assert path.is_dir() and list(path.iterdir()) == []
+    assert studies._RUN_ID_RE.match(run_id)    # still a valid, resolvable run id
+
+
+def test_create_run_concurrently_never_collides(tmp_path):
+    import threading
+    studies.create_study(tmp_path, "s")
+    ids, errors = [], []
+    barrier = threading.Barrier(6)
+
+    def worker():
+        barrier.wait()
+        try:
+            ids.append(studies.create_run(tmp_path, "s")[0])
+        except Exception as e:       # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert sorted(ids) == sorted(set(ids))
+    assert all(studies._RUN_ID_RE.match(i) for i in ids)
+    assert sorted(studies.list_runs(tmp_path, "s")) == sorted(ids)
+
+
 def test_list_studies_and_runs(tmp_path):
     studies.create_study(tmp_path, "b")
     studies.create_study(tmp_path, "a")
