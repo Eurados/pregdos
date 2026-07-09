@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block title %}{{ job_dir_name }} · PregDos{% endblock %}
-{% block heading %}{{ job_dir_name }}{% endblock %}
-{% block subtitle %}Output files{% endblock %}
+{% block title %}{{ study }} / {{ run_id }} · PregDos{% endblock %}
+{% block heading %}{{ study }}{% endblock %}
+{% block subtitle %}Run {{ run_id }} — output files{% endblock %}
 
 {% block content %}
 <section class="card">
@@ -13,7 +13,7 @@
           <tr>
             <td>{{ f.name }}</td>
             <td>{{ (f.size / 1024 / 1024) | round(1) }} MB</td>
-            <td><a class="btn btn-secondary" href="{{ url_for('download_job_file', job_dir_name=job_dir_name, filename=f.name) }}">Download</a></td>
+            <td><a class="btn btn-secondary" href="{{ url_for('download_job_file', study=study, run_id=run_id, filename=f.name) }}">Download</a></td>
           </tr>
         {% endfor %}
       </tbody>

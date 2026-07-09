@@ -5,17 +5,18 @@
 
 {% block content %}
 <section class="card">
+  <p><strong>Study:</strong> <code>{{ study_name }}</code> · <strong>Run:</strong> <code>{{ run_id }}</code></p>
   {% if selected_structures %}
-    <p><strong>Selected structures:</strong> {{ selected_structures|join(', ') }}</p>
+    <p><strong>Scored structures:</strong> {{ selected_structures|join(', ') }}</p>
   {% endif %}
   <ul>
     {% for f in out_files %}
-      <li><a class="btn" href="{{ url_for('download_file', study=study_name, filename=f) }}">{{ f }}</a></li>
+      <li><a class="btn" href="{{ url_for('download_file', study=study_name, run_id=run_id, filename=f) }}">{{ f }}</a></li>
     {% endfor %}
   </ul>
   <form method="POST" action="{{ url_for('submit_job') }}">
-    <input type="hidden" name="study_dir" value="{{ study_dir }}">
     <input type="hidden" name="study_name" value="{{ study_name }}">
+    <input type="hidden" name="run_id" value="{{ run_id }}">
     {% for f in out_files %}
       <input type="hidden" name="out_files" value="{{ f }}">
     {% endfor %}

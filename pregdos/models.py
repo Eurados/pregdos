@@ -32,18 +32,29 @@ class ConversionParameters:
     """Input parameters for a single dicomexport invocation.
 
     dicomexport converts a DICOM RT plan + CT study into one TOPAS input file
-    per treatment field.  These parameters control which study and beam model
-    are used and how many primary particles the simulation will run.
+    per treatment field.
+
+    Every path here is **relative to** :attr:`run_dir`, which is also the working
+    directory dicomexport is invoked from and the directory TOPAS will later run in.
+    dicomexport copies its arguments verbatim into the generated TOPAS input, so
+    relative arguments produce relative ``DicomDirectory`` / ``includeFile`` entries,
+    and the study directory stays movable.  See :mod:`pregdos.studies`.
     """
 
-    study_dir: str
-    """Path to the (possibly ROI-filtered) study directory passed to dicomexport."""
-    beam_model_path: str
-    """CSV file containing the pencil-beam model (energy-dependent spot parameters)."""
-    spr_table_path: str
-    """Text file mapping CT Hounsfield units to stopping-power ratios (SPR)."""
-    output_base: str
-    """Base path for output files; dicomexport appends ``_fieldNN.txt`` suffixes."""
+    study_name: str
+    """Name of the study this conversion belongs to (never a filesystem path)."""
+    run_dir: str
+    """Absolute path of the freshly created run directory (the dicomexport/TOPAS cwd)."""
+    dicom_rel: str
+    """DICOM directory, relative to ``run_dir`` -- normally ``"../dicom"``."""
+    beam_model_rel: str
+    """Pencil-beam model CSV, relative to ``run_dir``.  Read by dicomexport at
+    generation time only; its path is never embedded in the TOPAS input."""
+    spr_table_rel: str
+    """HU-to-material (SPR) table, relative to ``run_dir``.  Embedded verbatim into
+    the generated file as ``includeFile``, so it must stay relative."""
+    output_basename: str
+    """Base name for output files; dicomexport appends ``_fieldNN.txt`` suffixes."""
     field_nr: Optional[int] = None
     """If set, export only this treatment field (1-based index).
     None means export all fields."""
@@ -56,20 +67,18 @@ class ConversionParameters:
 class ConversionResult:
     """Output produced by a successful dicomexport run.
 
-    Contains both the basenames (used in the web UI and for SLURM job
-    submission) and the absolute paths (used for immediate post-processing
-    by the scorer injection step).
+    The generated files are simply *the contents of the run directory*, which did not
+    exist before this conversion started -- there is nothing to disambiguate.
     """
 
     out_files: List[str]
     """Basenames of the generated TOPAS input files, e.g. ``["topas_field01.txt"]``."""
-    out_file_paths: List[str]
-    """Absolute paths of the same files.  Used by append_scorers() to modify
-    the files immediately after dicomexport finishes."""
     study_name: str
-    """Name of the (filtered) study directory; used to construct download URLs."""
+    """Study the conversion belongs to; used to construct download/submit URLs."""
+    run_id: str
+    """Identifier of the run directory holding these files, e.g. ``"run_20260709_143000"``."""
     selected_structures: List[str] = field(default_factory=list)
-    """ROI names that were retained in the RTSTRUCT for this conversion."""
+    """ROI names the user chose to score in this conversion."""
     stdout: Optional[str] = None
     """Captured standard output from the dicomexport process (for diagnostics)."""
     stderr: Optional[str] = None

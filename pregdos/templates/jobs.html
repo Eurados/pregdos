@@ -1,25 +1,32 @@
 {% extends "base.html" %}
 {% block title %}Jobs · PregDos{% endblock %}
 {% block heading %}Jobs{% endblock %}
-{% block subtitle %}All job directories, newest first{% endblock %}
+{% block subtitle %}All conversion runs, newest first{% endblock %}
 
 {% block content %}
 <section class="card">
   {% if jobs %}
     <table>
-      <thead><tr><th>Job directory</th><th>Files</th><th></th></tr></thead>
+      <thead><tr><th>Study</th><th>Run</th><th>Status</th><th>Files</th><th></th></tr></thead>
       <tbody>
         {% for job in jobs %}
           <tr>
-            <td><code>{{ job.name }}</code></td>
+            <td><code>{{ job.study }}</code></td>
+            <td><code>{{ job.run_id }}</code></td>
+            <td>
+              {% if job.status == 'completed' %}<span class="badge success">completed</span>
+              {% elif job.status == 'failed' %}<span class="badge danger">failed</span>
+              {% elif job.status == 'running' %}<span class="badge warning">running</span>
+              {% else %}<span class="badge">{{ job.status }}</span>{% endif %}
+            </td>
             <td>{{ job.file_count }}</td>
-            <td><a class="btn btn-secondary" href="{{ url_for('job_files', job_dir_name=job.name) }}">Browse</a></td>
+            <td><a class="btn btn-secondary" href="{{ url_for('job_files', study=job.study, run_id=job.run_id) }}">Browse</a></td>
           </tr>
         {% endfor %}
       </tbody>
     </table>
   {% else %}
-    <p>No job directories found.</p>
+    <p>No conversion runs found.</p>
   {% endif %}
 
   <div class="actions">
