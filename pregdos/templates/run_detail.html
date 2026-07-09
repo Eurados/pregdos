@@ -26,38 +26,53 @@
 
 <section class="card">
   <h2>Scorer results</h2>
-  {% if rows %}
+  {% if groups %}
     <div class="scorer-table-wrap">
       <table class="scorer-table">
         <thead>
           <tr>
-            <th>Field</th><th>Scorer</th><th>Structure</th><th>Quantity</th>
+            <th>Scorer</th><th>Structure</th><th>Quantity</th><th>Field</th>
             <th>Dose (Sum)</th><th>Uncertainty (SD)</th><th>Unit</th>
           </tr>
         </thead>
-        <tbody>
-          {% for r in rows %}
-            <tr>
-              <td>
-                {% if r.field is not none %}
-                  {{ r.field }}{% if r.field_name %} &mdash; {{ r.field_name }}{% endif %}
-                {% else %}&mdash;{% endif %}
-              </td>
-              <td><code>{{ r.scorer }}</code></td>
-              <td>{{ r.structure }}</td>
-              <td>{{ r.quantity }}</td>
-              {% if r.problem %}
-                <td colspan="3"><span class="badge danger">unusable</span> {{ r.problem }}</td>
-              {% elif r.sum is none %}
-                <td colspan="3" class="hint">multi-bin grid — download the CSV</td>
-              {% else %}
-                <td>{{ '%.4g' % r.sum }}</td>
-                <td>{{ '%.3g' % r.sd if r.sd is not none else '—' }}</td>
-                <td>{{ r.unit }}</td>
-              {% endif %}
-            </tr>
-          {% endfor %}
-        </tbody>
+        {% for g in groups %}
+          <tbody class="scorer-group">
+            {% for r in g.rows %}
+              <tr>
+                {% if loop.first %}
+                  <td rowspan="{{ g.rows|length }}"><code>{{ g.scorer }}</code></td>
+                  <td rowspan="{{ g.rows|length }}">{{ g.structure }}</td>
+                  <td rowspan="{{ g.rows|length }}">{{ g.quantity }}</td>
+                {% endif %}
+                <td>
+                  {% if r.field is not none %}
+                    {{ r.field }}{% if r.field_name %} &mdash; {{ r.field_name }}{% endif %}
+                  {% else %}&mdash;{% endif %}
+                </td>
+                {% if r.problem %}
+                  <td colspan="3"><span class="badge danger">unusable</span> {{ r.problem }}</td>
+                {% elif r.sum is none %}
+                  <td colspan="3" class="hint">multi-bin grid — download the CSV</td>
+                {% else %}
+                  <td>{{ '%.4g' % r.sum }}</td>
+                  <td>{{ '%.3g' % r.sd if r.sd is not none else '—' }}</td>
+                  <td>{{ r.unit }}</td>
+                {% endif %}
+              </tr>
+            {% endfor %}
+            {% if g.total_sum is not none %}
+              {# The rowspan cells above cover only the per-field rows, so the total row
+                 supplies its own leading cells. #}
+              <tr class="scorer-total">
+                <td colspan="3"></td>
+                <td><strong>All {{ g.n_fields }} fields</strong></td>
+                <td><strong>{{ '%.4g' % g.total_sum }}</strong></td>
+                <td>{{ '%.3g' % g.total_sd if g.total_sd is not none else '—' }}</td>
+                <td>{{ g.unit }}</td>
+              </tr>
+            {% endif %}
+          </tbody>
+        {% endfor %}
       </table>
     </div>
 

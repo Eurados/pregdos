@@ -14,6 +14,7 @@ import pydicom
 
 import csv
 import io
+import math
 import zipfile
 import os
 from werkzeug.utils import secure_filename
@@ -600,6 +601,7 @@ def run_detail(study, run_id):
         return redirect(url_for("list_studies"))
 
     rows, warnings = _result_rows(run_dir, study)
+    groups = _group_rows(rows)
     for w in warnings:
         flash(f"Could not read scorer output: {w}")
 
@@ -610,12 +612,58 @@ def run_detail(study, run_id):
         study=study,
         run_id=run_id,
         status=_run_status(run_dir),
-        rows=rows,
+        groups=groups,
         files=files,
         backend=info.backend if info else None,
         submitted=info.submitted if info else None,
         logs=[f["name"] for f in files if f["name"].endswith(".log")],
     )
+
+
+def _group_rows(rows: list) -> list:
+    """Group scorer rows by scorer, and total each group over its fields.
+
+    A clinician reads one quantity at a time -- "how much neutron dose did the brainstem
+    get, from all fields together" -- so the scorer is the outer key and the field the inner.
+
+    The per-field values are each already scaled to that field's own particle budget, so the
+    plan total is their plain sum.  Their uncertainties, however, come from independent Monte
+    Carlo runs and therefore add **in quadrature**, not linearly.
+
+    A group containing any unusable row (a NaN Sum, or a multi-bin grid) gets no total: a
+    partial sum over fields would understate the dose while looking authoritative.  Nor is a
+    group totalled when two rows share a field number -- ``IfOutputFileAlreadyExists =
+    "Increment"`` writes a second CSV for a re-run of the *same* field, and adding those
+    together would double-count it.
+    """
+    groups: dict = {}
+    for row in rows:
+        key = (row["scorer"], row["structure"], row["quantity"], row["unit"])
+        groups.setdefault(key, []).append(row)
+
+    out = []
+    for (scorer, structure, quantity, unit), members in groups.items():
+        members.sort(key=lambda r: (r["field"] is None, r["field"]))
+        summable = [r for r in members if r["problem"] is None and r["sum"] is not None]
+        complete = len(summable) == len(members)
+
+        fields = [r["field"] for r in members]
+        distinct_fields = None not in fields and len(set(fields)) == len(fields)
+
+        total_sum = total_sd = None
+        if complete and distinct_fields and len(members) > 1:
+            total_sum = sum(r["sum"] for r in summable)
+            sds = [r["sd"] for r in summable if r["sd"] is not None]
+            total_sd = math.sqrt(sum(sd * sd for sd in sds)) if len(sds) == len(summable) else None
+
+        out.append({
+            "scorer": scorer, "structure": structure, "quantity": quantity, "unit": unit,
+            "rows": members, "total_sum": total_sum, "total_sd": total_sd,
+            "n_fields": len(members),
+        })
+
+    out.sort(key=lambda g: (g["scorer"], g["structure"]))
+    return out
 
 
 def _result_rows(run_dir: Path, study: str):
@@ -665,17 +713,26 @@ def download_report(study, run_id):
     writer = csv.writer(buf)
     writer.writerow(["# PregDos report", f"study={study}", f"run={run_id}"])
     writer.writerow(["# Doses are scaled to the full plan; see issue #50 before trusting absolute values."])
+    writer.writerow(["# field=ALL rows total a scorer over its fields; their SDs add in quadrature."])
     writer.writerow(["field", "field_name", "scorer", "structure", "quantity", "unit",
                      "sum", "standard_deviation", "scale_factor", "note"])
-    for r in rows:
-        writer.writerow([
-            "" if r["field"] is None else r["field"], r["field_name"],
-            r["scorer"], r["structure"], r["quantity"], r["unit"],
-            "" if r["sum"] is None else repr(r["sum"]),
-            "" if r["sd"] is None else repr(r["sd"]),
-            "" if r["scale"] is None else repr(r["scale"]),
-            r["problem"] or "",
-        ])
+    for group in _group_rows(rows):
+        for r in group["rows"]:
+            writer.writerow([
+                "" if r["field"] is None else r["field"], r["field_name"],
+                r["scorer"], r["structure"], r["quantity"], r["unit"],
+                "" if r["sum"] is None else repr(r["sum"]),
+                "" if r["sd"] is None else repr(r["sd"]),
+                "" if r["scale"] is None else repr(r["scale"]),
+                r["problem"] or "",
+            ])
+        if group["total_sum"] is not None:
+            writer.writerow([
+                "ALL", "", group["scorer"], group["structure"], group["quantity"], group["unit"],
+                repr(group["total_sum"]),
+                "" if group["total_sd"] is None else repr(group["total_sd"]),
+                "", f"sum over {group['n_fields']} fields",
+            ])
     return Response(
         buf.getvalue(),
         mimetype="text/csv",

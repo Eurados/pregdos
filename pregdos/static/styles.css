@@ -573,6 +573,16 @@ button:focus-visible,
   margin: 0;
 }
 
+/* Each scorer is its own <tbody>, so a rule separates scorers rather than rows. */
+.scorer-table tbody.scorer-group + tbody.scorer-group {
+  border-top: 2px solid var(--ring);
+}
+
+.scorer-table tr.scorer-total td {
+  background: rgba(44, 123, 229, 0.06);
+  border-top: 1px solid var(--ring);
+}
+
 /* ----------------------------------------------------------
    Funding acknowledgement logos (About page)
    ---------------------------------------------------------- */
