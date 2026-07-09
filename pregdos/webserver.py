@@ -10,24 +10,45 @@ from flask import (
 import importlib.metadata
 import importlib.resources
 import pydicom
-import glob
 
 import zipfile
 import os
 from werkzeug.utils import secure_filename
 from pathlib import Path
-import datetime
 import subprocess
 import sys
 import shutil
 import tempfile
-import copy
-from typing import List
 
+from . import executor, studies
 from .models import ConversionParameters, ConversionResult
-from .postprocess import post_process_job
+from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
 
+
+# The studies root: one directory per uploaded study.  Still called UPLOAD_FOLDER for
+# backwards compatibility with existing deployments and the Docker entrypoint.
+UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER") or os.path.join(tempfile.gettempdir(), "pregdos_uploads")
+ALLOWED_EXTENSIONS = {"dcm", "csv", "txt"}
+
+app = Flask(__name__)
+app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+app.secret_key = os.environ.get("PREGDOS_SECRET_KEY", "pregdos_secret_key")
+
+
+def studies_root() -> str:
+    """The configured studies root.  Read through app.config so tests can override it."""
+    return app.config["UPLOAD_FOLDER"]
+
+
+def ensure_studies_root() -> str | None:
+    """Return an error string if the studies root can't be used, else None."""
+    return studies.ensure_root(studies_root())
+
+
+# ---------------------------------------------------------------------------
+# Bundled beam models and SPR tables
+# ---------------------------------------------------------------------------
 
 def _builtin_spr_tables() -> list[dict]:
     """Return metadata for SPR tables bundled with the package.
@@ -44,17 +65,6 @@ def _builtin_spr_tables() -> list[dict]:
     return tables
 
 
-def _builtin_spr_path(filename: str) -> str:
-    """Copy a bundled SPR table to the upload folder and return its path."""
-    safe = secure_filename(filename)
-    src = importlib.resources.files("pregdos") / "data" / "spr_tables" / safe
-    if not src.is_file():
-        raise FileNotFoundError(f"Unknown built-in SPR table: {filename}")
-    dest = os.path.join(app.config["UPLOAD_FOLDER"], safe)
-    Path(dest).write_bytes(src.read_bytes())
-    return dest
-
-
 def _builtin_beam_models() -> list[dict]:
     """Return metadata for beam model CSVs bundled with the package."""
     bm_dir = importlib.resources.files("pregdos") / "data" / "beam_models"
@@ -66,185 +76,90 @@ def _builtin_beam_models() -> list[dict]:
     return models
 
 
-def _builtin_beam_model_path(filename: str) -> str:
-    """Copy a bundled beam model CSV to the upload folder and return its path."""
+def _copy_builtin(kind: str, filename: str, dest_dir: Path) -> str:
+    """Copy a bundled beam model / SPR table into a study dir.  Return its basename."""
     safe = secure_filename(filename)
-    src = importlib.resources.files("pregdos") / "data" / "beam_models" / safe
+    src = importlib.resources.files("pregdos") / "data" / kind / safe
     if not src.is_file():
-        raise FileNotFoundError(f"Unknown built-in beam model: {filename}")
-    dest = os.path.join(app.config["UPLOAD_FOLDER"], safe)
-    Path(dest).write_bytes(src.read_bytes())
-    return dest
+        raise FileNotFoundError(f"Unknown built-in {kind} file: {filename}")
+    (dest_dir / safe).write_bytes(src.read_bytes())
+    return safe
 
-UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER") or os.path.join(tempfile.gettempdir(), "pregdos_uploads")
-JOBS_FOLDER = os.environ.get("JOBS_FOLDER", "/home/slurm/jobs")
-TOPAS_BIN = os.environ.get("TOPAS_BIN", "topas")
-ALLOWED_EXTENSIONS = {"dcm", "csv", "txt"}
 
-app = Flask(__name__)
-app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-app.config["JOBS_FOLDER"] = JOBS_FOLDER
-app.secret_key = os.environ.get("PREGDOS_SECRET_KEY", "pregdos_secret_key")
+# ---------------------------------------------------------------------------
+# Upload handling
+# ---------------------------------------------------------------------------
 
-def ensure_upload_folder() -> str | None:
-    """Return an error string if the configured upload folder can't be used, else None."""
-    path = app.config["UPLOAD_FOLDER"]
+def save_single_file(upload, folder) -> str:
+    """Save one uploaded file into ``folder``.  Return its basename."""
+    name = secure_filename(upload.filename)
+    upload.save(os.path.join(folder, name))
+    return name
+
+
+def extract_zip(study_zip, dest_dir):
+    """Extract an uploaded ZIP into ``dest_dir``, rejecting entries that escape it.
+
+    The ZIP itself is written to a scratch file next to ``dest_dir`` and removed again;
+    only its contents are kept, so no stray archive is left inside the study.
+    """
+    dest = Path(dest_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+    scratch = dest.parent / (secure_filename(study_zip.filename) + ".part")
+    study_zip.save(str(scratch))
     try:
-        os.makedirs(path, exist_ok=True)
-    except OSError as e:
-        return f"Cannot create upload folder {path!r}: {e}"
-    if not os.path.isdir(path):
-        return f"Upload folder path {path!r} exists but is not a directory."
-    if not os.access(path, os.W_OK | os.X_OK):
-        return f"Upload folder {path!r} is not writable."
-    return None
+        with zipfile.ZipFile(scratch, "r") as zf:
+            for member in zf.namelist():
+                member_path = os.path.abspath(os.path.join(dest, member))
+                if not member_path.startswith(os.path.abspath(dest) + os.sep):
+                    raise Exception(f"Unsafe zip entry detected: {member}")
+                if member.endswith("/"):
+                    os.makedirs(member_path, exist_ok=True)
+                else:
+                    os.makedirs(os.path.dirname(member_path), exist_ok=True)
+                    with zf.open(member) as source, open(member_path, "wb") as target:
+                        shutil.copyfileobj(source, target)
+    finally:
+        scratch.unlink(missing_ok=True)
+    return str(dest)
 
 
-@app.context_processor
-def inject_pregdos_version():
-    try:
-        version = importlib.metadata.version("pregdos")
-    except importlib.metadata.PackageNotFoundError:
-        version = "dev"
-    return {"pregdos_version": version}
-
-
-def save_single_file(upload, folder):
-    path = os.path.join(folder, secure_filename(upload.filename))
-    upload.save(path)
-    return path
-
-
-def extract_zip(study_zip, folder):
-    zip_path = save_single_file(study_zip, folder)
-    study_dir = os.path.join(folder, Path(study_zip.filename).stem)
-    os.makedirs(study_dir, exist_ok=True)
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        for member in zf.namelist():
-            member_path = os.path.abspath(os.path.join(study_dir, member))
-            if not member_path.startswith(os.path.abspath(study_dir) + os.sep):
-                raise Exception(f"Unsafe zip entry detected: {member}")
-            if member.endswith("/"):
-                os.makedirs(member_path, exist_ok=True)
-            else:
-                os.makedirs(os.path.dirname(member_path), exist_ok=True)
-                with zf.open(member) as source, open(member_path, "wb") as target:
-                    shutil.copyfileobj(source, target)
-    return study_dir
-
-
-def save_uploaded_directory(files, base_folder):
+def save_uploaded_directory(files, dest_dir):
+    """Save a browser directory upload into ``dest_dir``, preserving relative structure."""
     if not files:
         raise ValueError("Empty directory upload")
-    # Detect root folder from first file path; browsers include the folder name
-    first = files[0].filename
-    root = secure_filename(first.split("/")[0]) or "study_upload"
-    study_dir = os.path.join(base_folder, root)
+    dest = Path(dest_dir)
+    dest.mkdir(parents=True, exist_ok=True)
     for file in files:
-        rel_path = file.filename
-        parts = [secure_filename(p) for p in rel_path.split("/") if p]
-        # drop first part (root folder)
-        if parts and parts[0] == root:
-            parts = parts[1:]
-        out_path = (
-            os.path.join(study_dir, *parts) if parts else os.path.join(study_dir, secure_filename(Path(file.filename).name))
-        )
-        dir_path = os.path.dirname(out_path)
-        if dir_path:
-            os.makedirs(dir_path, exist_ok=True)
-        file.save(out_path)
-    return study_dir
+        parts = [secure_filename(p) for p in file.filename.split("/") if p]
+        if not parts:
+            continue
+        out_path = dest.joinpath(*parts)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        file.save(str(out_path))
+    return str(dest)
 
 
-def get_structures(study_dir):
-    rs_files = glob.glob(os.path.join(study_dir, "RS*.dcm"))
-    if not rs_files:
-        return []
-    ds = pydicom.dcmread(rs_files[0])
-    return [roi.ROIName for roi in ds.StructureSetROISequence]
+def _upload_study_name(study_zip, study_dir_files) -> str:
+    """Derive a human-readable study name from whichever upload form was used.
 
-
-def filter_rtstruct_keep_rois(orig_study_dir, selected_rois):
-    """Copy orig_study_dir to a temp dir and rewrite the RTSTRUCT to keep only selected_rois.
-
-    Returns the path to the filtered study dir (a copy).
+    Study names are shown in the UI and appear in URLs, so we keep the name the user
+    already recognises (the ZIP stem or the dropped folder's name) rather than a UID.
     """
-    # make a temp dir sibling to original
-    parent = Path(orig_study_dir).parent
-    tmpdir = tempfile.mkdtemp(prefix=Path(orig_study_dir).name + "_filtered_", dir=str(parent))
-    # Copy the study into the filtered dir, but exclude generated TOPAS files
-    # (*.txt).  On a re-run the original study dir may already contain
-    # topas_field*.txt from a previous conversion; copying those into the
-    # filtered dir would let them shadow the freshly generated output during
-    # file discovery in run_conversion(), so the post-processed scorers would be
-    # written to a throwaway copy while submit/download keep the stale file (#36).
-    shutil.copytree(
-        orig_study_dir, tmpdir, dirs_exist_ok=True, ignore=shutil.ignore_patterns("*.txt")
-    )
+    if study_zip and study_zip.filename:
+        return Path(study_zip.filename).stem
+    if study_dir_files:
+        return study_dir_files[0].filename.split("/")[0]
+    raise ValueError("No study upload provided")
 
-    # find RTST in copy
-    rs_files = glob.glob(os.path.join(tmpdir, "RS*.dcm"))
-    if not rs_files:
-        return tmpdir
-    rs_path = rs_files[0]
-    ds = pydicom.dcmread(rs_path)
 
-    # map ROIName -> ROINumber
-    name_to_number = {}
-    if hasattr(ds, "StructureSetROISequence"):
-        for roi in ds.StructureSetROISequence:
-            name = getattr(roi, "ROIName", None)
-            number = getattr(roi, "ROINumber", None)
-            if name is not None and number is not None:
-                name_to_number[str(name)] = int(number)
-
-    keep_numbers = set()
-    for sel in selected_rois:
-        if sel in name_to_number:
-            keep_numbers.add(name_to_number[sel])
-
-    # If nothing matched, keep everything
-    if not keep_numbers:
-        return tmpdir
-
-    new_ds = copy.deepcopy(ds)
-
-    def filter_seq(seq, attr_name):
-        if not hasattr(seq, "__iter__"):
-            return seq
-        out = []
-        for item in seq:
-            val = getattr(item, attr_name, None)
-            if val in keep_numbers:
-                out.append(item)
-        return out
-
-    # StructureSetROISequence: keep by ROINumber
-    if hasattr(new_ds, "StructureSetROISequence"):
-        new_ds.StructureSetROISequence = [
-            item for item in new_ds.StructureSetROISequence if getattr(item, "ROINumber", None) in keep_numbers
-        ]
-
-    # ROIContourSequence: keep by ReferencedROINumber
-    if hasattr(new_ds, "ROIContourSequence"):
-        new_ds.ROIContourSequence = [
-            item for item in new_ds.ROIContourSequence if getattr(item, "ReferencedROINumber", None) in keep_numbers
-        ]
-
-    # RTROIObservationsSequence: keep by ReferencedROINumber
-    if hasattr(new_ds, "RTROIObservationsSequence"):
-        new_ds.RTROIObservationsSequence = [
-            item for item in new_ds.RTROIObservationsSequence if getattr(item, "ReferencedROINumber", None) in keep_numbers
-        ]
-
-    # write modified RTSTRUCT back to file
-    try:
-        new_ds.save_as(rs_path)
-    except Exception:
-        # if saving fails, return the unmodified copy
-        return tmpdir
-
-    return tmpdir
+def get_structures(root, study_name):
+    """ROI names in the study's RTSTRUCT, or [] if there is none."""
+    rs_path = studies.find_rtstruct(root, study_name)
+    if rs_path is None:
+        return []
+    ds = pydicom.dcmread(str(rs_path))
+    return [roi.ROIName for roi in ds.StructureSetROISequence]
 
 
 def _dicomexport_cmd_prefix():
@@ -265,6 +180,19 @@ def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+@app.context_processor
+def inject_pregdos_version():
+    try:
+        version = importlib.metadata.version("pregdos")
+    except importlib.metadata.PackageNotFoundError:
+        version = "dev"
+    return {"pregdos_version": version}
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
 @app.route("/")
 def index():
     return render_template("dashboard.html")
@@ -272,7 +200,7 @@ def index():
 
 @app.route("/upload", methods=["GET", "POST"])
 def upload_files():
-    folder_err = ensure_upload_folder()
+    folder_err = ensure_studies_root()
     if folder_err:
         flash(folder_err)
         return render_template("upload.html",
@@ -283,15 +211,13 @@ def upload_files():
         study_zip = request.files.get("study_zip")
         study_dir_files = [f for f in (request.files.getlist("study_dir") or []) if f and f.filename]
 
-        # Beam model: either a bundled file or an upload
+        # Beam model / SPR table: either a bundled file or an upload
         bm_source = request.form.get("beam_model_source", "upload")
         beam_model = request.files.get("beam_model")
-
-        # SPR table: either a bundled file or an upload
         spr_source = request.form.get("spr_table_source", "upload")
         spr_table = request.files.get("spr_table")
 
-        # Validate input
+        # Validate input before creating anything on disk
         if bm_source == "upload" and not (beam_model and beam_model.filename):
             flash("Beam model required — choose a built-in model or upload one.")
             return redirect(request.url)
@@ -301,51 +227,53 @@ def upload_files():
         if not study_zip and not study_dir_files:
             flash("Provide either a ZIP or a folder.")
             return redirect(request.url)
-
         if (study_zip and study_zip.filename) and study_dir_files:
             flash("Please choose either ZIP or Folder, not both.")
             return redirect(request.url)
 
-        upload_folder = app.config["UPLOAD_FOLDER"]
-
-        if bm_source == "upload":
-            beam_model_path = save_single_file(beam_model, upload_folder)
-        else:
-            try:
-                beam_model_path = _builtin_beam_model_path(secure_filename(bm_source))
-            except Exception:
-                flash(f"Bundled beam model not found: {bm_source}")
-                return redirect(request.url)
-        if spr_source == "upload":
-            spr_table_path = save_single_file(spr_table, upload_folder)
-        else:
-            try:
-                spr_table_path = _builtin_spr_path(secure_filename(spr_source))
-            except Exception:
-                flash(f"Bundled SPR table not found: {spr_source}")
-                return redirect(request.url)
-
-        if study_zip and study_zip.filename:
-            study_dir = extract_zip(study_zip, upload_folder)
-        else:
-            try:
-                study_dir = save_uploaded_directory(study_dir_files, upload_folder)
-            except ValueError as e:
-                flash(str(e))
-                return redirect(request.url)
-
-        # Udtræk strukturer fra RS-fil
-        structures = get_structures(study_dir)
-        if not structures:
-            flash("No RS-file or structures found!")
+        root = studies_root()
+        try:
+            study_name, study_path = studies.create_study(root, _upload_study_name(study_zip, study_dir_files))
+        except (StudyError, ValueError) as e:
+            flash(str(e))
             return redirect(request.url)
+
+        # Everything below writes into the new study dir.  If any step fails we remove it
+        # again, so a failed upload never leaves a half-populated study behind.
+        try:
+            dicom_dir = study_path / studies.DICOM_SUBDIR
+            if study_zip and study_zip.filename:
+                extract_zip(study_zip, dicom_dir)
+            else:
+                save_uploaded_directory(study_dir_files, dicom_dir)
+
+            # Copy beam model and SPR table into the study so it is self-contained:
+            # deleting the study removes every input it depends on, and the generated
+            # TOPAS file can reference the SPR table by a relative path.
+            if bm_source == "upload":
+                beam_model_name = save_single_file(beam_model, study_path)
+            else:
+                beam_model_name = _copy_builtin("beam_models", bm_source, study_path)
+            if spr_source == "upload":
+                spr_table_name = save_single_file(spr_table, study_path)
+            else:
+                spr_table_name = _copy_builtin("spr_tables", spr_source, study_path)
+
+            structures = get_structures(root, study_name)
+            if not structures:
+                raise ValueError("No RS-file or structures found!")
+        except Exception as e:
+            shutil.rmtree(study_path, ignore_errors=True)
+            flash(str(e) if str(e) else "Upload failed.")
+            return redirect(request.url)
+
         # Render the combined setup page (structure inclusion + scorer selection)
         return render_template(
             "setup.html",
             structures=structures,
-            study_dir=study_dir,
-            beam_model_path=beam_model_path,
-            spr_table_path=spr_table_path,
+            study_name=study_name,
+            beam_model_name=beam_model_name,
+            spr_table_name=spr_table_name,
             scorer_defs=SCORER_DEFS,
         )
     return render_template(
@@ -355,51 +283,44 @@ def upload_files():
     )
 
 
-def run_conversion(params: ConversionParameters, selected_structures: List[str]) -> ConversionResult:
-    """Filter RTSTRUCT and run dicomexport, returning discovered TOPAS files.
+def run_conversion(params: ConversionParameters, selected_structures: list) -> ConversionResult:
+    """Run dicomexport inside the run directory and collect the TOPAS files it wrote.
 
-    Searches multiple directories for output to handle different output_base placements.
+    dicomexport is invoked with ``cwd=params.run_dir`` and relative arguments, so the
+    ``DicomDirectory`` and ``includeFile`` paths it bakes into the generated TOPAS input
+    are relative and already correct for a TOPAS run started from that same directory.
+    Nothing needs to be rewritten afterwards, and the study directory stays movable.
+
+    Because the run directory was created empty moments ago, its ``*_field*.txt`` files
+    are exactly this conversion's output -- no cross-directory search, no deduplication,
+    and no way for a previous run's files to leak in (issue #41).
     """
-    filtered_dir = filter_rtstruct_keep_rois(params.study_dir, selected_structures)
-    study_to_use = filtered_dir
-    output_base = params.output_base
-
-    cmd_prefix = _dicomexport_cmd_prefix()
-    cmd = cmd_prefix + ["-b", params.beam_model_path, "-s", params.spr_table_path]
+    cmd = _dicomexport_cmd_prefix() + ["-b", params.beam_model_rel, "-s", params.spr_table_rel]
     if params.field_nr is not None:
         cmd += ["-f", str(params.field_nr)]
     if params.nstat is not None:
         cmd += ["-N", str(params.nstat)]
-    cmd += [study_to_use, output_base]
-    env = os.environ.copy()
+    cmd += [params.dicom_rel, params.output_basename]
+
     try:
-        proc = subprocess.run(cmd, check=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        proc = subprocess.run(
+            cmd, check=True, cwd=params.run_dir, env=os.environ.copy(),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
     except subprocess.CalledProcessError as e:
         out = (e.stdout or "").strip()
         err = (e.stderr or str(e)).strip()
         msg = "".join([part for part in (err, out) if part])
         raise RuntimeError(f"Error running dicomexport: {msg}") from e
 
-    # dicomexport may write output files into the study dir, the filtered copy,
-    # or the parent of output_base depending on the version.  Search all three
-    # locations and deduplicate by filename to be robust across versions.
-    output_stem = Path(output_base).name
-    search_dirs = [Path(study_to_use), Path(params.study_dir), Path(output_base).parent]
-    found_paths: dict[str, str] = {}  # basename → absolute path (first-seen wins)
-    for d in search_dirs:
-        if not d.exists():
-            continue
-        for f in os.listdir(d):
-            if f.startswith(output_stem) and f.endswith(".txt") and f not in found_paths:
-                found_paths[f] = str(d / f)
-    if not found_paths:
+    out_files = sorted(p.name for p in Path(params.run_dir).glob(f"{params.output_basename}_field*.txt"))
+    if not out_files:
         raise RuntimeError("No output files generated by dicomexport.")
 
-    sorted_names = sorted(found_paths.keys())
     return ConversionResult(
-        out_files=sorted_names,
-        out_file_paths=[found_paths[n] for n in sorted_names],
-        study_name=Path(params.study_dir).name,
+        out_files=out_files,
+        study_name=params.study_name,
+        run_id=Path(params.run_dir).name,
         selected_structures=list(selected_structures),
         stdout=proc.stdout,
         stderr=proc.stderr,
@@ -408,22 +329,24 @@ def run_conversion(params: ConversionParameters, selected_structures: List[str])
 
 @app.route("/convert", methods=["POST"])
 def convert():
-    study_dir = request.form["study_dir"]
-    beam_model_path = request.form["beam_model_path"]
-    spr_table_path = request.form["spr_table_path"]
-    # Any structure with at least one scorer checked is included in the RTSTRUCT filter
+    root = studies_root()
+    study_name = request.form["study_name"]
+    beam_model_name = secure_filename(request.form["beam_model_name"])
+    spr_table_name = secure_filename(request.form["spr_table_name"])
+
+    # Any structure with at least one scorer checked is scored.  The matrix selection is
+    # the selection mechanism: each checked cell becomes a scorer block carrying
+    # OnlyIncludeIfInRTStructure, so TOPAS computes only the structures chosen here.
     selected_structures = sorted({
         s
         for sc_def in SCORER_DEFS
         for s in request.form.getlist(f'score_{sc_def["id"]}')
         if s
     })
+
     nstat_val = request.form.get("nstat", "1000000")
     try:
-        if nstat_val == "custom":
-            nstat = int(request.form.get("nstat_custom", "").strip())
-        else:
-            nstat = int(nstat_val)
+        nstat = int(request.form.get("nstat_custom", "").strip()) if nstat_val == "custom" else int(nstat_val)
         if nstat < 1:
             raise ValueError
     except ValueError:
@@ -435,36 +358,48 @@ def convert():
     if not output_basename or output_basename != raw_basename or "." in output_basename:
         flash("Invalid output basename — use letters, digits, underscores, and hyphens only.")
         return redirect(url_for("upload_files"))
+
+    try:
+        study_path = studies.study_path(root, study_name)
+        run_id, run_dir = studies.create_run(root, study_name)
+    except StudyError as e:
+        flash(str(e))
+        return redirect(url_for("upload_files"))
+
     params = ConversionParameters(
-        study_dir=study_dir,
-        beam_model_path=beam_model_path,
-        spr_table_path=spr_table_path,
-        output_base=os.path.join(study_dir, output_basename),
+        study_name=study_name,
+        run_dir=str(run_dir),
+        dicom_rel=studies.relative_to_run(studies.dicom_path(root, study_name), run_dir),
+        beam_model_rel=studies.relative_to_run(study_path / beam_model_name, run_dir),
+        spr_table_rel=studies.relative_to_run(study_path / spr_table_name, run_dir),
+        output_basename=output_basename,
         field_nr=None,
         nstat=nstat,
     )
+
     try:
         result = run_conversion(params, selected_structures)
     except RuntimeError as err:
+        # A failed conversion leaves nothing behind: the run dir is empty or partial.
+        shutil.rmtree(run_dir, ignore_errors=True)
         flash(str(err))
         return redirect(url_for("upload_files"))
 
-    # Parse the scorer choices the user made on the setup page.
-    # append_scorers() modifies each TOPAS file in-place: it injects the
-    # requested out-of-field scorer blocks and optionally removes the
+    # Inject the requested out-of-field scorer blocks, and optionally drop the in-field
     # DoseToWater scorer that dicomexport always writes.
     scorer_config = scorer_config_from_form(request.form)
     if scorer_config.scorers or not scorer_config.keep_infield:
         failures = []
-        for fpath in result.out_file_paths:
+        for fname in result.out_files:
             try:
-                append_scorers(fpath, scorer_config)
+                append_scorers(str(run_dir / fname), scorer_config)
             except Exception as err:
-                failures.append((os.path.basename(fpath), err))
+                failures.append((fname, err))
         if failures:
-            # The user asked for scorers that could not be written.  Do not
-            # present the conversion as successful: surface a visible error
-            # naming each affected file and send the user back to try again (#36).
+            # The user asked for scorers that could not be written.  Do not present the
+            # conversion as successful: surface a visible error naming each affected file
+            # and send the user back to try again (#36).
+            shutil.rmtree(run_dir, ignore_errors=True)
             for name, err in failures:
                 flash(f"Scorer post-processing failed for {name}: {err}")
             return redirect(url_for("upload_files"))
@@ -473,27 +408,24 @@ def convert():
         "convert_success.html",
         out_files=result.out_files,
         study_name=result.study_name,
-        study_dir=params.study_dir,
+        run_id=result.run_id,
         selected_structures=result.selected_structures,
     )
 
 
-@app.route("/download/<study>/<filename>")
-def download_file(study, filename):
-    safe_study = secure_filename(study)
-    safe_filename = secure_filename(filename)
-    dir_path = os.path.join(app.config["UPLOAD_FOLDER"], safe_study)
-    # Ensure the resolved path is within the upload folder
-    abs_dir_path = os.path.abspath(dir_path)
-    abs_upload_folder = os.path.abspath(app.config["UPLOAD_FOLDER"])
-    if not abs_dir_path.startswith(abs_upload_folder + os.sep):
+@app.route("/download/<study>/<run_id>/<filename>")
+def download_file(study, run_id, filename):
+    """Download one generated TOPAS input file from a run directory."""
+    try:
+        run_dir = studies.run_path(studies_root(), study, run_id)
+    except StudyError:
         flash("Invalid study path.")
         return redirect(url_for("upload_files"))
-    file_path = os.path.join(abs_dir_path, safe_filename)
-    if not os.path.isfile(file_path):
+    safe_filename = secure_filename(filename)
+    if not (run_dir / safe_filename).is_file():
         flash("File not found.")
         return redirect(url_for("upload_files"))
-    return send_from_directory(abs_dir_path, safe_filename, as_attachment=True)
+    return send_from_directory(str(run_dir), safe_filename, as_attachment=True)
 
 
 @app.route("/squeue")
@@ -504,69 +436,61 @@ def squeue():
 
 @app.route("/submit", methods=["POST"])
 def submit_job():
-    study_dir = request.form["study_dir"]
+    """Execute each generated TOPAS file, in place, in the run directory.
+
+    The files are *not* copied anywhere.  Their ``DicomDirectory`` and ``includeFile``
+    entries are relative to the run directory they were generated in, so TOPAS must run
+    with that directory as its working directory (see :mod:`pregdos.executor`).
+    """
+    root = studies_root()
     study_name = request.form["study_name"]
+    run_id = request.form["run_id"]
     out_files = request.form.getlist("out_files")
 
-    # Validate study_dir is within UPLOAD_FOLDER
-    abs_study_dir = os.path.abspath(study_dir)
-    abs_upload_folder = os.path.abspath(app.config["UPLOAD_FOLDER"])
-    if not abs_study_dir.startswith(abs_upload_folder + os.sep):
+    try:
+        run_dir = studies.run_path(root, study_name, run_id)
+    except StudyError:
         flash("Invalid study path.")
         return redirect(url_for("upload_files"))
+    if not run_dir.is_dir():
+        flash("Run directory not found.")
+        return redirect(url_for("upload_files"))
 
-    # Create timestamped job working directory under JOBS_FOLDER
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    job_dir = os.path.join(app.config["JOBS_FOLDER"], f"{secure_filename(study_name)}_{timestamp}")
-    os.makedirs(job_dir, exist_ok=True)
-    try:
-        shutil.chown(job_dir, user="slurm", group="slurm")
-    except LookupError:
-        pass  # slurm user not present outside container
-
-    # Find each TOPAS file (search study_dir recursively) and copy to job_dir
-    job_ids = []
-    errors = []
+    # Validate every requested file up front, so a typo cannot start a partial run.
+    topas_files = []
+    missing = []
     for fname in out_files:
         safe_fname = secure_filename(fname)
-        src = None
-        for root, _dirs, files in os.walk(abs_study_dir):
-            if safe_fname in files:
-                candidate = os.path.join(root, safe_fname)
-                # Don't pick up files already inside a job_ subdirectory
-                if os.sep + "job_" not in candidate[len(abs_study_dir):]:
-                    src = candidate
-                    break
-        if src is None:
-            errors.append(f"File not found: {safe_fname}")
-            continue
-        shutil.copy2(src, os.path.join(job_dir, safe_fname))
-
-        ncpu = os.cpu_count() or 1
-        result = subprocess.run(
-            [
-                "runuser", "-u", "slurm", "--",
-                "sbatch",
-                "--export=ALL",
-                f"--cpus-per-task={ncpu}",
-                f"--chdir={job_dir}",
-                f"--output={job_dir}/slurm-%j.out",
-                "--wrap", f"{TOPAS_BIN} {safe_fname}",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            job_id = result.stdout.strip().split()[-1]
-            job_ids.append((safe_fname, job_id))
+        if (run_dir / safe_fname).is_file():
+            topas_files.append(safe_fname)
         else:
-            errors.append(f"sbatch failed for {safe_fname}: {result.stderr.strip()}")
+            missing.append(safe_fname)
+    if missing or not topas_files:
+        for name in missing:
+            flash(f"Error: File not found: {name}")
+        if not topas_files:
+            flash("Error: Nothing to submit.")
+        return redirect(url_for("upload_files"))
 
-    post_process_job(job_dir)
+    # Under SLURM the job runs as the `slurm` user, which must own the directory it writes
+    # logs and scorer CSVs into.  Harmless (and skipped) elsewhere.
+    if executor.select_backend() == executor.SLURM:
+        try:
+            shutil.chown(run_dir, user="slurm", group="slurm")
+        except (LookupError, PermissionError, OSError):
+            pass  # slurm user not present outside the container
 
-    for fname, jid in job_ids:
-        flash(f"Submitted {fname} → SLURM job {jid}")
-    for e in errors:
+    info = executor.submit_run(run_dir, topas_files)
+
+    if info.backend == executor.SLURM:
+        for job in info.fields:
+            flash(f"Submitted {job.topas_file} → SLURM job {job.ident}")
+    elif info.fields:
+        flash(
+            f"Running {len(info.fields)} field(s) locally in the background "
+            f"(no SLURM found; pid {info.fields[0].ident}). Progress appears in the run directory."
+        )
+    for e in info.errors:
         flash(f"Error: {e}")
     return redirect(url_for("list_jobs"))
 
@@ -604,48 +528,54 @@ def about():
 
 @app.route("/jobs")
 def list_jobs():
-    jobs_folder = app.config["JOBS_FOLDER"]
+    """List every conversion run across all studies.
+
+    Superseded by the per-study results view in #32; kept simple here so the app stays
+    coherent after runs moved from a separate jobs tree into the study directories.
+    """
+    root = studies_root()
     jobs = []
-    if os.path.isdir(jobs_folder):
-        for name in sorted(os.listdir(jobs_folder), reverse=True):
-            job_path = os.path.join(jobs_folder, name)
-            if os.path.isdir(job_path):
-                file_count = len(os.listdir(job_path))
-                jobs.append({"name": name, "file_count": file_count})
+    for study in studies.list_studies(root):
+        for run_id in studies.list_runs(root, study):
+            run_dir = studies.run_path(root, study, run_id)
+            submitted = executor.read_run_metadata(run_dir) is not None
+            jobs.append({
+                "study": study,
+                "run_id": run_id,
+                "file_count": sum(1 for p in run_dir.iterdir() if p.is_file()),
+                # Status is read from the exit-code sentinels on disk, so it stays correct
+                # across a webserver restart.  A run that was never submitted has none.
+                "status": executor.run_status(run_dir) if submitted else "not submitted",
+            })
+    jobs.sort(key=lambda j: (j["run_id"], j["study"]), reverse=True)
     return render_template("jobs.html", jobs=jobs)
 
 
-@app.route("/jobs/<job_dir_name>")
-def job_files(job_dir_name):
-    jobs_folder = app.config["JOBS_FOLDER"]
-    safe_name = secure_filename(job_dir_name)
-    abs_job_path = os.path.abspath(os.path.join(jobs_folder, safe_name))
-    abs_jobs_folder = os.path.abspath(jobs_folder)
-    if not abs_job_path.startswith(abs_jobs_folder + os.sep):
+@app.route("/jobs/<study>/<run_id>")
+def job_files(study, run_id):
+    try:
+        run_dir = studies.run_path(studies_root(), study, run_id)
+    except StudyError:
         flash("Invalid job directory.")
-        return redirect("/jobs")
-    if not os.path.isdir(abs_job_path):
+        return redirect(url_for("list_jobs"))
+    if not run_dir.is_dir():
         flash("Job directory not found.")
-        return redirect("/jobs")
-    files = []
-    for fname in sorted(os.listdir(abs_job_path)):
-        fpath = os.path.join(abs_job_path, fname)
-        if os.path.isfile(fpath):
-            files.append({"name": fname, "size": os.path.getsize(fpath)})
-    return render_template("job_files.html", job_dir_name=safe_name, files=files)
+        return redirect(url_for("list_jobs"))
+    files = [
+        {"name": p.name, "size": p.stat().st_size}
+        for p in sorted(run_dir.iterdir()) if p.is_file()
+    ]
+    return render_template("job_files.html", study=study, run_id=run_id, files=files)
 
 
-@app.route("/jobs/download/<job_dir_name>/<filename>")
-def download_job_file(job_dir_name, filename):
-    jobs_folder = app.config["JOBS_FOLDER"]
-    safe_name = secure_filename(job_dir_name)
-    safe_filename = secure_filename(filename)
-    abs_job_path = os.path.abspath(os.path.join(jobs_folder, safe_name))
-    abs_jobs_folder = os.path.abspath(jobs_folder)
-    if not abs_job_path.startswith(abs_jobs_folder + os.sep):
+@app.route("/jobs/download/<study>/<run_id>/<filename>")
+def download_job_file(study, run_id, filename):
+    try:
+        run_dir = studies.run_path(studies_root(), study, run_id)
+    except StudyError:
         flash("Invalid job directory.")
-        return redirect("/jobs")
-    return send_from_directory(abs_job_path, safe_filename, as_attachment=True)
+        return redirect(url_for("list_jobs"))
+    return send_from_directory(str(run_dir), secure_filename(filename), as_attachment=True)
 
 
 def main():

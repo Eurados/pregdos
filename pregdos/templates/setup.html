@@ -6,10 +6,11 @@
 {% block content %}
 <form method="post" action="{{ url_for('convert') }}" class="form-grid" id="setup-form">
 
-  {# Pass through fields from upload step #}
-  <input type="hidden" name="study_dir" value="{{ study_dir }}">
-  <input type="hidden" name="beam_model_path" value="{{ beam_model_path }}">
-  <input type="hidden" name="spr_table_path" value="{{ spr_table_path }}">
+  {# Pass through fields from upload step.  These are names, never filesystem paths:
+     the server resolves them against the studies root (see pregdos/studies.py). #}
+  <input type="hidden" name="study_name" value="{{ study_name }}">
+  <input type="hidden" name="beam_model_name" value="{{ beam_model_name }}">
+  <input type="hidden" name="spr_table_name" value="{{ spr_table_name }}">
 
   {# ── Output basename + Number of primaries (side by side) ────────── #}
   <div class="card-pair">
