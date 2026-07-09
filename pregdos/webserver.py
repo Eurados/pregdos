@@ -685,7 +685,7 @@ def _result_rows(run_dir: Path, study: str):
         number = r.field_number
         rows.append({
             "field": number,
-            "field_name": names.get(number, ""),
+            "field_name": names.get(number, "") if number is not None else "",
             "scorer": r.scorer,
             "structure": r.structure or "—",
             "quantity": r.quantity,
