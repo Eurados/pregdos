@@ -1,0 +1,28 @@
+{#
+  Funding acknowledgement logos, shared by the dashboard and the About page.
+
+  `logos` comes from webserver._funding_logos(), which omits any file that is not on disk --
+  so a checkout without the PNGs renders nothing here rather than broken-image icons.
+
+  `compact` shrinks the strip for the front page, where the acknowledgement should be present
+  but not compete with the action cards.
+#}
+{% macro funding_logos(logos, compact=false) %}
+  {% if logos %}
+    <div class="funding-logos{% if compact %} compact{% endif %}">
+      {% for logo in logos %}
+        {% set img %}
+          <img class="funding-logo{% if logo.plate %} plated{% endif %}"
+               src="{{ url_for('static', filename='img/' ~ logo.file) }}"
+               alt="{{ logo.alt }}">
+        {% endset %}
+        {% if logo.href %}
+          <a href="{{ logo.href }}" target="_blank" rel="noopener noreferrer"
+             title="{{ logo.alt }}">{{ img }}</a>
+        {% else %}
+          {{ img }}
+        {% endif %}
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endmacro %}

@@ -1,5 +1,6 @@
 from flask import (
     Flask,
+    Response,
     request,
     render_template,
     send_from_directory,
@@ -11,6 +12,9 @@ import importlib.metadata
 import importlib.resources
 import pydicom
 
+import csv
+import io
+import math
 import zipfile
 import os
 from werkzeug.utils import secure_filename
@@ -20,7 +24,7 @@ import sys
 import shutil
 import tempfile
 
-from . import executor, studies
+from . import executor, results, studies, versions
 from .models import ConversionParameters, ConversionResult
 from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
@@ -181,12 +185,22 @@ def allowed_file(filename):
 
 
 @app.context_processor
-def inject_pregdos_version():
+def inject_layout_context():
+    """Values every page needs: the version shown in the nav, and the funding logos.
+
+    setuptools-scm produces versions like ``0.3.0.post33+g1a87f860.d20260709``.  The local
+    part after ``+`` identifies the exact commit, which is valuable in a bug report but too
+    long for a nav bar, so the short form is shown and the full one hangs off the tooltip.
+    """
     try:
         version = importlib.metadata.version("pregdos")
     except importlib.metadata.PackageNotFoundError:
         version = "dev"
-    return {"pregdos_version": version}
+    return {
+        "pregdos_version": version,
+        "pregdos_version_short": version.split("+", 1)[0],
+        "funding_logos": _funding_logos(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -501,80 +515,268 @@ def about():
         try:
             return importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
-            return "unknown"
+            return versions.UNKNOWN
 
-    def explicit_version(env_name, marker_name):
-        env_value = (os.environ.get(env_name) or "").strip()
-        if env_value:
-            return env_value
-        marker = Path("/etc/pregdos") / marker_name
-        try:
-            if marker.is_file():
-                marker_value = marker.read_text(encoding="utf-8").strip()
-                if marker_value:
-                    return marker_value
-        except OSError:
-            pass
-        return "unknown"
+    # TOPAS and Geant4 are interrogated at runtime (env/marker first, then the binary
+    # itself), so the page reports what will actually run, not what was configured.
+    env = versions.summary()
+    env["pregdos"] = pkg_version("pregdos")
+    env["dicomexport"] = pkg_version("dicomexport")
+    return render_template("about.html", versions=env)
 
-    versions = {
-        "pregdos": pkg_version("pregdos"),
-        "dicomexport": pkg_version("dicomexport"),
-        "topas": explicit_version("TOPAS_VERSION", "TOPAS_VERSION"),
-        "geant4": explicit_version("GEANT4_VERSION", "GEANT4_VERSION"),
-    }
-    return render_template("about.html", versions=versions)
+
+# Funding acknowledgement logos, shown on the About page when present.  Absent files are
+# simply not rendered, so a source checkout without them shows text rather than a broken image.
+#
+# `plate`: the logo is transparent with dark lettering, so it needs a light backing in dark
+# mode.  The EU flag carries its own blue field and must not be plated.
+_FUNDING_LOGOS = (
+    {"file": "pianoforte-logo.png", "alt": "PIANOFORTE Partnership",
+     "href": "https://pianoforte-partnership.eu/", "plate": True},
+    {"file": "eu-flag.png", "alt": "Funded by the European Union",
+     "href": None, "plate": False},
+)
+
+
+def _funding_logos() -> list[dict]:
+    static_dir = Path(app.static_folder or "")
+    return [logo for logo in _FUNDING_LOGOS if (static_dir / "img" / logo["file"]).is_file()]
+
+
+NOT_SUBMITTED = "not submitted"
+
+
+def _run_status(run_dir: Path) -> str:
+    """Status of one run, read entirely from files on disk (see :mod:`pregdos.executor`)."""
+    if executor.read_run_metadata(run_dir) is None:
+        return NOT_SUBMITTED
+    return executor.run_status(run_dir)
+
+
+def _resolve_run(study, run_id):
+    """Resolve a run directory from URL parameters, or return None."""
+    try:
+        run_dir = studies.run_path(studies_root(), study, run_id)
+    except StudyError:
+        return None
+    return run_dir if run_dir.is_dir() else None
 
 
 @app.route("/jobs")
 def list_jobs():
-    """List every conversion run across all studies.
+    """Backwards-compatible alias for the results page."""
+    return redirect(url_for("list_studies"))
 
-    Superseded by the per-study results view in #32; kept simple here so the app stays
-    coherent after runs moved from a separate jobs tree into the study directories.
-    """
+
+@app.route("/studies")
+def list_studies():
+    """One tile per study, each listing its conversion runs and their status."""
     root = studies_root()
-    jobs = []
+    tiles = []
     for study in studies.list_studies(root):
+        runs = []
         for run_id in studies.list_runs(root, study):
             run_dir = studies.run_path(root, study, run_id)
-            submitted = executor.read_run_metadata(run_dir) is not None
-            jobs.append({
-                "study": study,
+            runs.append({
                 "run_id": run_id,
+                "status": _run_status(run_dir),
                 "file_count": sum(1 for p in run_dir.iterdir() if p.is_file()),
-                # Status is read from the exit-code sentinels on disk, so it stays correct
-                # across a webserver restart.  A run that was never submitted has none.
-                "status": executor.run_status(run_dir) if submitted else "not submitted",
             })
-    jobs.sort(key=lambda j: (j["run_id"], j["study"]), reverse=True)
-    return render_template("jobs.html", jobs=jobs)
+        tiles.append({"name": study, "runs": runs, "active": any(r["status"] in
+                     (executor.RUNNING, executor.QUEUED) for r in runs)})
+    return render_template("studies.html", tiles=tiles)
 
 
-@app.route("/jobs/<study>/<run_id>")
-def job_files(study, run_id):
+@app.route("/studies/<study>/<run_id>")
+def run_detail(study, run_id):
+    """Scorer results for one run, plus its raw files.
+
+    The CSVs are parsed at render time rather than at submit time: when /submit runs, the
+    job has not produced anything yet.  Parsing a handful of single-voxel CSVs per page view
+    costs nothing.
+    """
+    run_dir = _resolve_run(study, run_id)
+    if run_dir is None:
+        flash("Run directory not found.")
+        return redirect(url_for("list_studies"))
+
+    rows, warnings = _result_rows(run_dir, study)
+    groups = _group_rows(rows)
+    for w in warnings:
+        flash(f"Could not read scorer output: {w}")
+
+    files = [{"name": p.name, "size": p.stat().st_size} for p in sorted(run_dir.iterdir()) if p.is_file()]
+    info = executor.read_run_metadata(run_dir)
+    return render_template(
+        "run_detail.html",
+        study=study,
+        run_id=run_id,
+        status=_run_status(run_dir),
+        groups=groups,
+        files=files,
+        backend=info.backend if info else None,
+        submitted=info.submitted if info else None,
+        logs=[f["name"] for f in files if f["name"].endswith(".log")],
+    )
+
+
+def _group_rows(rows: list) -> list:
+    """Group scorer rows by scorer, and total each group over its fields.
+
+    A clinician reads one quantity at a time -- "how much neutron dose did the brainstem
+    get, from all fields together" -- so the scorer is the outer key and the field the inner.
+
+    The per-field values are each already scaled to that field's own particle budget, so the
+    plan total is their plain sum.  Their uncertainties, however, come from independent Monte
+    Carlo runs and therefore add **in quadrature**, not linearly.
+
+    A group containing any unusable row (a NaN Sum, or a multi-bin grid) gets no total: a
+    partial sum over fields would understate the dose while looking authoritative.  Nor is a
+    group totalled when two rows share a field number -- ``IfOutputFileAlreadyExists =
+    "Increment"`` writes a second CSV for a re-run of the *same* field, and adding those
+    together would double-count it.
+    """
+    groups: dict = {}
+    for row in rows:
+        key = (row["scorer"], row["structure"], row["quantity"], row["unit"])
+        groups.setdefault(key, []).append(row)
+
+    out = []
+    for (scorer, structure, quantity, unit), members in groups.items():
+        members.sort(key=lambda r: (r["field"] is None, r["field"]))
+        summable = [r for r in members if r["problem"] is None and r["sum"] is not None]
+        complete = len(summable) == len(members)
+
+        fields = [r["field"] for r in members]
+        distinct_fields = None not in fields and len(set(fields)) == len(fields)
+
+        total_sum = total_sd = None
+        if complete and distinct_fields and len(members) > 1:
+            total_sum = sum(r["sum"] for r in summable)
+            sds = [r["sd"] for r in summable if r["sd"] is not None]
+            total_sd = math.sqrt(sum(sd * sd for sd in sds)) if len(sds) == len(summable) else None
+
+        out.append({
+            "scorer": scorer, "structure": structure, "quantity": quantity, "unit": unit,
+            "rows": members, "total_sum": total_sum, "total_sd": total_sd,
+            "n_fields": len(members),
+        })
+
+    out.sort(key=lambda g: (g["scorer"], g["structure"]))
+    return out
+
+
+def _result_rows(run_dir: Path, study: str):
+    """Parsed, plan-scaled scorer rows for one run, ready for the results table."""
+    parsed, warnings = results.collect_results(run_dir)
+
+    # Field names come from the study's RTPLAN.  A field is identified by its DICOM
+    # BeamNumber, which need not match its position in the plan -- so show the name a
+    # clinician would recognise, not just an index.
     try:
-        run_dir = studies.run_path(studies_root(), study, run_id)
+        names = results.beam_names(studies.find_rtplan(studies_root(), study))
     except StudyError:
-        flash("Invalid job directory.")
-        return redirect(url_for("list_jobs"))
-    if not run_dir.is_dir():
-        flash("Job directory not found.")
-        return redirect(url_for("list_jobs"))
-    files = [
-        {"name": p.name, "size": p.stat().st_size}
-        for p in sorted(run_dir.iterdir()) if p.is_file()
-    ]
-    return render_template("job_files.html", study=study, run_id=run_id, files=files)
+        names = {}
+
+    rows = []
+    for r in parsed:
+        scaling = results.scaling_for(r, run_dir)
+        total, sd = r.scaled(scaling)
+        number = r.field_number
+        rows.append({
+            "field": number,
+            "field_name": names.get(number, "") if number is not None else "",
+            "scorer": r.scorer,
+            "structure": r.structure or "—",
+            "quantity": r.quantity,
+            "unit": r.unit,
+            "sum": total,
+            "sd": sd,
+            "raw_sum": r.raw_sum,
+            "problem": r.problem,
+            "scale": scaling.factor if scaling else None,
+            "csv_name": r.csv_name,
+        })
+    return rows, warnings
 
 
-@app.route("/jobs/download/<study>/<run_id>/<filename>")
+@app.route("/studies/<study>/<run_id>/report.csv")
+def download_report(study, run_id):
+    """Aggregate every scorer in the run into one plan-scaled CSV report."""
+    run_dir = _resolve_run(study, run_id)
+    if run_dir is None:
+        flash("Run directory not found.")
+        return redirect(url_for("list_studies"))
+
+    rows, _ = _result_rows(run_dir, study)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["# PregDos report", f"study={study}", f"run={run_id}"])
+    writer.writerow(["# Doses are scaled to the full plan; see issue #50 before trusting absolute values."])
+    writer.writerow(["# field=ALL rows total a scorer over its fields; their SDs add in quadrature."])
+    writer.writerow(["field", "field_name", "scorer", "structure", "quantity", "unit",
+                     "sum", "standard_deviation", "scale_factor", "note"])
+    for group in _group_rows(rows):
+        for r in group["rows"]:
+            writer.writerow([
+                "" if r["field"] is None else r["field"], r["field_name"],
+                r["scorer"], r["structure"], r["quantity"], r["unit"],
+                "" if r["sum"] is None else repr(r["sum"]),
+                "" if r["sd"] is None else repr(r["sd"]),
+                "" if r["scale"] is None else repr(r["scale"]),
+                r["problem"] or "",
+            ])
+        if group["total_sum"] is not None:
+            writer.writerow([
+                "ALL", "", group["scorer"], group["structure"], group["quantity"], group["unit"],
+                repr(group["total_sum"]),
+                "" if group["total_sd"] is None else repr(group["total_sd"]),
+                "", f"sum over {group['n_fields']} fields",
+            ])
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{secure_filename(study)}_{run_id}_report.csv"'},
+    )
+
+
+@app.route("/studies/<study>/delete", methods=["POST"])
+def delete_study(study):
+    """Remove a study and everything under it.
+
+    An unfinished run is cancelled first: TOPAS jobs take hours, and one left running would
+    keep writing into a directory that has just been deleted.
+    """
+    root = studies_root()
+    try:
+        study_dir = studies.study_path(root, study)
+    except StudyError:
+        flash("Invalid study path.")
+        return redirect(url_for("list_studies"))
+    if not study_dir.is_dir():
+        flash("Study not found.")
+        return redirect(url_for("list_studies"))
+
+    cancelled = 0
+    for run_id in studies.list_runs(root, study):
+        run_dir = studies.run_path(root, study, run_id)
+        if _run_status(run_dir) in (executor.RUNNING, executor.QUEUED):
+            executor.cancel_run(run_dir)
+            cancelled += 1
+
+    shutil.rmtree(study_dir, ignore_errors=True)
+    if cancelled:
+        flash(f"Cancelled {cancelled} unfinished run(s).")
+    flash(f"Deleted study {study}.")
+    return redirect(url_for("list_studies"))
+
+
+@app.route("/studies/download/<study>/<run_id>/<filename>")
 def download_job_file(study, run_id, filename):
-    try:
-        run_dir = studies.run_path(studies_root(), study, run_id)
-    except StudyError:
-        flash("Invalid job directory.")
-        return redirect(url_for("list_jobs"))
+    run_dir = _resolve_run(study, run_id)
+    if run_dir is None:
+        flash("Run directory not found.")
+        return redirect(url_for("list_studies"))
     return send_from_directory(str(run_dir), secure_filename(filename), as_attachment=True)
 
 

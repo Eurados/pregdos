@@ -23,14 +23,52 @@
             </tr>
             <tr>
                 <td>OpenTOPAS</td>
-                <td>{{ versions.topas }}</td>
+                <td>
+                    {{ versions.topas }}
+                    {% if versions.topas_warning %}
+                        <span class="badge danger">unsupported</span>
+                    {% elif versions.topas != 'unknown' %}
+                        <span class="badge success">ok</span>
+                    {% endif %}
+                </td>
             </tr>
             <tr>
                 <td>Geant4</td>
                 <td>{{ versions.geant4 }}</td>
             </tr>
+            {% if versions.g4_data_dir %}
+            <tr>
+                <td>Geant4 data</td>
+                <td>
+                    <code>{{ versions.g4_data_dir }}</code>
+                    {% if versions.g4_data_dir_problem %}
+                        <span class="badge danger">missing</span>
+                    {% else %}
+                        <span class="badge success">found</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endif %}
         </tbody>
     </table>
+
+    {% if versions.topas_warning %}
+      <div class="alert" style="margin-top: 16px;">
+        <strong>⚠ {{ versions.topas_warning }}</strong>
+      </div>
+    {% endif %}
+    {% if versions.g4_data_dir_problem %}
+      <div class="alert" style="margin-top: 16px;">
+        <strong>⚠ {{ versions.g4_data_dir_problem }}</strong>
+        If this path looks wrong, the webserver may have been started from a shell with a
+        stale environment &mdash; restart it.
+      </div>
+    {% endif %}
+
+    <p class="hint" style="margin-top: 16px;">
+        OpenTOPAS and Geant4 versions are read from the running installation.
+        PregDos requires OpenTOPAS {{ versions.minimum_topas }} or newer.
+    </p>
     <p class="hint" style="margin-top: 16px;">Under development &mdash; not for clinical use.</p>
 </section>
 
@@ -56,5 +94,7 @@
         (<a href="https://pianoforte-partnership.eu/" target="_blank" rel="noopener noreferrer">PIANOFORTE</a>
         - European Partnership for Radiation Protection Research).
     </p>
+
+    {# The logos live in the persistent footer; this panel keeps the full attribution text. #}
 </section>
 {% endblock %}

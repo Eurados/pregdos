@@ -229,6 +229,12 @@ def find_rtstruct(root: str | os.PathLike, name: str) -> Path | None:
     return matches[0] if matches else None
 
 
+def find_rtplan(root: str | os.PathLike, name: str) -> Path | None:
+    """Locate the study's RTPLAN file (``RN*.dcm`` for an RT Ion Plan)."""
+    matches = sorted(dicom_path(root, name).rglob("RN*.dcm"))
+    return matches[0] if matches else None
+
+
 # ---------------------------------------------------------------------------
 # Relative paths for the "generate where you execute" invariant
 # ---------------------------------------------------------------------------

@@ -1,0 +1,9 @@
+# TOPAS Version: 4.2.p3
+# Parameter File: topas_field01.txt
+# Results for scorer: DoseProtonPrimary_CTV
+# Filtered by: OnlyIncludeParticlesNamed = 1 "proton"
+# Filtered by: OnlyIncludeIfParticleOrAncestorNotNamed = 1 "neutron"
+# Filtered by: OnlyIncludeIfInRTStructure = 1 "CTV"
+# Scored in component: Patient
+# DoseToMedium ( Gy ) : Sum   Standard_Deviation   
+1.355829448712598e-09, 1.271278408327433e-13

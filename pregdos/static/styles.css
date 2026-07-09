@@ -80,6 +80,28 @@ body {
   padding: 14px 0;
   margin-right: 16px;
   flex-shrink: 0;
+  white-space: nowrap;
+  /* The brand links to the dashboard, so it takes the same active underline as a tab
+     rather than handing it to a neighbour. */
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: border-color 0.15s ease;
+}
+
+.tab-nav-brand.active {
+  border-bottom-color: var(--brand);
+}
+
+/* The version rides with the brand so it appears in every screenshot and bug report.
+   Only the public part is shown; the full setuptools-scm string (with the commit hash)
+   is on the title attribute. */
+.tab-nav-version {
+  margin-left: 6px;
+  font-weight: 500;
+  font-size: 0.75rem;
+  color: var(--muted);
+  letter-spacing: 0.01em;
+  vertical-align: 1px;
 }
 
 .tab-nav-tabs {
@@ -516,6 +538,125 @@ button:focus-visible,
   background: rgba(214, 69, 69, 0.12);
   color: var(--danger);
   border: 1px solid rgba(214, 69, 69, 0.35);
+}
+
+/* ----------------------------------------------------------
+   Results / study tiles
+   ---------------------------------------------------------- */
+
+/* Destructive action.  Deliberately quiet until hovered: deleting a study wipes the
+   uploaded DICOM and every result, so the button should not invite an idle click. */
+.btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid rgba(214, 69, 69, 0.35);
+}
+
+.btn-danger:hover {
+  background: var(--danger);
+  color: #fff;
+  border-color: var(--danger);
+}
+
+.study-tile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.study-tile-head h2 {
+  margin: 0;
+}
+
+.study-tile-head form {
+  margin: 0;
+}
+
+/* Each scorer is its own <tbody>, so a rule separates scorers rather than rows. */
+.scorer-table tbody.scorer-group + tbody.scorer-group {
+  border-top: 2px solid var(--ring);
+}
+
+.scorer-table tr.scorer-total td {
+  background: rgba(44, 123, 229, 0.06);
+  border-top: 1px solid var(--ring);
+}
+
+/* ----------------------------------------------------------
+   Funding acknowledgement logos (About page)
+   ---------------------------------------------------------- */
+
+.funding-logos {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin-top: 16px;
+}
+
+.funding-logo {
+  height: 46px;
+  width: auto;
+  max-width: 100%;
+  display: block;
+  border-radius: 3px;
+}
+
+@media (prefers-color-scheme: dark) {
+  /* Only transparent logos with dark lettering need a light backing.  The EU flag has its
+     own blue field and would look wrong in a white box. */
+  .funding-logo.plated {
+    background: #fff;
+    padding: 5px 9px;
+    border-radius: 6px;
+  }
+}
+
+@media (max-width: 600px) {
+  .funding-logo {
+    height: 36px;
+  }
+}
+
+/* Persistent acknowledgement strip in the site footer: present on every page, but never
+   competing with the page's own content. */
+.funding-strip {
+  padding-top: 20px;
+  border-top: 1px solid var(--ring);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.funding-strip .hint {
+  margin: 0;
+  max-width: 640px;
+}
+
+.funding-logos.compact {
+  gap: 16px;
+  margin-top: 0;
+  justify-content: center;
+}
+
+.funding-logos.compact .funding-logo {
+  height: 30px;
+  opacity: 0.85;
+  transition: opacity 0.15s ease;
+}
+
+.funding-logos.compact a:hover .funding-logo,
+.funding-logos.compact .funding-logo:hover {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .funding-logos.compact .funding-logo {
+    transition: none;
+  }
 }
 
 /* ----------------------------------------------------------
