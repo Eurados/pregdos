@@ -1,0 +1,8 @@
+# TOPAS Version: 4.2.p3
+# Parameter File: topas_field01.txt
+# Results for scorer: AmBDose_BrainStem
+# Filtered by: OnlyIncludeParticlesNamed = 1 "neutron"
+# Filtered by: OnlyIncludeIfInRTStructure = 1 "BrainStem"
+# Scored in component: Patient
+# AmbientDoseEquivalent ( Sv ) : Sum   Standard_Deviation   
+1.049973996636311e-11, 5.038408614663083e-15
