@@ -194,7 +194,7 @@ def test_upload_warns_about_multiple_rtdose_but_proceeds(client, tmp_path):
     assert b"CTV" in resp.data                        # warned, but the setup page rendered
 
 
-def test_upload_discards_non_dicom_files(client, tmp_path):
+def test_upload_discards_unusable_files(client, tmp_path):
     """`dicom/` is the directory TOPAS scans; nothing else belongs in it."""
     source = tmp_path / "src"
     dicom_factory.flat_study(source)
@@ -202,7 +202,7 @@ def test_upload_discards_non_dicom_files(client, tmp_path):
 
     resp = client.post("/upload", data=_upload_data(source),
                        content_type="multipart/form-data", follow_redirects=True)
-    assert b"Ignored 1 non-DICOM file" in resp.data
+    assert b"Discarded 1 unusable file" in resp.data
     assert not (studies.dicom_path(tmp_path, "study") / "DICOMDIR").exists()
 
 

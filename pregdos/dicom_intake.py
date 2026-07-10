@@ -67,8 +67,12 @@ class Intake:
 
     root: Path
     files: List[DicomFile] = field(default_factory=list)
-    non_dicom: List[Path] = field(default_factory=list)
-    """Files that are not DICOM at all (``DICOMDIR``, README, thumbnails, ...)."""
+    ignored: List[Path] = field(default_factory=list)
+    """Files that cannot serve as input: unreadable by pydicom, or DICOM carrying no
+    ``Modality`` (a ``DICOMDIR`` is the usual example -- it parses, but names no modality).
+
+    :func:`flatten` **deletes** these, so the distinction matters: anything landing here is
+    thrown away, not merely skipped."""
 
     def by_modality(self, modality: str) -> List[DicomFile]:
         return [f for f in self.files if f.modality == modality]
@@ -100,8 +104,9 @@ class Intake:
 def scan(dicom_root: str | Path) -> Intake:
     """Read the header of every file under ``dicom_root``.
 
-    Never raises on a bad file: anything pydicom cannot parse is recorded as non-DICOM, so
-    a stray ``DICOMDIR`` or a thumbnail does not abort an upload.
+    Never raises on a bad file: anything pydicom cannot parse, and anything parseable that
+    names no ``Modality``, is recorded in :attr:`Intake.ignored` -- so a stray ``DICOMDIR`` or
+    a thumbnail does not abort an upload.
     """
     root = Path(dicom_root)
     intake = Intake(root=root)
@@ -110,12 +115,12 @@ def scan(dicom_root: str | Path) -> Intake:
         try:
             ds = pydicom.dcmread(str(path), stop_before_pixels=True, specific_tags=_TAGS)
             modality = str(getattr(ds, "Modality", "") or "").strip()
-        except Exception:  # noqa: BLE001 - a non-DICOM file is data, not an error
-            intake.non_dicom.append(path)
+        except Exception:  # noqa: BLE001 - an unreadable file is data, not an error
+            intake.ignored.append(path)
             continue
 
         if not modality:
-            intake.non_dicom.append(path)
+            intake.ignored.append(path)
             continue
 
         intake.files.append(DicomFile(
@@ -183,10 +188,10 @@ def warnings(intake: Intake) -> List[str]:
             f"Found {n_dose} RTDOSE files. The in-field dose grid will be cloned from one of "
             "them, chosen arbitrarily; this affects only the optional in-field scorer."
         )
-    if intake.non_dicom:
-        names = ", ".join(p.name for p in intake.non_dicom[:3])
-        more = f" (and {len(intake.non_dicom) - 3} more)" if len(intake.non_dicom) > 3 else ""
-        notes.append(f"Ignored {len(intake.non_dicom)} non-DICOM file(s): {names}{more}.")
+    if intake.ignored:
+        names = ", ".join(p.name for p in intake.ignored[:3])
+        more = f" (and {len(intake.ignored) - 3} more)" if len(intake.ignored) > 3 else ""
+        notes.append(f"Discarded {len(intake.ignored)} unusable file(s): {names}{more}.")
     return notes
 
 
@@ -194,32 +199,39 @@ def flatten(intake: Intake) -> int:
     """Move every DICOM file to the top of ``intake.root`` and discard the rest.
 
     TOPAS reads ``DicomDirectory`` non-recursively, so every modality must sit side by side.
-    Non-DICOM files are removed rather than left behind: ``dicom/`` is the directory TOPAS
-    scans, and it should contain nothing else.
+    Unusable files (see :attr:`Intake.ignored`) are removed rather than left behind:
+    ``dicom/`` is the directory TOPAS scans, and it should contain nothing else.
 
     Returns the number of files moved.  Names that collide across subdirectories are
     disambiguated with their source directory, so no slice is silently overwritten.
+
+    The discards happen **before** the moves.  Otherwise a non-DICOM file at the root could
+    share a name with a slice moved up from a subdirectory: the move would overwrite it, and
+    the discard would then delete the slice that had just taken its place.  Reserving names
+    against the real directory contents (rather than against the DICOM files alone) closes
+    the same hole from the other side.
     """
     root = intake.root
+
+    for path in intake.ignored:
+        path.unlink(missing_ok=True)
+    intake.ignored = []
+
+    # Reserve every name that exists on disk, not merely the ones we intend to keep.
+    taken: Set[str] = {p.name for p in root.iterdir() if p.is_file()}
+
     moved = 0
-    taken: Set[str] = set()
-
-    for f in intake.files:
-        if f.path.parent == root:
-            taken.add(f.path.name)
-
     for f in intake.files:
         if f.path.parent == root:
             continue
         name = _unique_name(f.path, root, taken)
         taken.add(name)
-        shutil.move(str(f.path), str(root / name))
-        f.path = root / name
+        target = root / name
+        if target.exists():
+            raise RuntimeError(f"Refusing to overwrite {target} while flattening {root}")
+        shutil.move(str(f.path), str(target))
+        f.path = target
         moved += 1
-
-    for path in intake.non_dicom:
-        path.unlink(missing_ok=True)
-    intake.non_dicom = []
 
     _prune_empty_dirs(root)
     return moved
@@ -246,9 +258,15 @@ def _unique_name(path: Path, root: Path, taken: Set[str]) -> str:
 
 
 def _prune_empty_dirs(root: Path) -> None:
-    """Remove the now-empty subdirectories left behind by the flatten."""
+    """Remove the now-empty subdirectories left behind by the flatten.
+
+    Reverse order visits children before parents, so a nested chain of empty directories
+    collapses entirely.  A directory that still holds something is left alone: ``scan`` only
+    records regular files, so a FIFO or a dangling symlink is neither moved nor discarded and
+    keeps its parent alive.  That is harmless -- TOPAS reads ``dicom/`` non-recursively.
+    """
     for path in sorted((p for p in root.rglob("*") if p.is_dir()), reverse=True):
         try:
             path.rmdir()
         except OSError:
-            pass  # not empty: something we did not move lives there
+            pass  # not empty

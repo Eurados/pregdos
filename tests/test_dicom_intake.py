@@ -30,18 +30,43 @@ def test_scan_finds_nested_files(tmp_path):
     assert scan(tmp_path).modalities["CT"] == 3
 
 
-def test_scan_records_non_dicom_without_raising(tmp_path):
+def test_scan_records_unusable_files_without_raising(tmp_path):
     _flat_study(tmp_path)
     (tmp_path / "DICOMDIR").write_text("not dicom")
     (tmp_path / "notes.txt").write_text("hello")
     intake = scan(tmp_path)
-    assert sorted(p.name for p in intake.non_dicom) == ["DICOMDIR", "notes.txt"]
+    assert sorted(p.name for p in intake.ignored) == ["DICOMDIR", "notes.txt"]
     assert intake.modalities["CT"] == 3
+
+
+def test_scan_ignores_parseable_dicom_without_a_modality(tmp_path):
+    """A real DICOMDIR parses fine but names no Modality, so it is unusable as input --
+    and `flatten` deletes it.  It must land in `ignored`, not in `files`."""
+    import pydicom
+    from pydicom.dataset import Dataset, FileMetaDataset
+
+    _flat_study(tmp_path)
+    ds = Dataset()
+    ds.file_meta = FileMetaDataset()
+    ds.file_meta.MediaStorageSOPClassUID = pydicom.uid.MediaStorageDirectoryStorage
+    ds.file_meta.MediaStorageSOPInstanceUID = pydicom.uid.generate_uid()
+    ds.file_meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
+    ds.SOPClassUID = pydicom.uid.MediaStorageDirectoryStorage
+    ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID
+    ds.PatientID = "PAT1"                       # parseable, but no Modality
+    ds.save_as(str(tmp_path / "DICOMDIR"), enforce_file_format=True)
+
+    intake = scan(tmp_path)
+    assert [p.name for p in intake.ignored] == ["DICOMDIR"]
+    assert intake.modalities == {"CT": 3, "RTSTRUCT": 1, "RTPLAN": 1, "RTDOSE": 1}
+
+    flatten(intake)
+    assert not (tmp_path / "DICOMDIR").exists()
 
 
 def test_scan_of_empty_dir(tmp_path):
     intake = scan(tmp_path)
-    assert intake.files == [] and intake.non_dicom == []
+    assert intake.files == [] and intake.ignored == []
 
 
 # --- validate ---
@@ -113,12 +138,12 @@ def test_multiple_rtdose_is_a_warning_not_an_error(tmp_path):
     assert any("Found 3 RTDOSE files" in w for w in warnings(intake))
 
 
-def test_non_dicom_files_produce_a_warning(tmp_path):
+def test_unusable_files_produce_a_warning(tmp_path):
     _flat_study(tmp_path)
     for name in ("DICOMDIR", "a.txt", "b.txt", "c.txt"):
         (tmp_path / name).write_text("x")
     notes = warnings(scan(tmp_path))
-    assert any("Ignored 4 non-DICOM file(s)" in n and "and 1 more" in n for n in notes)
+    assert any("Discarded 4 unusable file(s)" in n and "and 1 more" in n for n in notes)
 
 
 # --- flatten ---
@@ -149,7 +174,7 @@ def test_flatten_disambiguates_colliding_names(tmp_path):
     """Two directories may each hold `1.dcm`; neither slice may be overwritten."""
     _write(tmp_path / "1.dcm", "CT")
     _write(tmp_path / "series" / "1.dcm", "CT")
-    _write(tmp_path / "1.dcm".replace("1", "2"), "CT")
+    _write(tmp_path / "2.dcm", "CT")
     intake = scan(tmp_path)
     flatten(intake)
 
@@ -168,7 +193,43 @@ def test_flatten_disambiguates_when_the_prefixed_name_also_collides(tmp_path):
     assert scan(tmp_path).modalities["CT"] == 3
 
 
-def test_flatten_removes_non_dicom_files(tmp_path):
+def test_flatten_does_not_lose_a_slice_that_collides_with_a_non_dicom_file(tmp_path):
+    """Regression: a corrupt `1.dcm` at the root and a real `CT/1.dcm` below it.
+
+    Moving the slice up overwrote the corrupt file, and the non-DICOM cleanup then deleted
+    the slice that had taken its place -- silently losing a CT slice.
+    """
+    (tmp_path / "1.dcm").write_text("corrupt, not dicom")
+    _write(tmp_path / "CT" / "1.dcm", "CT")
+    _write(tmp_path / "CT" / "2.dcm", "CT")
+    _write(tmp_path / "RS.dcm", "RTSTRUCT")
+    _write(tmp_path / "RN.dcm", "RTPLAN")
+    _write(tmp_path / "RD.dcm", "RTDOSE")
+
+    intake = scan(tmp_path)
+    assert intake.modalities["CT"] == 2
+    flatten(intake)
+
+    after = scan(tmp_path)
+    assert after.modalities["CT"] == 2          # neither slice was lost
+    assert not (tmp_path / "1.dcm").read_bytes().startswith(b"corrupt")
+    assert all(f.path.exists() for f in intake.files)
+
+
+def test_flatten_does_not_overwrite_a_root_dicom_of_the_same_name(tmp_path):
+    """A root slice and a nested slice may share a name; both must survive."""
+    _write(tmp_path / "1.dcm", "CT")
+    _write(tmp_path / "CT" / "1.dcm", "CT")
+    _write(tmp_path / "RS.dcm", "RTSTRUCT")
+    _write(tmp_path / "RN.dcm", "RTPLAN")
+    _write(tmp_path / "RD.dcm", "RTDOSE")
+
+    flatten(scan(tmp_path))
+    assert scan(tmp_path).modalities["CT"] == 2
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["1.dcm", "CT_1.dcm", "RD.dcm", "RN.dcm", "RS.dcm"]
+
+
+def test_flatten_removes_unusable_files(tmp_path):
     """`dicom/` is the directory TOPAS scans; it should hold nothing else."""
     _flat_study(tmp_path)
     (tmp_path / "DICOMDIR").write_text("x")
@@ -179,7 +240,7 @@ def test_flatten_removes_non_dicom_files(tmp_path):
     flatten(intake)
     assert not (tmp_path / "DICOMDIR").exists()
     assert not (tmp_path / "sub").exists()
-    assert intake.non_dicom == []
+    assert intake.ignored == []
 
 
 def test_flatten_updates_the_recorded_paths(tmp_path):
@@ -189,15 +250,28 @@ def test_flatten_updates_the_recorded_paths(tmp_path):
     assert all(f.path.exists() for f in intake.files)
 
 
-def test_flatten_keeps_a_non_empty_subdir(tmp_path):
-    """A directory holding something we did not move is left alone rather than forced."""
+def test_flatten_prunes_empty_subdirectories(tmp_path):
+    """Nested empty directories are removed innermost-first, so the outer one empties too."""
     _flat_study(tmp_path)
-    (tmp_path / "keep").mkdir()
-    (tmp_path / "keep" / "sub").mkdir()
-    intake = scan(tmp_path)
-    flatten(intake)
-    # both are empty, so both are pruned; nothing raised
-    assert not (tmp_path / "keep").exists()
+    (tmp_path / "outer" / "inner").mkdir(parents=True)
+
+    flatten(scan(tmp_path))
+    assert not (tmp_path / "outer").exists()
+
+
+def test_flatten_leaves_a_subdirectory_that_still_holds_something(tmp_path):
+    """`scan` only records regular files, so a FIFO or a dangling symlink is never moved and
+    never discarded.  Its directory must survive pruning rather than raise -- and TOPAS is
+    unbothered, since it reads `dicom/` non-recursively."""
+    import os
+
+    _flat_study(tmp_path)
+    (tmp_path / "odd").mkdir()
+    os.symlink(tmp_path / "does-not-exist", tmp_path / "odd" / "dangling")
+
+    flatten(scan(tmp_path))          # must not raise
+    assert (tmp_path / "odd" / "dangling").is_symlink()
+    assert scan(tmp_path).modalities["CT"] == 3
 
 
 def test_required_and_singleton_constants_agree_with_dicomexport():
