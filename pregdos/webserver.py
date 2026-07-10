@@ -572,6 +572,18 @@ def _funding_logos() -> list[dict]:
 NOT_SUBMITTED = "not submitted"
 
 
+def _format_duration(seconds: float) -> str:
+    """A rough human duration: "~2h 15m", "~45m", "~30s"."""
+    seconds = int(max(seconds, 0))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"~{h}h {m}m"
+    if m:
+        return f"~{m}m"
+    return f"~{s}s"
+
+
 def _run_status(run_dir: Path) -> str:
     """Status of one run, read entirely from files on disk (see :mod:`pregdos.executor`)."""
     if executor.read_run_metadata(run_dir) is None:
@@ -633,11 +645,33 @@ def run_detail(study, run_id):
 
     files = [{"name": p.name, "size": p.stat().st_size} for p in sorted(run_dir.iterdir()) if p.is_file()]
     info = executor.read_run_metadata(run_dir)
+    status = _run_status(run_dir)
+    field_progress = executor.run_progress(run_dir)
+    etr = None
+    if status == executor.RUNNING and info is not None:
+        seconds = executor.estimate_remaining_seconds(field_progress, info.submitted)
+        etr = _format_duration(seconds) if seconds is not None else None
+    progress = [
+        {
+            "field": p.topas_file,
+            "status": p.status,
+            "percent": round(100 * p.fraction),
+            "histories_done": p.histories_done,
+            "histories_total": p.histories_total,
+            "runs_started": p.runs_started,
+            "total_runs": p.total_runs,
+        }
+        for p in field_progress
+    ]
     return render_template(
         "run_detail.html",
         study=study,
         run_id=run_id,
-        status=_run_status(run_dir),
+        status=status,
+        # While work is in flight the page refreshes itself so the bars advance.
+        auto_refresh=status in (executor.RUNNING, executor.QUEUED),
+        progress=progress,
+        etr=etr,
         groups=groups,
         files=files,
         backend=info.backend if info else None,
@@ -739,9 +773,11 @@ def download_report(study, run_id):
     writer = csv.writer(buf)
     writer.writerow(["# PregDos report", f"study={study}", f"run={run_id}"])
     writer.writerow(["# Doses are scaled to the full plan; see issue #50 before trusting absolute values."])
-    writer.writerow(["# field=ALL rows total a scorer over its fields; their SDs add in quadrature."])
+    writer.writerow(["# dose_uncertainty is the 1-sigma Monte-Carlo statistical error "
+                     "(sqrt(N)*SD/Sum applied to the scaled dose, N = simulated histories)."])
+    writer.writerow(["# field=ALL rows total a scorer over its fields; their uncertainties add in quadrature."])
     writer.writerow(["field", "field_name", "scorer", "structure", "quantity", "unit",
-                     "sum", "standard_deviation", "scale_factor", "note"])
+                     "dose", "dose_uncertainty", "scale_factor", "note"])
     for group in _group_rows(rows):
         for r in group["rows"]:
             writer.writerow([

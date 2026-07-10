@@ -573,6 +573,53 @@ button:focus-visible,
   margin: 0;
 }
 
+/* ----------------------------------------------------------
+   Per-field run progress
+   ---------------------------------------------------------- */
+
+.progress-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.progress-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.progress-track {
+  position: relative;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--ring);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--brand);
+  border-radius: 9px 0 0 9px;
+  transition: width 0.4s ease;
+}
+
+.progress-fill.completed { background: var(--success); border-radius: 9px; }
+.progress-fill.failed    { background: var(--danger); }
+
+.progress-pct {
+  position: absolute;
+  top: 0;
+  right: 8px;
+  line-height: 18px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
 /* Each scorer is its own <tbody>, so a rule separates scorers rather than rows. */
 .scorer-table tbody.scorer-group + tbody.scorer-group {
   border-top: 2px solid var(--ring);

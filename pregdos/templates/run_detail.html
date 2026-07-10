@@ -22,6 +22,31 @@
       {% endfor %}
     </p>
   {% endif %}
+
+  {% if progress %}
+    {% if etr %}
+      <p class="hint" style="margin-top: 12px;">Estimated time remaining: <strong>{{ etr }}</strong> (rough)</p>
+    {% endif %}
+    <div class="progress-list">
+      {% for p in progress %}
+        <div class="progress-row">
+          <div class="progress-label">
+            <code>{{ p.field }}</code>
+            <span class="hint">
+              {% if p.status == 'completed' %}done
+              {% elif p.status == 'failed' %}failed at run {{ p.runs_started }}/{{ p.total_runs }}
+              {% elif p.total_runs %}run {{ p.runs_started }}/{{ p.total_runs }} · {{ '{:,}'.format(p.histories_done) }}/{{ '{:,}'.format(p.histories_total) }} histories
+              {% else %}starting…{% endif %}
+            </span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill {{ p.status }}" style="width: {{ p.percent }}%"></div>
+            <span class="progress-pct">{{ p.percent }}%</span>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
 </section>
 
 <section class="card">
@@ -32,7 +57,7 @@
         <thead>
           <tr>
             <th>Scorer</th><th>Structure</th><th>Quantity</th><th>Field</th>
-            <th>Dose (Sum)</th><th>Uncertainty (SD)</th><th>Unit</th>
+            <th>Dose</th><th>Stat. uncertainty (1σ)</th><th>Unit</th>
           </tr>
         </thead>
         {% for g in groups %}
@@ -55,7 +80,11 @@
                   <td colspan="3" class="hint">multi-bin grid — download the CSV</td>
                 {% else %}
                   <td>{{ '%.4g' % r.sum }}</td>
-                  <td>{{ '%.3g' % r.sd if r.sd is not none else '—' }}</td>
+                  <td>
+                    {% if r.sd is not none %}
+                      ± {{ '%.2g' % r.sd }}{% if r.sum %} <span class="hint">({{ '%.2g' % (100 * r.sd / r.sum) }}%)</span>{% endif %}
+                    {% else %}&mdash;{% endif %}
+                  </td>
                   <td>{{ r.unit }}</td>
                 {% endif %}
               </tr>
@@ -67,7 +96,11 @@
                 <td colspan="3"></td>
                 <td><strong>All {{ g.n_fields }} fields</strong></td>
                 <td><strong>{{ '%.4g' % g.total_sum }}</strong></td>
-                <td>{{ '%.3g' % g.total_sd if g.total_sd is not none else '—' }}</td>
+                <td>
+                  {% if g.total_sd is not none %}
+                    ± {{ '%.2g' % g.total_sd }}{% if g.total_sum %} <span class="hint">({{ '%.2g' % (100 * g.total_sd / g.total_sum) }}%)</span>{% endif %}
+                  {% else %}&mdash;{% endif %}
+                </td>
                 <td>{{ g.unit }}</td>
               </tr>
             {% endif %}
@@ -77,14 +110,16 @@
     </div>
 
     <p class="hint">
-      Values are scaled from the simulated histories to the full plan, using
-      <code>PARTICLE_SCALING × REQUESTED_HISTORIES / Σ spotWeight</code> from the generated
-      TOPAS input.
+      Doses are scaled from the simulated histories to the full plan
+      (<code>PARTICLE_SCALING × REQUESTED_HISTORIES / Σ spotWeight</code>). The uncertainty is
+      the 1σ Monte-Carlo statistical error, <code>√N · SD / Sum</code> (N = simulated
+      histories) — the plain TOPAS <code>Standard_Deviation</code> is the per-history spread and
+      is √N too small as an error on the total.
     </p>
     <p class="hint">
-      <strong>⚠ Absolute doses are not yet trustworthy.</strong> The structure-average scorers
-      normalise by a mass that is not the structure's, and the error factor differs per
-      structure — so comparisons between structures are unsafe too. See issue #50.
+      <strong>⚠ Absolute doses are under validation (issue #50).</strong> How TOPAS normalises a
+      structure-filtered scorer is still being confirmed against a known reference dose; treat
+      the absolute values as provisional until that closes.
     </p>
 
     <div class="actions">
@@ -122,4 +157,13 @@
     <a class="btn btn-secondary" href="{{ url_for('upload_files') }}">New simulation</a>
   </div>
 </section>
+{% endblock %}
+
+{% block scripts %}
+{% if auto_refresh %}
+<script>
+  // The run is still going; reload periodically so the progress bars advance.
+  setTimeout(function () { location.reload(); }, 5000);
+</script>
+{% endif %}
 {% endblock %}

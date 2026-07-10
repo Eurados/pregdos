@@ -40,11 +40,19 @@ round away and the gap grows).  Hence::
 
     scale = PARTICLE_SCALING * REQUESTED_HISTORIES / sum(spotWeight)
 
+Uncertainty
+-----------
+TOPAS's ``Standard_Deviation`` column is the sample SD of the *per-history* contributions --
+not a standard error, and √N too small as an error on the reported ``Sum``.  The statistical
+uncertainty we report is the standard error of the estimated dose, ``√N · SD / Sum`` (N =
+simulated histories), which is invariant under the deterministic plan scaling.  See
+:meth:`ScorerResult.relative_uncertainty`.
+
 .. warning::
-   The absolute dose values are **not** currently trustworthy: the structure-average scorers
-   normalise by a mass that is not the structure's, so each structure carries a different
-   error factor.  See issue #50.  The scaling implemented here is a separate, independently
-   correct step, and is applied to whatever TOPAS reports at the units it claims.
+   The **absolute** dose values are still under validation (issue #50): how TOPAS normalises a
+   structure-filtered scorer is being confirmed against a known reference dose.  The scaling
+   and the uncertainty implemented here are separate, independently correct steps applied to
+   whatever TOPAS reports at the units it claims.
 """
 
 from __future__ import annotations
@@ -182,17 +190,48 @@ class ScorerResult:
     def usable(self) -> bool:
         return self.problem is None
 
+    def relative_uncertainty(self, scaling: Optional[PlanScaling]) -> Optional[float]:
+        """Fractional 1σ Monte-Carlo statistical uncertainty on the dose, or None.
+
+        TOPAS reports ``Sum`` (the total over ``N`` simulated histories) and
+        ``Standard_Deviation`` = ``s``, the sample SD of the *per-history* contributions --
+        **not** a standard error, and not the uncertainty on ``Sum``.  The estimate we report
+        is the mean dose per proton (``Sum/N``) multiplied by the plan's proton count, so the
+        relevant error is the standard error of that mean:
+
+            SE(dose)/dose = √N · s / Sum   =   (s / mean) / √N
+
+        ``N`` is the number of histories actually simulated (``Σ spotWeight``), which we
+        already parse for the plan scaling.  This ratio is dimensionless and **invariant under
+        the plan scaling** -- multiplying ``Sum`` by a constant to reach plan dose multiplies
+        the absolute error by the same constant -- so it applies unchanged to the scaled dose.
+        It depends on how many histories were *simulated*, never on the plan's proton count.
+        """
+        if scaling is None:
+            return None
+        sd = self.raw_standard_deviation
+        total = self.raw_sum
+        n = scaling.simulated_histories
+        if sd is None or math.isnan(sd) or total in (None, 0.0) or math.isnan(total) or n <= 0:
+            return None
+        return math.sqrt(n) * sd / abs(total)
+
     def scaled(self, scaling: Optional[PlanScaling]) -> Tuple[Optional[float], Optional[float]]:
-        """``(sum, standard_deviation)`` scaled to plan dose, or ``(None, None)`` if unusable."""
+        """``(dose, uncertainty)`` scaled to plan dose, or ``(None, None)`` if unusable.
+
+        ``uncertainty`` is the **absolute 1σ statistical uncertainty** on the reported dose
+        (``dose × relative_uncertainty``), not the raw ``Standard_Deviation`` column -- see
+        :meth:`relative_uncertainty`.  It is None when the histories needed to form a proper
+        error are unavailable (no plan scaling).
+        """
         if not self.usable:
             return None, None
         factor = scaling.factor if scaling else 1.0
         total = self.raw_sum
-        sd = self.raw_standard_deviation
-        return (
-            None if total is None else total * factor,
-            None if sd is None or math.isnan(sd) else sd * factor,
-        )
+        dose = None if total is None else total * factor
+        rel = self.relative_uncertainty(scaling)
+        uncertainty = None if (dose is None or rel is None) else abs(dose) * rel
+        return dose, uncertainty
 
 
 # ---------------------------------------------------------------------------

@@ -32,6 +32,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -286,6 +287,123 @@ def run_status(run_dir: str | os.PathLike) -> str:
     if RUNNING in statuses:
         return RUNNING
     return COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# Progress -- how far a running field has got, from its log
+# ---------------------------------------------------------------------------
+
+# dicomexport delivers the plan as one Geant4 run per spot; TOPAS prints a line per run start.
+_RUN_LINE_RE = re.compile(r"Begin processing for Run:\s*(\d+)")
+# The per-spot history counts: `uv:Tf/spotWeight/Values = <count> w0 w1 ...`.  Spot k is run k.
+_SPOT_WEIGHTS_RE = re.compile(r"uv:Tf/spotWeight/Values\s*=\s*\d+((?:\s+\d+)+)")
+
+
+@dataclass
+class FieldProgress:
+    """How far one field has run, for a progress bar.
+
+    Progress is measured in **histories**, not runs: spot weights are very uneven (early
+    spots can carry thousands of particles, late spots a handful), so "run 600 of 659" can be
+    anywhere from a fifth to nearly all of the work.  Weighting each started run by its spot
+    weight makes the bar track the actual compute done.
+    """
+
+    topas_file: str
+    status: str
+    histories_done: int
+    histories_total: int
+    runs_started: int
+    total_runs: int
+
+    @property
+    def fraction(self) -> float:
+        """Completed fraction in [0, 1].  A cleanly finished field is 1.0 regardless of log."""
+        if self.status == COMPLETED:
+            return 1.0
+        if self.histories_total <= 0:
+            return 0.0
+        return min(1.0, self.histories_done / self.histories_total)
+
+
+def _spot_weights(run_dir: Path, topas_file: str) -> List[int]:
+    """Per-run history counts from the TOPAS input (weights[k] = histories in run k)."""
+    try:
+        text = (run_dir / topas_file).read_text()
+    except OSError:
+        return []
+    m = _SPOT_WEIGHTS_RE.search(text)
+    return [int(v) for v in m.group(1).split()] if m else []
+
+
+def _runs_started(run_dir: Path, topas_file: str) -> set:
+    """Set of run indices that have appeared in the log.
+
+    Threads process runs concurrently and slightly out of order, so a set of everything seen
+    is more honest than the max index -- and lets us sum the right spot weights.
+    """
+    try:
+        text = (run_dir / log_name(topas_file)).read_text()
+    except OSError:
+        return set()
+    return {int(m.group(1)) for m in _RUN_LINE_RE.finditer(text)}
+
+
+def field_progress(run_dir: str | os.PathLike, topas_file: str) -> FieldProgress:
+    """Progress of one field, weighted by histories, from its sentinel, input and log."""
+    run_dir = Path(run_dir)
+    status = field_status(run_dir, topas_file)
+    weights = _spot_weights(run_dir, topas_file)
+    total_runs = len(weights)
+    histories_total = sum(weights)
+
+    if status == COMPLETED:
+        started = set(range(total_runs))
+    else:
+        # Only count runs we actually have a weight for, so a stray index can't overshoot.
+        started = {k for k in _runs_started(run_dir, topas_file) if 0 <= k < total_runs}
+
+    histories_done = sum(weights[k] for k in started)
+    return FieldProgress(
+        topas_file=topas_file, status=status,
+        histories_done=histories_done, histories_total=histories_total,
+        runs_started=len(started), total_runs=total_runs,
+    )
+
+
+def run_progress(run_dir: str | os.PathLike) -> List[FieldProgress]:
+    """Per-field progress for a whole run, in submission order.  Empty if never submitted."""
+    info = read_run_metadata(run_dir)
+    if info is None:
+        return []
+    return [field_progress(run_dir, f.topas_file) for f in info.fields]
+
+
+def estimate_remaining_seconds(
+    progress: List[FieldProgress], submitted: Optional[str],
+    now: Optional[datetime.datetime] = None,
+) -> Optional[float]:
+    """Rough ETA in seconds: linear extrapolation from elapsed time and histories done.
+
+    Deliberately simple -- ``elapsed × (1 − f) / f`` over the whole run's histories.  It
+    ignores per-field startup cost and any SLURM queue wait folded into ``submitted``, so it
+    is an estimate, not a promise.  Returns None until there is enough to extrapolate from.
+    """
+    done = sum(p.histories_done for p in progress)
+    total = sum(p.histories_total for p in progress)
+    if total <= 0 or done <= 0 or done >= total:
+        return None
+    try:
+        started = datetime.datetime.fromisoformat(submitted) if submitted else None
+    except (ValueError, TypeError):
+        return None
+    if started is None:
+        return None
+    elapsed = ((now or datetime.datetime.now()) - started).total_seconds()
+    if elapsed <= 0:
+        return None
+    fraction = done / total
+    return elapsed * (1.0 - fraction) / fraction
 
 
 def cancel_run(run_dir: str | os.PathLike) -> None:

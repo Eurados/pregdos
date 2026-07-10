@@ -271,14 +271,43 @@ def test_missing_topas_input_returns_none(tmp_path):
     assert parse_plan_scaling(tmp_path / "absent.txt") is None
 
 
-def test_scaled_values_use_the_corrected_factor():
+def test_scaled_dose_uses_the_corrected_factor():
     r = parse_scorer_csv(PROTON)
     s = parse_plan_scaling(TOPAS_INPUT)
-    total, sd = r.scaled(s)
-    assert total == pytest.approx(1.355829448712598e-09 * s.factor)
-    assert sd == pytest.approx(1.271278408327433e-13 * s.factor)
+    dose, _ = r.scaled(s)
+    assert dose == pytest.approx(1.355829448712598e-09 * s.factor)
     # sanity: a per-field CTV dose in the mGy range at these (deliberately low) statistics
-    assert 1e-4 < total < 1e-2
+    assert 1e-4 < dose < 1e-2
+
+
+def test_uncertainty_is_the_statistical_error_not_the_raw_sd():
+    """The reported error is √N·SD/Sum applied to the dose, not SD×factor.  TOPAS's
+    Standard_Deviation is the per-history spread and is √N too small as an error on the sum."""
+    import math
+
+    r = parse_scorer_csv(PROTON)
+    s = parse_plan_scaling(TOPAS_INPUT)
+    raw_sum = 1.355829448712598e-09
+    raw_sd = 1.271278408327433e-13
+    n = s.simulated_histories                       # 19990 for this fixture
+
+    rel = r.relative_uncertainty(s)
+    assert rel == pytest.approx(math.sqrt(n) * raw_sd / raw_sum)
+
+    dose, unc = r.scaled(s)
+    assert unc == pytest.approx(dose * rel)
+    # the relative error is invariant under the plan scaling
+    assert unc / dose == pytest.approx(rel)
+    # and it is √N larger than naively scaling the raw SD (the old, wrong, behaviour)
+    assert unc == pytest.approx(math.sqrt(n) * raw_sd * s.factor)
+
+
+def test_relative_uncertainty_needs_histories():
+    """Without plan scaling there is no N, so no statistical error can be formed."""
+    r = parse_scorer_csv(PROTON)
+    assert r.relative_uncertainty(None) is None
+    _, unc = r.scaled(None)
+    assert unc is None
 
 
 def test_scaled_without_scaling_is_the_raw_value():

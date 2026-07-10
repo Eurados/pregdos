@@ -629,7 +629,7 @@ def test_run_detail_shows_scaled_scorer_results(client, tmp_path):
     assert "AmBDose_BrainStem" in body and "BrainStem" in body and "Sv" in body
     # 1.049973996636311e-11 Sv * 953656.09 = 1.0013e-05
     assert "1.001e-05" in body
-    assert "not yet trustworthy" in body      # the #50 caveat is surfaced
+    assert "under validation" in body         # the #50 caveat is surfaced
 
 
 def test_run_detail_of_running_job_says_so(client, tmp_path):
