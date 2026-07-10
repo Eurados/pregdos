@@ -153,6 +153,31 @@ def test_g4_data_dir_missing_is_flagged(monkeypatch, tmp_path):
     assert "does not exist" in problem and "abort" in problem
 
 
+# --- submit_blocker: the #49 pre-flight guard ---
+
+def test_submit_blocker_none_for_supported_topas(monkeypatch):
+    _with_version(monkeypatch, "4.2.p3")
+    assert versions.submit_blocker() is None
+
+
+def test_submit_blocker_blocks_unsupported_topas(monkeypatch):
+    _with_version(monkeypatch, "3.9")
+    assert "#49" in versions.submit_blocker()
+
+
+def test_submit_blocker_does_not_block_unknown_topas(monkeypatch):
+    """SLURM runs TOPAS on a compute node, so the webserver not finding it is not a reason
+    to refuse -- the version is simply unknown here."""
+    _with_version(monkeypatch, versions.UNKNOWN)
+    assert versions.submit_blocker() is None
+
+
+def test_submit_blocker_blocks_missing_g4_data(monkeypatch, tmp_path):
+    _with_version(monkeypatch, "4.2.p3")
+    monkeypatch.setenv("TOPAS_G4_DATA_DIR", str(tmp_path / "gone"))
+    assert "does not exist" in versions.submit_blocker()
+
+
 # --- the About page ---
 
 def test_about_page_reports_versions(monkeypatch):

@@ -187,6 +187,29 @@ def g4_data_dir_problem() -> Optional[str]:
     return None
 
 
+def submit_blocker() -> Optional[str]:
+    """A reason to refuse launching a run now, or None.
+
+    Only *definite* problems block a submission:
+
+    * ``TOPAS_G4_DATA_DIR`` points at a missing directory -- Geant4 aborts every run seconds
+      in (the stale-environment failure from issue #52's neighbourhood).
+    * TOPAS reports a version we can read and it is below the #49 minimum -- every scorer Sum
+      would come out NaN.
+
+    An **unknown** TOPAS version does *not* block: under the SLURM backend the binary runs on
+    a compute node, not on the webserver host, so the host's ``topas --version`` (or its
+    absence) is not authoritative.  The About page still surfaces that as a warning.
+    """
+    g4 = g4_data_dir_problem()
+    if g4:
+        return g4
+    # topas_warning() is None when supported, a message when the *parsed* version is too old.
+    if parse_version(topas_version()) is not None:
+        return topas_warning()
+    return None
+
+
 def summary() -> dict:
     """Everything the About page needs, in one call."""
     return {

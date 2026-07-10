@@ -25,6 +25,13 @@ def client(tmp_path):
         yield c
 
 
+@pytest.fixture(autouse=True)
+def _allow_submit(monkeypatch):
+    """Let /submit through by default; the #49 toolchain guard has its own test.  Otherwise
+    every submit test would depend on the host's installed TOPAS version."""
+    monkeypatch.setattr("pregdos.webserver.versions.submit_blocker", lambda: None)
+
+
 def _make_study(tmp_path, name="mystudy"):
     """Create a study on disk as /upload would leave it."""
     _, path = studies.create_study(tmp_path, name)
@@ -351,6 +358,41 @@ def test_submit_without_slurm_runs_locally(client, tmp_path, monkeypatch):
     assert response.status_code == 200
     assert b"locally in the background" in response.data
     assert (run_dir / "run.json").is_file()
+
+
+def test_submit_refused_on_broken_toolchain(client, tmp_path, monkeypatch):
+    """#49 pre-flight guard: an unsupported OpenTOPAS (or missing G4 data) must stop the
+    submission before any hours-long field is launched."""
+    monkeypatch.setattr("pregdos.webserver.versions.submit_blocker",
+                        lambda: "OpenTOPAS 4.0.0 corrupts the scorer Sum (issue #49).")
+    _make_study(tmp_path)
+    run_id, run_dir = studies.create_run(tmp_path, "mystudy")
+    (run_dir / "topas_field01.txt").write_text("# topas input")
+
+    resp = client.post(
+        "/submit",
+        data={"study_name": "mystudy", "run_id": run_id, "out_files": "topas_field01.txt"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Cannot submit" in resp.data and b"#49" in resp.data
+    assert not (run_dir / "run.json").exists()      # nothing was launched
+
+
+def test_debug_is_off_by_default(monkeypatch, mocker):
+    from pregdos import webserver
+    monkeypatch.delenv("PREGDOS_DEBUG", raising=False)
+    run = mocker.patch.object(webserver.app, "run")
+    webserver.main()
+    assert run.call_args.kwargs["debug"] is False
+
+
+def test_debug_opt_in_via_env(monkeypatch, mocker):
+    from pregdos import webserver
+    monkeypatch.setenv("PREGDOS_DEBUG", "1")
+    run = mocker.patch.object(webserver.app, "run")
+    webserver.main()
+    assert run.call_args.kwargs["debug"] is True
 
 
 def test_submit_sbatch_failure_flashes_error(client, tmp_path, mocker, monkeypatch):

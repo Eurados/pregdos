@@ -497,6 +497,14 @@ def submit_job():
         flash("Run directory not found.")
         return redirect(url_for("upload_files"))
 
+    # Refuse to launch into a broken toolchain: an unsupported OpenTOPAS would emit NaN doses
+    # (#49) and a stale TOPAS_G4_DATA_DIR would abort every field seconds in.  Cheaper to stop
+    # here than to discover it hours later in a log.
+    blocker = versions.submit_blocker()
+    if blocker:
+        flash(f"Cannot submit — {blocker}")
+        return redirect(url_for("run_detail", study=study_name, run_id=run_id))
+
     # Validate every requested file up front, so a typo cannot start a partial run.
     topas_files = []
     missing = []
@@ -866,8 +874,15 @@ def download_job_file(study, run_id, filename):
     return send_from_directory(str(run_dir), secure_filename(filename), as_attachment=True)
 
 
+def _env_flag(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def main():
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    # Debug is OFF by default: the Werkzeug debugger is an interactive console, and the app
+    # binds all interfaces, so debug=True on a shared network is remote code execution.
+    # Opt in explicitly with PREGDOS_DEBUG=1 for local development only.
+    app.run(debug=_env_flag("PREGDOS_DEBUG"), host="0.0.0.0", port=5000)
 
 
 if __name__ == "__main__":
