@@ -24,7 +24,7 @@ import sys
 import shutil
 import tempfile
 
-from . import executor, results, studies, versions
+from . import dicom_intake, executor, results, studies, versions
 from .models import ConversionParameters, ConversionResult
 from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
@@ -38,6 +38,14 @@ ALLOWED_EXTENSIONS = {"dcm", "csv", "txt"}
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.secret_key = os.environ.get("PREGDOS_SECRET_KEY", "pregdos_secret_key")
+
+
+class UploadRejected(Exception):
+    """The uploaded DICOM study cannot be converted.  Carries one message per problem."""
+
+    def __init__(self, problems):
+        super().__init__("; ".join(problems))
+        self.problems = problems
 
 
 def studies_root() -> str:
@@ -261,6 +269,16 @@ def upload_files():
             else:
                 save_uploaded_directory(study_dir_files, dicom_dir)
 
+            # Check the study *as uploaded*, so an error can name the real layout problem,
+            # then normalise it: TOPAS reads DicomDirectory non-recursively, so every
+            # modality has to sit in one directory (#52).
+            intake = dicom_intake.scan(dicom_dir)
+            problems = dicom_intake.validate(intake)
+            if problems:
+                raise UploadRejected(problems)
+            notes = dicom_intake.warnings(intake)
+            dicom_intake.flatten(intake)
+
             # Copy beam model and SPR table into the study so it is self-contained:
             # deleting the study removes every input it depends on, and the generated
             # TOPAS file can reference the SPR table by a relative path.
@@ -276,10 +294,18 @@ def upload_files():
             structures = get_structures(root, study_name)
             if not structures:
                 raise ValueError("No RS-file or structures found!")
+        except UploadRejected as e:
+            shutil.rmtree(study_path, ignore_errors=True)
+            for problem in e.problems:
+                flash(problem)
+            return redirect(request.url)
         except Exception as e:
             shutil.rmtree(study_path, ignore_errors=True)
             flash(str(e) if str(e) else "Upload failed.")
             return redirect(request.url)
+
+        for note in notes:
+            flash(note)
 
         # Render the combined setup page (structure inclusion + scorer selection)
         return render_template(

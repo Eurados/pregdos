@@ -633,7 +633,9 @@ button:focus-visible,
 
 .funding-strip .hint {
   margin: 0;
-  max-width: 640px;
+  /* Span the full container width, matching the workspace above, rather than shrinking to
+     fit as a centred flex item would. */
+  align-self: stretch;
 }
 
 .funding-logos.compact {
@@ -728,7 +730,10 @@ button:focus-visible,
 .footer {
   color: var(--muted);
   text-align: center;
-  margin: 24px 0 8px;
+  /* `auto` on the inline sides, not 0: the shorthand would otherwise override the
+     `margin-inline: auto` that .container relies on, and the footer would sit hard against
+     the left edge while <main> stayed centred. */
+  margin: 24px auto 8px;
 }
 
 /* ----------------------------------------------------------

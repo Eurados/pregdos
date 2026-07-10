@@ -5,7 +5,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
 
-from pregdos import studies
+from pregdos import dicom_intake, studies
+from tests import dicom_factory
 from pregdos.webserver import app, allowed_file
 from pregdos.models import ConversionParameters, ConversionResult, StructureSelection
 
@@ -84,7 +85,7 @@ def test_upload_both_zip_and_folder_rejected(client):
     assert b"either ZIP or Folder" in response.data
 
 
-def test_upload_without_rtstruct_leaves_no_study_behind(client, tmp_path):
+def test_upload_of_non_dicom_leaves_no_study_behind(client, tmp_path):
     """A failed upload must not leave a half-populated study directory."""
     data = {
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
@@ -93,8 +94,116 @@ def test_upload_without_rtstruct_leaves_no_study_behind(client, tmp_path):
     }
     response = client.post("/upload", data=data, content_type="multipart/form-data", follow_redirects=True)
     assert response.status_code == 200
-    assert b"No RS-file or structures found" in response.data
+    assert b"No DICOM files found in the upload" in response.data
     assert studies.list_studies(tmp_path) == []
+
+
+# --- DICOM intake through the upload route (issue #52) ---
+
+def _dir_upload(source_root, prefix="study"):
+    """Build the multipart `study_dir` payload a browser folder-upload produces."""
+    files = []
+    for p in sorted(source_root.rglob("*")):
+        if p.is_file():
+            rel = p.relative_to(source_root)
+            files.append((io.BytesIO(p.read_bytes()), f"{prefix}/{rel.as_posix()}"))
+    return files
+
+
+def _upload_data(source_root, prefix="study"):
+    return {
+        "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
+        "spr_table": (io.BytesIO(b"data"), "spr.txt"),
+        "study_dir": _dir_upload(source_root, prefix),
+    }
+
+
+def test_upload_flattens_a_nested_ct(client, tmp_path):
+    """The #52 failure: CT in a `CT/` subdirectory, RTDOSE at the top.  TOPAS scans
+    DicomDirectory non-recursively, so everything must end up side by side."""
+    source = tmp_path / "src"
+    dicom_factory.brain_layout(source)
+
+    resp = client.post("/upload", data=_upload_data(source, "Brain"),
+                       content_type="multipart/form-data", follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"CTV" in resp.data and b"Fetus" in resp.data      # the setup page rendered
+
+    dicom = studies.dicom_path(tmp_path, "Brain")
+    assert [p.name for p in dicom.iterdir() if p.is_dir()] == []   # no subdirectories left
+    modalities = dicom_intake.scan(dicom).modalities
+    assert modalities == {"CT": 3, "RTSTRUCT": 1, "RTPLAN": 1, "RTDOSE": 1}
+
+
+def test_upload_accepts_an_already_flat_study(client, tmp_path):
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+    resp = client.post("/upload", data=_upload_data(source),
+                       content_type="multipart/form-data", follow_redirects=True)
+    assert b"CTV" in resp.data
+    assert dicom_intake.scan(studies.dicom_path(tmp_path, "study")).modalities["CT"] == 3
+
+
+@pytest.mark.parametrize("modality", ["RTSTRUCT", "RTPLAN", "RTDOSE"])
+def test_upload_rejects_a_study_missing_a_modality(client, tmp_path, modality):
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+    for f in dicom_intake.scan(source).by_modality(modality):
+        f.path.unlink()
+
+    resp = client.post("/upload", data=_upload_data(source),
+                       content_type="multipart/form-data", follow_redirects=True)
+    assert f"No {modality} files found".encode() in resp.data
+    assert studies.list_studies(tmp_path) == []      # nothing left behind
+
+
+def test_upload_rejects_two_ct_series(client, tmp_path):
+    """Flattening would merge them into one impossible patient."""
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+    dicom_factory.write(source / "other" / "CT.x.dcm", "CT", series="1.2.826.0.1.1.99")
+
+    resp = client.post("/upload", data=_upload_data(source),
+                       content_type="multipart/form-data", follow_redirects=True)
+    assert b"2 CT series" in resp.data
+    assert studies.list_studies(tmp_path) == []
+
+
+def test_upload_rejects_two_patients(client, tmp_path):
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+    dicom_factory.write(source / "CT.other.dcm", "CT", patient="PAT2")
+
+    resp = client.post("/upload", data=_upload_data(source),
+                       content_type="multipart/form-data", follow_redirects=True)
+    assert b"more than one patient" in resp.data
+    assert studies.list_studies(tmp_path) == []
+
+
+def test_upload_warns_about_multiple_rtdose_but_proceeds(client, tmp_path):
+    """The Brain study has three per-field RTDOSE files; only the optional in-field scorer
+    cares which grid is cloned."""
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+    dicom_factory.write(source / "RD.2.dcm", "RTDOSE")
+    dicom_factory.write(source / "RD.3.dcm", "RTDOSE")
+
+    resp = client.post("/upload", data=_upload_data(source),
+                       content_type="multipart/form-data", follow_redirects=True)
+    assert b"Found 3 RTDOSE files" in resp.data
+    assert b"CTV" in resp.data                        # warned, but the setup page rendered
+
+
+def test_upload_discards_unusable_files(client, tmp_path):
+    """`dicom/` is the directory TOPAS scans; nothing else belongs in it."""
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+    (source / "DICOMDIR").write_text("junk")
+
+    resp = client.post("/upload", data=_upload_data(source),
+                       content_type="multipart/form-data", follow_redirects=True)
+    assert b"Discarded 1 unusable file" in resp.data
+    assert not (studies.dicom_path(tmp_path, "study") / "DICOMDIR").exists()
 
 
 # --- Download path traversal ---
