@@ -13,6 +13,7 @@ import importlib.resources
 import pydicom
 
 import csv
+import datetime
 import io
 import math
 import zipfile
@@ -584,6 +585,14 @@ def _format_duration(seconds: float) -> str:
     return f"~{s}s"
 
 
+def _completion_clock(finish: datetime.datetime) -> dict:
+    """Local wall-clock finish, split for a two-line box: ``{"time": "14:30", "date": "11 Jul"}``.
+
+    Day-first date, European style.
+    """
+    return {"time": finish.strftime("%H:%M"), "date": f"{finish.day} {finish:%b}"}
+
+
 def _run_status(run_dir: Path) -> str:
     """Status of one run, read entirely from files on disk (see :mod:`pregdos.executor`)."""
     if executor.read_run_metadata(run_dir) is None:
@@ -615,14 +624,29 @@ def list_studies():
         runs = []
         for run_id in studies.list_runs(root, study):
             run_dir = studies.run_path(root, study, run_id)
+            status = _run_status(run_dir)
+            percent = eta = None
+            # Only a running job needs its logs parsed for the pie and completion clock.
+            if status == executor.RUNNING:
+                prog = executor.run_progress(run_dir)
+                total = sum(p.histories_total for p in prog)
+                if total > 0:
+                    percent = round(100 * sum(p.histories_done for p in prog) / total)
+                info = executor.read_run_metadata(run_dir)
+                finish = executor.estimate_completion_time(prog, info.submitted if info else None)
+                eta = _completion_clock(finish) if finish else None
             runs.append({
                 "run_id": run_id,
-                "status": _run_status(run_dir),
+                "status": status,
+                "percent": percent,
+                "eta": eta,
                 "file_count": sum(1 for p in run_dir.iterdir() if p.is_file()),
             })
-        tiles.append({"name": study, "runs": runs, "active": any(r["status"] in
-                     (executor.RUNNING, executor.QUEUED) for r in runs)})
-    return render_template("studies.html", tiles=tiles)
+        active = any(r["status"] in (executor.RUNNING, executor.QUEUED) for r in runs)
+        tiles.append({"name": study, "runs": runs, "active": active})
+    # Keep the page live while any run is in flight, like the detail page.
+    auto_refresh = any(t["active"] for t in tiles)
+    return render_template("studies.html", tiles=tiles, auto_refresh=auto_refresh)
 
 
 @app.route("/studies/<study>/<run_id>")

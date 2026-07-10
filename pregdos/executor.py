@@ -406,6 +406,18 @@ def estimate_remaining_seconds(
     return elapsed * (1.0 - fraction) / fraction
 
 
+def estimate_completion_time(
+    progress: List[FieldProgress], submitted: Optional[str],
+    now: Optional[datetime.datetime] = None,
+) -> Optional[datetime.datetime]:
+    """Rough wall-clock finish time, or None if it cannot be estimated yet."""
+    now = now or datetime.datetime.now()
+    remaining = estimate_remaining_seconds(progress, submitted, now=now)
+    if remaining is None:
+        return None
+    return now + datetime.timedelta(seconds=remaining)
+
+
 def cancel_run(run_dir: str | os.PathLike) -> None:
     """Best-effort stop of an unfinished run, so its directory can be deleted safely.
 

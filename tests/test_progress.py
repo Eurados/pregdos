@@ -157,3 +157,27 @@ def test_format_duration():
     assert _format_duration(150) == "~2m"
     assert _format_duration(20) == "~20s"
     assert _format_duration(-5) == "~0s"
+
+
+def test_estimate_completion_time():
+    now = datetime.datetime(2026, 7, 10, 12, 0, 0)
+    # 25% done after 600 s -> 1800 s remaining -> finish at 12:30
+    finish = executor.estimate_completion_time(_progress(25, 100), "2026-07-10T11:50:00", now=now)
+    assert finish == datetime.datetime(2026, 7, 10, 12, 30, 0)
+
+
+def test_estimate_completion_time_none_without_progress():
+    now = datetime.datetime(2026, 7, 10, 12, 0, 0)
+    assert executor.estimate_completion_time(_progress(0, 100), "2026-07-10T11:50:00", now=now) is None
+
+
+def test_completion_clock_splits_time_and_date():
+    from pregdos.webserver import _completion_clock
+    finish = datetime.datetime(2026, 7, 11, 5, 3, 0)
+    assert _completion_clock(finish) == {"time": "05:03", "date": "11 Jul"}
+
+
+def test_completion_clock_day_is_not_zero_padded():
+    from pregdos.webserver import _completion_clock
+    finish = datetime.datetime(2026, 7, 5, 14, 30, 0)
+    assert _completion_clock(finish) == {"time": "14:30", "date": "5 Jul"}

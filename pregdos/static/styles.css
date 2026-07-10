@@ -620,6 +620,70 @@ button:focus-visible,
   color: var(--text);
 }
 
+/* ----------------------------------------------------------
+   Studies / run listing tables -- weak grid for column clarity
+   ---------------------------------------------------------- */
+
+.run-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.run-table th,
+.run-table td {
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--ring);
+}
+
+/* Weak vertical dividers between columns; --ring is translucent, so it stays soft. */
+.run-table th + th,
+.run-table td + td {
+  border-left: 1px solid var(--ring);
+}
+
+.run-table thead th {
+  border-bottom-width: 2px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.run-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Two-line expected-completion box: time over date. */
+.eta-box {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.eta-time {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.eta-date {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+/* Small progress pie next to a "running" badge on the results list. --pct is 0..100. */
+.progress-pie {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-left: 6px;
+  border-radius: 50%;
+  vertical-align: middle;
+  background: conic-gradient(var(--brand) calc(var(--pct) * 1%), var(--ring) 0);
+}
+
 /* Each scorer is its own <tbody>, so a rule separates scorers rather than rows. */
 .scorer-table tbody.scorer-group + tbody.scorer-group {
   border-top: 2px solid var(--ring);

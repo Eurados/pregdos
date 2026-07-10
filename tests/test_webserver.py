@@ -613,6 +613,31 @@ def test_studies_page_lists_tiles_with_status(client, tmp_path):
     body = resp.data.decode()
     assert "alpha" in body and run_id in body and "completed" in body
     assert "beta" in body and "not converted yet" in body
+    assert ">View</a>" in body                         # the per-run button
+
+
+def test_studies_page_shows_a_progress_pie_for_a_running_run(client, tmp_path):
+    """A running run gets a history-weighted progress pie next to the badge; a completed
+    one does not (nothing to show)."""
+    import json
+
+    _make_study(tmp_path, "alpha")
+    run_id, run_dir = studies.create_run(tmp_path, "alpha")
+    # one field, half its histories started
+    (run_dir / "topas_field01.txt").write_text(
+        "uv:Tf/spotWeight/Values                   = 2 100 100\n")
+    (run_dir / "topas_field01.log").write_text(
+        "Begin processing for Run: 0, History: 0\n")     # run 0 of 2 -> 50%
+    (run_dir / "run.json").write_text(json.dumps({
+        "backend": "local", "submitted": "now",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": "1"}],
+    }))
+
+    body = client.get("/studies").data.decode()
+    assert "progress-pie" in body
+    assert "--pct: 50" in body
+    assert "50% of all fields complete" in body          # the title/alt text
+    assert "setTimeout" in body                          # auto-refresh while a run is live
 
 
 def test_jobs_url_redirects_to_studies(client, tmp_path):
