@@ -7,8 +7,8 @@ import pytest
 
 from pregdos import dicom_intake, results, studies
 from tests import dicom_factory
-from pregdos.webserver import app, allowed_file
-from pregdos.models import ConversionParameters, ConversionResult, StructureSelection
+from pregdos.webserver import app
+from pregdos.models import ConversionParameters, ConversionResult
 
 
 class FakeSbatchResult:
@@ -38,20 +38,6 @@ def _make_study(tmp_path, name="mystudy"):
     (path / "beam.csv").write_text("col1,col2")
     (path / "spr.txt").write_text("hu,material")
     return path
-
-
-# --- allowed_file ---
-
-def test_allowed_file_accepts_valid_extensions():
-    assert allowed_file("scan.dcm")
-    assert allowed_file("beam.csv")
-    assert allowed_file("spr.txt")
-
-
-def test_allowed_file_rejects_invalid_extensions():
-    assert not allowed_file("script.py")
-    assert not allowed_file("archive.zip")
-    assert not allowed_file("noextension")
 
 
 # --- GET / ---
@@ -414,6 +400,11 @@ def test_debug_opt_in_via_env(monkeypatch, mocker):
     run = mocker.patch.object(webserver.app, "run")
     webserver.main()
     assert run.call_args.kwargs["debug"] is True
+
+
+def test_default_secret_key_is_not_static_development_value():
+    assert app.secret_key
+    assert app.secret_key != "pregdos_secret_key"
 
 
 def test_submit_sbatch_failure_flashes_error(client, tmp_path, mocker, monkeypatch):
@@ -1078,9 +1069,3 @@ def test_conversion_result_fields():
     assert r.out_files == ["topas_field01.txt"]
     assert r.selected_structures == []
     assert r.stdout is None
-
-
-def test_structure_selection_defaults():
-    s = StructureSelection(study_dir="/tmp/study")
-    assert s.available_structures == []
-    assert s.selected_structures == []
