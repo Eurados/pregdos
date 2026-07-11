@@ -34,7 +34,9 @@ At the RTPLAN dose-reference point `(0, -170.2, -2.122) mm`, the RTDOSE values a
 | 2 | 0.7106 | 3.553 | 0.7106 |
 | 3 | 0.3277 | 1.639 | 0.3277 |
 
-Example CTV contour-derived point samples from the same three beam RTDOSE files:
+The values above are point-dose checks at the RTPLAN dose-reference point. They are not directly comparable to CTV structure mean doses.
+
+Example single-point samples at CTV contour-derived coordinates from the same three beam RTDOSE files:
 
 | Point | Patient coordinate (mm) | Beam 1 RD (Gy) | Beam 2 RD (Gy) | Beam 3 RD (Gy) | Sum RD (Gy) | Sum / 5 (Gy) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
