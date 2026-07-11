@@ -402,7 +402,7 @@ def test_debug_opt_in_via_env(monkeypatch, mocker):
     assert run.call_args.kwargs["debug"] is True
 
 
-def test_default_secret_key_is_not_static_development_value():
+def test_secret_key_is_not_insecure_example_value():
     assert app.secret_key
     assert app.secret_key != "pregdos_secret_key"
 
