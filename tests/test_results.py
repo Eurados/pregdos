@@ -349,3 +349,34 @@ def test_scaling_for_missing_parameter_file(tmp_path):
     p = tmp_path / "s.csv"
     p.write_text("# Results for scorer: A\n# DoseToMedium ( Gy ) : Sum   \n1.0\n")
     assert results.scaling_for(parse_scorer_csv(p), tmp_path) is None
+
+
+def test_humanize_dose_uses_si_prefix_and_shared_scale():
+    d = results.humanize_dose(0.008636, 0.00024, "Sv")
+    # value and uncertainty share the milli prefix so the pair reads together.
+    assert d == {"value": "8.636", "sd": "0.24", "pct": "2.8", "unit": "mSv"}
+
+
+def test_humanize_dose_steps_down_to_micro():
+    d = results.humanize_dose(0.0001626, 1.6e-5, "Gy")
+    assert d["value"] == "162.6"
+    assert d["unit"] == "µGy"
+
+
+def test_humanize_dose_keeps_engineering_mantissa_for_fraction_dose():
+    # 0.2547 Gy has no integer part, so engineering notation renders it in milligray.
+    d = results.humanize_dose(0.2547, 0.0015, "Gy")
+    assert d["value"] == "254.7"
+    assert d["unit"] == "mGy"
+
+
+def test_humanize_dose_handles_missing_value_and_uncertainty():
+    assert results.humanize_dose(None, None, "Gy")["value"] is None
+    no_sd = results.humanize_dose(0.005, None, "Gy")
+    assert no_sd["value"] == "5" and no_sd["unit"] == "mGy"
+    assert no_sd["sd"] is None and no_sd["pct"] is None
+
+
+def test_humanize_dose_zero_value_takes_prefix_from_uncertainty():
+    d = results.humanize_dose(0.0, 0.00024, "Sv")
+    assert d["value"] == "0" and d["unit"] == "µSv"  # 0.00024 Sv = 240 µSv sets the scale

@@ -420,3 +420,45 @@ def scaling_for(result: ScorerResult, run_dir: str | Path) -> Optional[PlanScali
     if not result.parameter_file:
         return None
     return parse_plan_scaling(Path(run_dir) / Path(result.parameter_file).name)
+
+
+# ── Human-readable SI-prefixed display ────────────────────────────────────────────────
+# Out-of-field doses span many orders of magnitude (Gy down to nGy). Engineering notation
+# keeps the mantissa in [1, 1000) so a value reads as "3.8 mSv" or "163 µGy" instead of
+# "0.0038 Sv". This is for the results view only; CSV export keeps full-precision base units.
+_SI_PREFIXES: Tuple[Tuple[float, str], ...] = (
+    (1e9, "G"), (1e6, "M"), (1e3, "k"), (1.0, ""),
+    (1e-3, "m"), (1e-6, "µ"), (1e-9, "n"), (1e-12, "p"), (1e-15, "f"),
+)
+
+
+def _si_prefix(value: float) -> Tuple[float, str]:
+    """Pick the SI ``(factor, prefix)`` that puts ``abs(value)`` in ``[1, 1000)``."""
+    magnitude = abs(value)
+    if magnitude == 0 or not math.isfinite(magnitude):
+        return 1.0, ""
+    for factor, prefix in _SI_PREFIXES:
+        if magnitude >= factor:
+            return factor, prefix
+    return _SI_PREFIXES[-1]
+
+
+def humanize_dose(value: Optional[float], sd: Optional[float], unit: str) -> dict:
+    """Format a dose and its 1σ uncertainty with a single shared SI prefix.
+
+    Returns display strings ``{"value", "sd", "pct", "unit"}`` (``sd``/``pct`` are ``None``
+    when no uncertainty is given). The prefix is chosen from ``value`` — falling back to
+    ``sd`` when the value is zero — so the pair reads consistently:
+    ``humanize_dose(0.008636, 0.00024, "Sv")`` → value "8.636", sd "0.24", unit "mSv".
+    """
+    if value is None:
+        return {"value": None, "sd": None, "pct": None, "unit": unit}
+    reference = value if value else (sd or 0.0)
+    factor, prefix = _si_prefix(reference)
+    display = {"unit": f"{prefix}{unit}", "value": f"{value / factor:.4g}"}
+    if sd is None:
+        display["sd"] = display["pct"] = None
+    else:
+        display["sd"] = f"{sd / factor:.2g}"
+        display["pct"] = f"{100 * sd / value:.2g}" if value else None
+    return display

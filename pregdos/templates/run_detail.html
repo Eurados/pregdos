@@ -79,8 +79,9 @@
                 {% elif r.sum is none %}
                   <td colspan="3" class="hint">multi-bin grid — download the CSV</td>
                 {% else %}
+                  {% set d = fmt_dose(r.sum, r.sd, r.unit) %}
                   <td>
-                    {{ '%.4g' % r.sum }}
+                    {{ d.value }}
                     {% if r.structure_mass_normalized %}
                       <span class="hint">(mass-normalized)</span>
                     {% elif r.structure_volume_normalized %}
@@ -88,27 +89,28 @@
                     {% endif %}
                   </td>
                   <td>
-                    {% if r.sd is not none %}
-                      ± {{ '%.2g' % r.sd }}{% if r.sum %} <span class="hint">({{ '%.2g' % (100 * r.sd / r.sum) }}%)</span>{% endif %}
+                    {% if d.sd is not none %}
+                      ± {{ d.sd }}{% if d.pct %} <span class="hint">({{ d.pct }}%)</span>{% endif %}
                     {% else %}&mdash;{% endif %}
                   </td>
-                  <td>{{ r.unit }}</td>
+                  <td>{{ d.unit }}</td>
                 {% endif %}
               </tr>
             {% endfor %}
             {% if g.total_sum is not none %}
               {# The rowspan cells above cover only the per-field rows, so the total row
                  supplies its own leading cells. #}
+              {% set dt = fmt_dose(g.total_sum, g.total_sd, g.unit) %}
               <tr class="scorer-total">
                 <td colspan="3"></td>
                 <td><strong>All {{ g.n_fields }} fields</strong></td>
-                <td><strong>{{ '%.4g' % g.total_sum }}</strong></td>
+                <td><strong>{{ dt.value }}</strong></td>
                 <td>
-                  {% if g.total_sd is not none %}
-                    ± {{ '%.2g' % g.total_sd }}{% if g.total_sum %} <span class="hint">({{ '%.2g' % (100 * g.total_sd / g.total_sum) }}%)</span>{% endif %}
+                  {% if dt.sd is not none %}
+                    ± {{ dt.sd }}{% if dt.pct %} <span class="hint">({{ dt.pct }}%)</span>{% endif %}
                   {% else %}&mdash;{% endif %}
                 </td>
-                <td>{{ g.unit }}</td>
+                <td>{{ dt.unit }}</td>
               </tr>
             {% endif %}
           </tbody>
@@ -116,6 +118,13 @@
       </table>
     </div>
 
+    <p class="hint">
+      All PregDos doses are <strong>physical absorbed dose</strong> — gamma/proton in
+      <strong>Gy</strong> (to water or to medium, as the Quantity column labels), neutron H*(10)
+      as <strong>equivalent dose in Sv</strong>. <strong>No RBE is applied.</strong> A clinical
+      Eclipse proton RTDOSE is <strong>Gy(RBE) = physical dose-to-water × 1.1</strong>, so
+      multiply a PregDos dose-to-water by 1.1 before comparing it to Eclipse.
+    </p>
     <p class="hint">
       Doses are scaled from the simulated histories to the full plan
       (<code>PARTICLE_SCALING × REQUESTED_HISTORIES / Σ spotWeight</code>). The uncertainty is

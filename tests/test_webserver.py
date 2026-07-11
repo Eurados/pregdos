@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
 
-from pregdos import dicom_intake, studies
+from pregdos import dicom_intake, results, studies
 from tests import dicom_factory
 from pregdos.webserver import app, allowed_file
 from pregdos.models import ConversionParameters, ConversionResult, StructureSelection
@@ -750,8 +750,9 @@ def test_run_detail_shows_scaled_scorer_results(client, tmp_path):
     assert resp.status_code == 200
     body = resp.data.decode()
     assert "AmBDose_BrainStem" in body and "BrainStem" in body and "Sv" in body
-    # 1.049973996636311e-11 Sv * 953656.09 = 1.0013e-05
-    assert "1.001e-05" in body
+    # 1.049973996636311e-11 Sv * 953656.09 = 1.0013e-05, shown SI-prefixed (~10.01 µSv)
+    disp = results.humanize_dose(1.049973996636311e-11 * 953656.0980490245, None, "Sv")
+    assert disp["value"] in body and disp["unit"] in body
     assert "under validation" in body         # the #50 caveat is surfaced
 
 
@@ -782,7 +783,8 @@ def test_run_detail_converts_structure_energy_deposit_to_gy(client, tmp_path):
     assert "DoseProtonPrimary_CTV" in body
     assert "DoseToMedium" in body
     assert "mass-normalized" in body
-    assert f"{expected:.4g}" in body
+    disp = results.humanize_dose(expected, None, "Gy")
+    assert disp["value"] in body and disp["unit"] in body
 
 
 def test_run_detail_corrects_structure_ambient_dose_equivalent_by_volume(client, tmp_path):
@@ -800,8 +802,10 @@ def test_run_detail_corrects_structure_ambient_dose_equivalent_by_volume(client,
 
     body = client.get(f"/studies/alpha/{run_id}").data.decode()
 
-    # Original fixture value after plan scaling is 1.0013e-05 Sv; volume correction is 40.
-    assert "0.0004005" in body
+    # Original fixture value after plan scaling is 1.0013e-05 Sv; volume correction is 40
+    # → ~400.5 µSv, shown SI-prefixed.
+    disp = results.humanize_dose(1.049973996636311e-11 * 953656.0980490245 * 40.0, None, "Sv")
+    assert disp["value"] in body and disp["unit"] in body
     assert "volume-normalized" in body
 
 
@@ -836,7 +840,8 @@ def test_run_detail_corrects_structure_dose_to_water_by_volume(client, tmp_path)
     assert "DoseWater_CTV" in body
     assert "DoseToWater" in body
     assert "volume-normalized" in body
-    assert f"{expected:.4g}" in body
+    disp = results.humanize_dose(expected, None, "Gy")
+    assert disp["value"] in body and disp["unit"] in body
 
 
 def test_run_detail_of_running_job_says_so(client, tmp_path):

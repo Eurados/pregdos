@@ -40,6 +40,9 @@ app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.secret_key = os.environ.get("PREGDOS_SECRET_KEY", "pregdos_secret_key")
 
+# Templates render doses with a shared SI prefix (e.g. "3.8 mSv") via this helper.
+app.jinja_env.globals["fmt_dose"] = results.humanize_dose
+
 
 class UploadRejected(Exception):
     """The uploaded DICOM study cannot be converted.  Carries one message per problem."""
@@ -871,6 +874,8 @@ def download_report(study, run_id):
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["# PregDos report", f"study={study}", f"run={run_id}"])
+    writer.writerow(["# Doses are PHYSICAL absorbed dose (Gy) / equivalent dose (Sv); no RBE is "
+                     "applied. Eclipse proton RTDOSE is Gy(RBE) = physical dose-to-water x 1.1."])
     writer.writerow(["# Doses are scaled to the full plan. Structure EnergyDeposit rows are "
                      "mass-normalized (energy / structure mass); structure DoseToWater and "
                      "fluence rows are volume-normalized (patient box rescaled to the structure "
