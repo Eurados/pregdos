@@ -844,6 +844,28 @@ def test_run_detail_corrects_structure_dose_to_water_by_volume(client, tmp_path)
     assert disp["value"] in body and disp["unit"] in body
 
 
+def test_run_detail_rejects_structure_dose_to_water_without_component(client, tmp_path):
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field01_dose_to_water_CTV.csv").write_text(
+        "# TOPAS Version: 4.2.p3\n"
+        "# Parameter File: topas_field01.txt\n"
+        "# Results for scorer: DoseWater_CTV\n"
+        '# Filtered by: OnlyIncludeIfInRTStructure = 1 "CTV"\n'
+        "# DoseToWater ( Gy ) : Sum   Standard_Deviation   \n"
+        "1.0e-9, 1.0e-10\n"
+    )
+    (run_dir / "structure_metrics.json").write_text(json.dumps({
+        "patient": {"volume_cm3": 100.0},
+        "structures": {"CTV": {"volume_cm3": 2.0}},
+    }))
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    assert "DoseWater_CTV" in body
+    assert "unusable" in body
+    assert "scorer component" in body
+
+
 def test_run_detail_of_running_job_says_so(client, tmp_path):
     _make_study(tmp_path, "alpha")
     run_id, run_dir = studies.create_run(tmp_path, "alpha")

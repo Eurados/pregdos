@@ -823,12 +823,16 @@ def _result_rows(run_dir: Path, study: str):
                     volume_normalized = True
                 elif problem is None:
                     problem = "structure volume metrics or scorer component are missing; cannot correct fluence denominator"
-            elif r.quantity == "DoseToWater" and r.component == "Patient" and r.structure:
+            elif r.quantity == "DoseToWater" and r.structure:
                 # DoseToWater is an intensive dose (Gy) that TOPAS divides by the whole
                 # patient-box volume for a single-bin scorer, exactly like the H*(10) fluence
                 # scorer. Rescale that denominator to the structure volume (V_patient/V_struct);
                 # only EnergyDeposit (energy, no volume division) uses the structure mass.
-                correction = structure_metrics.fluence_volume_correction_factor(metrics, r.structure)
+                correction = (
+                    structure_metrics.fluence_volume_correction_factor(metrics, r.structure)
+                    if r.component == "Patient"
+                    else None
+                )
                 if correction is not None:
                     if total is not None:
                         total *= correction
@@ -836,7 +840,7 @@ def _result_rows(run_dir: Path, study: str):
                         sd *= correction
                     volume_normalized = True
                 elif problem is None:
-                    problem = "structure volume metrics are missing; cannot correct DoseToWater denominator"
+                    problem = "structure volume metrics or scorer component are missing; cannot correct DoseToWater denominator"
             elif r.quantity == "DoseToMedium" and r.component == "Patient" and r.structure and problem is None:
                 problem = ("structure DoseToMedium from TOPAS is not accepted; "
                            "rerun with PregDos EnergyDeposit structure scoring")
