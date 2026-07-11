@@ -89,13 +89,16 @@ _NEUTRON_ENERGIES, _NEUTRON_VALUES = _load_neutron_table()
 # ---------------------------------------------------------------------------
 
 class ScorerType(str, Enum):
-    """The four out-of-field dose quantities supported by this module."""
+    """The out-of-field dose quantities supported by this module."""
 
     NEUTRON_DOSE_EQUIV = "neutron"
     """Ambient dose equivalent H*(10) from neutrons (TOPAS AmbientDoseEquivalent)."""
 
     GAMMA_DOSE = "gamma"
     """Absorbed dose to medium from photons and their descendants (DoseToMedium)."""
+
+    DOSE_TO_WATER = "dose_to_water"
+    """All-particle absorbed dose to water (TOPAS DoseToWater)."""
 
     PROTON_PRIMARY = "proton_primary"
     """Absorbed dose from protons whose full ancestry contains no neutron.
@@ -191,6 +194,12 @@ SCORER_DEFS = [
         "description": "DoseToMedium, gamma and gamma-ancestor particles",
     },
     {
+        "id": "dose_to_water",
+        "scorer_type": ScorerType.DOSE_TO_WATER,
+        "label": "Absorbed dose to water",
+        "description": "DoseToWater, all particles; useful for Eclipse RTDOSE comparison",
+    },
+    {
         "id": "proton_primary",
         "scorer_type": ScorerType.PROTON_PRIMARY,
         "label": "Proton dose — primary (no neutron ancestors)",
@@ -210,6 +219,7 @@ SCORER_DEFS = [
 _SCORER_NAME = {
     ScorerType.NEUTRON_DOSE_EQUIV: "AmBDose",
     ScorerType.GAMMA_DOSE: "DoseGamma",
+    ScorerType.DOSE_TO_WATER: "DoseWater",
     ScorerType.PROTON_PRIMARY: "DoseProtonPrimary",
     ScorerType.PROTON_SECONDARY: "DoseProtonSecondary",
 }
@@ -219,6 +229,7 @@ _SCORER_NAME = {
 _OUTPUT_SUFFIX = {
     ScorerType.NEUTRON_DOSE_EQUIV: "_neutron",
     ScorerType.GAMMA_DOSE: "_gamma",
+    ScorerType.DOSE_TO_WATER: "_dose_to_water",
     ScorerType.PROTON_PRIMARY: "_proton_primary",
     ScorerType.PROTON_SECONDARY: "_proton_secondary",
 }
@@ -381,6 +392,29 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
         if not is_structure:
             # ReferencedDicomPatient links grid voxels to CT HU values for DoseToMedium.
             lines.insert(-4, f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"')
+
+    elif entry.scorer_type == ScorerType.DOSE_TO_WATER:
+        # ── All-particle absorbed dose to water ───────────────────────────
+        # This scorer is mainly for validation against Eclipse RTDOSE exports.  In
+        # structure mode PregDos corrects the single-bin TOPAS denominator using
+        # the structure mass from the RTSTRUCT mask pre-pass.
+        lines += [
+            f's:Sc/{name}/Quantity                                = "DoseToWater"',
+            f'b:Sc/{name}/PreCalculateStoppingPowerRatios          = "True"',
+            f's:Sc/{name}/Component                               = "{component}"',
+            f"i:Sc/{name}/XBins                                   = {xbins}",
+            f"i:Sc/{name}/YBins                                   = {ybins}",
+            f"i:Sc/{name}/ZBins                                   = {zbins}",
+        ]
+        if is_structure:
+            lines.append(f'sv:Sc/{name}/OnlyIncludeIfInRTStructure         = 1 "{entry.structure_name}"')
+        lines += [
+            f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"',
+            f's:Sc/{name}/IfOutputFileAlreadyExists               = "Increment"',
+            f's:Sc/{name}/OutputType                              = "csv"',
+            f's:Sc/{name}/OutputFile                              = "{output_file}"',
+            f'sv:Sc/{name}/Report                                 = 2 "Sum" "Standard_Deviation"',
+        ]
 
     elif entry.scorer_type == ScorerType.PROTON_PRIMARY:
         # ── Primary-proton absorbed dose ──────────────────────────────────

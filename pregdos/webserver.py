@@ -820,6 +820,16 @@ def _result_rows(run_dir: Path, study: str):
                     volume_normalized = True
                 elif problem is None:
                     problem = "structure volume metrics or scorer component are missing; cannot correct fluence denominator"
+            elif r.quantity == "DoseToWater" and r.component == "Patient" and r.structure:
+                correction = structure_metrics.mass_correction_factor(metrics, r.structure)
+                if correction is not None:
+                    if total is not None:
+                        total *= correction
+                    if sd is not None:
+                        sd *= correction
+                    mass_normalized = True
+                elif problem is None:
+                    problem = "structure mass metrics are missing; cannot correct DoseToWater denominator"
             elif r.quantity == "DoseToMedium" and r.component == "Patient" and r.structure and problem is None:
                 problem = "structure DoseToMedium from TOPAS is not accepted; rerun with PregDos EnergyDeposit structure scoring"
         number = r.field_number

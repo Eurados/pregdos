@@ -406,3 +406,25 @@ def fluence_volume_correction_factor(metrics: dict | None, structure: str) -> fl
     if patient_volume <= 0 or structure_volume <= 0:
         return None
     return patient_volume / structure_volume
+
+
+def mass_correction_factor(metrics: dict | None, structure: str) -> float | None:
+    """Correction for structure-filtered native TOPAS dose scorers on ``Patient``.
+
+    For single-bin structure scorers TOPAS filters hits to the RT structure, but the
+    denominator is the whole scoring component.  Multiplying by patient mass divided by
+    structure mass restores the intended structure mean dose.
+    """
+    metric = structure_metric(metrics, structure)
+    if not metric:
+        return None
+    try:
+        factor = float(metric["patient_to_structure_mass_ratio"])
+    except (KeyError, TypeError, ValueError):
+        try:
+            patient_mass = float(metrics["patient"]["mass_g"]) if metrics else 0.0
+            structure_mass = float(metric["mass_g"])
+            factor = patient_mass / structure_mass
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            return None
+    return factor if factor > 0 else None

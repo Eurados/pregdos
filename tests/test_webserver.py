@@ -805,6 +805,38 @@ def test_run_detail_corrects_structure_ambient_dose_equivalent_by_volume(client,
     assert "volume-normalized" in body
 
 
+def test_run_detail_corrects_structure_dose_to_water_by_mass(client, tmp_path):
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field01_dose_to_water_CTV.csv").write_text(
+        "# TOPAS Version: 4.2.p3\n"
+        "# Parameter File: topas_field01.txt\n"
+        "# Results for scorer: DoseWater_CTV\n"
+        '# Filtered by: OnlyIncludeIfInRTStructure = 1 "CTV"\n'
+        "# Scored in component: Patient\n"
+        "# DoseToWater ( Gy ) : Sum   Standard_Deviation   \n"
+        "1.0e-9, 1.0e-10\n"
+    )
+    (run_dir / "structure_metrics.json").write_text(json.dumps({
+        "patient": {"mass_g": 100.0},
+        "structures": {
+            "CTV": {
+                "mass_g": 2.0,
+                "volume_cm3": 2.0,
+                "average_density_g_cm3": 1.0,
+                "patient_to_structure_mass_ratio": 50.0,
+            }
+        },
+    }))
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    expected = 1.0e-9 * 953656.0980490245 * 50.0
+    assert "DoseWater_CTV" in body
+    assert "DoseToWater" in body
+    assert "mass-normalized" in body
+    assert f"{expected:.4g}" in body
+
+
 def test_run_detail_of_running_job_says_so(client, tmp_path):
     _make_study(tmp_path, "alpha")
     run_id, run_dir = studies.create_run(tmp_path, "alpha")

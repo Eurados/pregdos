@@ -56,6 +56,24 @@ def test_fluence_volume_correction_factor_is_patient_over_structure_volume():
     assert structure_metrics.fluence_volume_correction_factor(metrics, "BrainStem") == pytest.approx(40.0)
 
 
+def test_mass_correction_factor_uses_cached_patient_to_structure_ratio():
+    metrics = {
+        "patient": {"mass_g": 100.0},
+        "structures": {"CTV": {"mass_g": 2.0, "patient_to_structure_mass_ratio": 51.0}},
+    }
+
+    assert structure_metrics.mass_correction_factor(metrics, "CTV") == pytest.approx(51.0)
+
+
+def test_mass_correction_factor_can_fall_back_to_masses():
+    metrics = {
+        "patient": {"mass_g": 100.0},
+        "structures": {"CTV": {"mass_g": 2.0}},
+    }
+
+    assert structure_metrics.mass_correction_factor(metrics, "CTV") == pytest.approx(50.0)
+
+
 def test_ensure_metrics_reports_failed_prepass(tmp_path):
     (tmp_path / "structure_mask_prepass.exit_code").write_text("1\n")
 
