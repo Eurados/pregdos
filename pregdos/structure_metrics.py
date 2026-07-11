@@ -245,7 +245,10 @@ def _density_from_hu(hu: np.ndarray, spr_table: Path) -> np.ndarray:
     density = offsets[section] + factors[section] * (factor_offsets[section] + hu_clipped)
 
     correction_origin = hu_min if int(round(boundaries[-1] - boundaries[0])) == len(corrections) else -1000.0
-    corr_index = np.rint(np.clip(hu_clipped, correction_origin, correction_origin + len(corrections) - 1) - correction_origin).astype(int)
+    correction_max = correction_origin + len(corrections) - 1
+    corr_index = np.rint(
+        np.clip(hu_clipped, correction_origin, correction_max) - correction_origin
+    ).astype(int)
     return density * corrections[corr_index]
 
 
