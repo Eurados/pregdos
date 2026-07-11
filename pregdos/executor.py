@@ -94,6 +94,18 @@ def exit_code_name(topas_file: str) -> str:
     return f"{Path(topas_file).stem}.exit_code"
 
 
+def _cpus_per_task(topas_file: str) -> int:
+    """Scheduler CPUs requested for one TOPAS input.
+
+    The structure-mask pre-pass is intentionally single-threaded: it rasterises RTSTRUCT
+    masks and writes large binary arrays, but does not need the full clinical transport
+    thread count.
+    """
+    if Path(topas_file).name == "structure_mask_prepass.txt":
+        return 1
+    return os.cpu_count() or 1
+
+
 def field_command(topas_file: str) -> str:
     """Shell command running one field and recording its exit code next to its log.
 
@@ -192,7 +204,7 @@ def _sbatch_argv(run_dir: Path, topas_file: str) -> List[str]:
     argv += [
         "sbatch",
         "--export=ALL",
-        f"--cpus-per-task={os.cpu_count() or 1}",
+        f"--cpus-per-task={_cpus_per_task(topas_file)}",
         f"--chdir={run_dir}",
         f"--output={run_dir}/slurm-%j.out",
         "--wrap", field_command(topas_file),

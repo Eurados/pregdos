@@ -68,6 +68,7 @@ _QUANTITY_RE = re.compile(r"^#\s*(?P<quantity>\w+)\s*\(\s*(?P<unit>[^)]*?)\s*\)\
 _SCORER_RE = re.compile(r"^#\s*Results for scorer:\s*(?P<name>.+?)\s*$")
 _PARAMETER_FILE_RE = re.compile(r"^#\s*Parameter File:\s*(?P<name>.+?)\s*$")
 _STRUCTURE_RE = re.compile(r'^#\s*Filtered by:\s*OnlyIncludeIfInRTStructure\s*=\s*\d+\s*"(?P<name>.+?)"\s*$')
+_COMPONENT_RE = re.compile(r"^#\s*Scored in component:\s*(?P<name>.+?)\s*$")
 _VERSION_RE = re.compile(r"^#\s*TOPAS Version:\s*(?P<version>.+?)\s*$")
 
 # Plan scaling, from the header dicomexport writes into the TOPAS input.
@@ -138,6 +139,8 @@ class ScorerResult:
     empty bin index."""
     structure: str = ""
     """RT structure the scorer was restricted to, or "" for an unfiltered scorer."""
+    component: str = ""
+    """TOPAS component the scorer was attached to, e.g. ``Patient``."""
     parameter_file: str = ""
     topas_version: str = ""
     run_index: Optional[int] = None
@@ -290,7 +293,7 @@ def parse_scorer_csv(path: str | Path) -> ScorerResult:
     except OSError as e:
         raise ResultsError(f"{path.name}: cannot read ({e})") from e
 
-    scorer = quantity = unit = structure = parameter_file = topas_version = ""
+    scorer = quantity = unit = structure = component = parameter_file = topas_version = ""
     columns: List[str] = []
     data: List[str] = []
 
@@ -303,6 +306,8 @@ def parse_scorer_csv(path: str | Path) -> ScorerResult:
             scorer = m.group("name")
         elif (m := _STRUCTURE_RE.match(line)):
             structure = m.group("name")
+        elif (m := _COMPONENT_RE.match(line)):
+            component = m.group("name")
         elif (m := _PARAMETER_FILE_RE.match(line)):
             parameter_file = m.group("name")
         elif (m := _VERSION_RE.match(line)):
@@ -348,6 +353,7 @@ def parse_scorer_csv(path: str | Path) -> ScorerResult:
         columns=columns,
         rows=rows,
         structure=structure,
+        component=component,
         parameter_file=parameter_file,
         topas_version=topas_version,
         run_index=run_index,

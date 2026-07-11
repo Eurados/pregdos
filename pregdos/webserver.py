@@ -25,7 +25,7 @@ import sys
 import shutil
 import tempfile
 
-from . import dicom_intake, executor, results, studies, versions
+from . import dicom_intake, executor, results, structure_metrics, studies, versions
 from .models import ConversionParameters, ConversionResult
 from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
@@ -445,9 +445,19 @@ def convert():
                 flash(f"Scorer post-processing failed for {name}: {err}")
             return redirect(url_for("upload_files"))
 
+    prepass = None
+    if selected_structures:
+        try:
+            prepass = structure_metrics.write_mask_prepass(run_dir / result.out_files[0], selected_structures)
+        except Exception as err:
+            shutil.rmtree(run_dir, ignore_errors=True)
+            flash(f"Structure mask pre-pass setup failed: {err}")
+            return redirect(url_for("upload_files"))
+
     return render_template(
         "convert_success.html",
         out_files=result.out_files,
+        prepass_file=prepass,
         study_name=result.study_name,
         run_id=result.run_id,
         selected_structures=result.selected_structures,
@@ -508,6 +518,9 @@ def submit_job():
     # Validate every requested file up front, so a typo cannot start a partial run.
     topas_files = []
     missing = []
+    prepass = structure_metrics.MASK_PREPASS_FILE
+    if (run_dir / prepass).is_file():
+        topas_files.append(prepass)
     for fname in out_files:
         safe_fname = secure_filename(fname)
         if (run_dir / safe_fname).is_file():
@@ -761,6 +774,8 @@ def _group_rows(rows: list) -> list:
 def _result_rows(run_dir: Path, study: str):
     """Parsed, plan-scaled scorer rows for one run, ready for the results table."""
     parsed, warnings = results.collect_results(run_dir)
+    metrics, metric_warnings = structure_metrics.ensure_metrics(run_dir)
+    warnings.extend(metric_warnings)
 
     # Field names come from the study's RTPLAN.  A field is identified by its DICOM
     # BeamNumber, which need not match its position in the plan -- so show the name a
@@ -774,19 +789,57 @@ def _result_rows(run_dir: Path, study: str):
     for r in parsed:
         scaling = results.scaling_for(r, run_dir)
         total, sd = r.scaled(scaling)
+        metric = None
+        mass_normalized = False
+        volume_normalized = False
+        quantity = r.quantity
+        unit = r.unit
+        problem = r.problem
+        if r.is_single_bin:
+            metric = structure_metrics.structure_metric(metrics, r.structure)
+            if r.quantity == "EnergyDeposit":
+                converted = structure_metrics.energy_deposit_to_gy(metrics, r.structure, r.unit, total, sd)
+                if converted is not None:
+                    total, sd = converted
+                    quantity = "DoseToMedium"
+                    unit = "Gy"
+                    mass_normalized = True
+                elif problem is None:
+                    problem = "structure mass metrics are missing; cannot convert EnergyDeposit to Gy"
+            elif r.quantity == "AmbientDoseEquivalent" and r.structure:
+                correction = (
+                    structure_metrics.fluence_volume_correction_factor(metrics, r.structure)
+                    if r.component == "Patient"
+                    else None
+                )
+                if correction is not None:
+                    if total is not None:
+                        total *= correction
+                    if sd is not None:
+                        sd *= correction
+                    volume_normalized = True
+                elif problem is None:
+                    problem = "structure volume metrics or scorer component are missing; cannot correct fluence denominator"
+            elif r.quantity == "DoseToMedium" and r.component == "Patient" and r.structure and problem is None:
+                problem = "structure DoseToMedium from TOPAS is not accepted; rerun with PregDos EnergyDeposit structure scoring"
         number = r.field_number
         rows.append({
             "field": number,
             "field_name": names.get(number, "") if number is not None else "",
             "scorer": r.scorer,
             "structure": r.structure or "—",
-            "quantity": r.quantity,
-            "unit": r.unit,
+            "quantity": quantity,
+            "unit": unit,
             "sum": total,
             "sd": sd,
             "raw_sum": r.raw_sum,
-            "problem": r.problem,
+            "problem": problem,
             "scale": scaling.factor if scaling else None,
+            "structure_volume_cm3": metric.get("volume_cm3") if metric else None,
+            "structure_mass_g": metric.get("mass_g") if metric else None,
+            "structure_average_density_g_cm3": metric.get("average_density_g_cm3") if metric else None,
+            "structure_mass_normalized": mass_normalized,
+            "structure_volume_normalized": volume_normalized,
             "csv_name": r.csv_name,
         })
     return rows, warnings
@@ -804,12 +857,13 @@ def download_report(study, run_id):
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["# PregDos report", f"study={study}", f"run={run_id}"])
-    writer.writerow(["# Doses are scaled to the full plan; see issue #50 before trusting absolute values."])
+    writer.writerow(["# Doses are scaled to the full plan. Structure absorbed-dose rows use PregDos mass metrics; structure fluence-derived rows use PregDos volume metrics; see issue #50."])
     writer.writerow(["# dose_uncertainty is the 1-sigma Monte-Carlo statistical error "
                      "(sqrt(N)*SD/Sum applied to the scaled dose, N = simulated histories)."])
     writer.writerow(["# field=ALL rows total a scorer over its fields; their uncertainties add in quadrature."])
     writer.writerow(["field", "field_name", "scorer", "structure", "quantity", "unit",
-                     "dose", "dose_uncertainty", "scale_factor", "note"])
+                     "dose", "dose_uncertainty", "scale_factor", "mass_normalized", "volume_normalized",
+                     "structure_volume_cm3", "structure_mass_g", "structure_average_density_g_cm3", "note"])
     for group in _group_rows(rows):
         for r in group["rows"]:
             writer.writerow([
@@ -818,6 +872,11 @@ def download_report(study, run_id):
                 "" if r["sum"] is None else repr(r["sum"]),
                 "" if r["sd"] is None else repr(r["sd"]),
                 "" if r["scale"] is None else repr(r["scale"]),
+                "yes" if r["structure_mass_normalized"] else "",
+                "yes" if r["structure_volume_normalized"] else "",
+                "" if r["structure_volume_cm3"] is None else repr(r["structure_volume_cm3"]),
+                "" if r["structure_mass_g"] is None else repr(r["structure_mass_g"]),
+                "" if r["structure_average_density_g_cm3"] is None else repr(r["structure_average_density_g_cm3"]),
                 r["problem"] or "",
             ])
         if group["total_sum"] is not None:
@@ -825,7 +884,7 @@ def download_report(study, run_id):
                 "ALL", "", group["scorer"], group["structure"], group["quantity"], group["unit"],
                 repr(group["total_sum"]),
                 "" if group["total_sd"] is None else repr(group["total_sd"]),
-                "", f"sum over {group['n_fields']} fields",
+                "", "", "", "", "", "", f"sum over {group['n_fields']} fields",
             ])
     return Response(
         buf.getvalue(),

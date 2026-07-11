@@ -10,6 +10,9 @@
     <p><strong>Scored structures:</strong> {{ selected_structures|join(', ') }}</p>
   {% endif %}
   <ul>
+    {% if prepass_file %}
+      <li><a class="btn" href="{{ url_for('download_file', study=study_name, run_id=run_id, filename=prepass_file) }}">{{ prepass_file }}</a></li>
+    {% endif %}
     {% for f in out_files %}
       <li><a class="btn" href="{{ url_for('download_file', study=study_name, run_id=run_id, filename=f) }}">{{ f }}</a></li>
     {% endfor %}

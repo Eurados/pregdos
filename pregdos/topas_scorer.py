@@ -309,11 +309,15 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
     # For grid mode the component is the user-defined TsBox defined separately.
     component = "Patient" if is_structure else "ScoringGrid"
 
-    # Structure mode uses a single voxel (XBins=YBins=ZBins=1) so TOPAS
-    # accumulates dose over the whole ROI and reports a mean dose in Gy.
+    # Structure mode uses a single voxel (XBins=YBins=ZBins=1).  For absorbed-dose
+    # quantities we score EnergyDeposit, not DoseToMedium: TOPAS's structure filter
+    # filters energy deposition but its single-bin dose denominator is not the ROI mass.
+    # PregDos converts the scored energy to Gy after computing the ROI mass from the
+    # TOPAS RTSTRUCT mask pre-pass.
     xbins = 1 if is_structure else (grid.nx if grid else 1)
     ybins = 1 if is_structure else (grid.ny if grid else 1)
     zbins = 1 if is_structure else (grid.nz if grid else 1)
+    absorbed_quantity = "EnergyDeposit" if is_structure else "DoseToMedium"
 
     lines: List[str] = []
 
@@ -359,7 +363,7 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
         # secondary electrons produced by gamma interactions (e.g. Compton
         # electrons), because those electrons carry a "gamma ancestor".
         lines += [
-            f's:Sc/{name}/Quantity                                = "DoseToMedium"',
+            f's:Sc/{name}/Quantity                                = "{absorbed_quantity}"',
             f's:Sc/{name}/Component                               = "{component}"',
             f'sv:Sc/{name}/OnlyIncludeIfParticleOrAncestorNamed  = 1 "gamma"',
             f"i:Sc/{name}/XBins                                   = {xbins}",
@@ -369,14 +373,14 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
         if is_structure:
             lines.append(f'sv:Sc/{name}/OnlyIncludeIfInRTStructure         = 1 "{entry.structure_name}"')
         lines += [
-            # ReferencedDicomPatient links voxel indices to the CT HU values
-            # so TOPAS can look up the stopping-medium properties
-            f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"',
             f's:Sc/{name}/IfOutputFileAlreadyExists               = "Increment"',
             f's:Sc/{name}/OutputType                              = "csv"',
             f's:Sc/{name}/OutputFile                              = "{output_file}"',
             f'sv:Sc/{name}/Report                                 = 2 "Sum" "Standard_Deviation"',
         ]
+        if not is_structure:
+            # ReferencedDicomPatient links grid voxels to CT HU values for DoseToMedium.
+            lines.insert(-4, f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"')
 
     elif entry.scorer_type == ScorerType.PROTON_PRIMARY:
         # ── Primary-proton absorbed dose ──────────────────────────────────
@@ -386,7 +390,7 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
         # OnlyIncludeIfParticleOrAncestorNotNamed = "neutron" excludes any
         # proton that is itself a neutron or has a neutron anywhere in its history.
         lines += [
-            f's:Sc/{name}/Quantity                                = "DoseToMedium"',
+            f's:Sc/{name}/Quantity                                = "{absorbed_quantity}"',
             f's:Sc/{name}/Component                               = "{component}"',
             f'sv:Sc/{name}/OnlyIncludeParticlesNamed              = 1 "proton"',
             # Exclude protons produced (directly or indirectly) via neutron interactions
@@ -398,12 +402,13 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
         if is_structure:
             lines.append(f'sv:Sc/{name}/OnlyIncludeIfInRTStructure         = 1 "{entry.structure_name}"')
         lines += [
-            f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"',
             f's:Sc/{name}/IfOutputFileAlreadyExists               = "Increment"',
             f's:Sc/{name}/OutputType                              = "csv"',
             f's:Sc/{name}/OutputFile                              = "{output_file}"',
             f'sv:Sc/{name}/Report                                 = 2 "Sum" "Standard_Deviation"',
         ]
+        if not is_structure:
+            lines.insert(-4, f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"')
 
     elif entry.scorer_type == ScorerType.PROTON_SECONDARY:
         # ── Secondary-proton absorbed dose (neutron-origin) ───────────────
@@ -414,7 +419,7 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
         # OnlyIncludeIfParticleOrAncestorNamed = "neutron" keeps only those
         # protons that have a neutron somewhere in their ancestry.
         lines += [
-            f's:Sc/{name}/Quantity                                = "DoseToMedium"',
+            f's:Sc/{name}/Quantity                                = "{absorbed_quantity}"',
             f's:Sc/{name}/Component                               = "{component}"',
             f'sv:Sc/{name}/OnlyIncludeParticlesNamed              = 1 "proton"',
             # Keep only protons that descend from a neutron interaction
@@ -426,12 +431,13 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
         if is_structure:
             lines.append(f'sv:Sc/{name}/OnlyIncludeIfInRTStructure         = 1 "{entry.structure_name}"')
         lines += [
-            f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"',
             f's:Sc/{name}/IfOutputFileAlreadyExists               = "Increment"',
             f's:Sc/{name}/OutputType                              = "csv"',
             f's:Sc/{name}/OutputFile                              = "{output_file}"',
             f'sv:Sc/{name}/Report                                 = 2 "Sum" "Standard_Deviation"',
         ]
+        if not is_structure:
+            lines.insert(-4, f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"')
 
     return "\n".join(lines) + "\n"
 

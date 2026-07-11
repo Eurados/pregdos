@@ -79,7 +79,14 @@
                 {% elif r.sum is none %}
                   <td colspan="3" class="hint">multi-bin grid — download the CSV</td>
                 {% else %}
-                  <td>{{ '%.4g' % r.sum }}</td>
+                  <td>
+                    {{ '%.4g' % r.sum }}
+                    {% if r.structure_mass_normalized %}
+                      <span class="hint">(mass-normalized)</span>
+                    {% elif r.structure_volume_normalized %}
+                      <span class="hint">(volume-normalized)</span>
+                    {% endif %}
+                  </td>
                   <td>
                     {% if r.sd is not none %}
                       ± {{ '%.2g' % r.sd }}{% if r.sum %} <span class="hint">({{ '%.2g' % (100 * r.sd / r.sum) }}%)</span>{% endif %}
@@ -117,9 +124,12 @@
       is √N too small as an error on the total.
     </p>
     <p class="hint">
-      <strong>⚠ Absolute doses are under validation (issue #50).</strong> How TOPAS normalises a
-      structure-filtered scorer is still being confirmed against a known reference dose; treat
-      the absolute values as provisional until that closes.
+      Single-bin structure absorbed-dose rows are scored as TOPAS <code>EnergyDeposit</code>
+      and converted to Gy with the TOPAS RTSTRUCT mask pre-pass: PregDos computes the structure
+      mass from the selected CT HU-density table and applies <code>energy / structure mass</code>.
+      Single-bin structure fluence-derived rows, such as H*(10), are corrected from TOPAS's
+      scorer-bin volume to the structure volume from the same mask.
+      Absolute doses remain under validation until issue #50 is closed.
     </p>
 
     <div class="actions">
