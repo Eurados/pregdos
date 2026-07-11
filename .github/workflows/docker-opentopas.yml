@@ -10,12 +10,11 @@ on:
         required: true
         default: false
       version:
-        description: 'OpenTOPAS version to build (e.g. 4.0.0 or 4.2.3)'
+        description: 'OpenTOPAS version to build'
         type: choice
         required: true
-        default: '4.0.0'
+        default: '4.2.3'
         options:
-          - '4.0.0'
           - '4.2.3'
 
 jobs:
@@ -25,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        opentopas_version: ${{ github.event_name == 'release' && fromJson('["4.0.0","4.2.3"]') || fromJson(format('["{0}"]', inputs.version)) }}
+        opentopas_version: ${{ github.event_name == 'release' && fromJson('["4.2.3"]') || fromJson(format('["{0}"]', inputs.version)) }}
     permissions:
       contents: read
       packages: write

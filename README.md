@@ -94,12 +94,13 @@ docker run --rm -it --hostname localhost -p 5000:5000 ghcr.io/eurados/pregdos:la
 
 Then open http://localhost:5000 in a browser.
 
-Two variants are available, differing only in the bundled OpenTOPAS version:
+PregDos requires OpenTOPAS 4.2.3 or newer. Older TOPAS/OpenTOPAS builds are not supported
+because OpenTOPAS 4.0.0 and legacy TOPAS 3.9 can corrupt multithreaded scorer statistics
+(issue #49).
 
 | Tag | OpenTOPAS | Geant4 |
 |-----|-----------|--------|
 | `latest-topas4.2.3` | v4.2.3 | 11.3.2 |
-| `latest-topas4.0.0` | v4.0.0 | 11.1.3 |
 
 For release-pinned tags (e.g. `v0.2.1-topas4.2.3`) see the
 [Packages](https://github.com/Eurados/pregdos/pkgs/container/pregdos) page.
@@ -119,8 +120,7 @@ are documented in [docker/opentopas/README.md](docker/opentopas/README.md).
 pregdos/          Python package (Flask webserver, DICOM conversion)
 tests/            pytest test suite
 docker/
-    opentopas/    Standalone OpenTOPAS images (v4.0.0 and v4.2.3)
-    topas3.9/     Standalone TOPAS 3.9 image (local build only, not redistributable)
+    opentopas/    Standalone supported OpenTOPAS image (v4.2.3)
     slurm/        Standalone SLURM image (for testing)
     pregdos/      Combined production image
 ```
