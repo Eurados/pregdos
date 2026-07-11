@@ -12,22 +12,6 @@ from typing import List, Optional
 
 
 @dataclass(slots=True)
-class StructureSelection:
-    """RT structure names available in a study and the subset chosen by the user.
-
-    Populated after parsing the RTSTRUCT DICOM file; passed to the structure
-    selection page so the user can decide which ROIs to keep in the conversion.
-    """
-
-    study_dir: str
-    """Absolute path to the study directory containing CT/RS/RN/RP DICOM files."""
-    available_structures: List[str] = field(default_factory=list)
-    """All ROI names found in the RTSTRUCT file."""
-    selected_structures: List[str] = field(default_factory=list)
-    """ROI names chosen by the user; subset of available_structures."""
-
-
-@dataclass(slots=True)
 class ConversionParameters:
     """Input parameters for a single dicomexport invocation.
 

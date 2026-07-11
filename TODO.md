@@ -17,7 +17,6 @@
 
 ## Docker — combined image (`docker/pregdos/`)
 
-- [ ] Switch Qt5 → Qt6 runtime libs when building with `OPENTOPAS_IMAGE=pregdos-opentopas-v4.2.3`
 - [ ] Remove `openssh-server` from production image (currently included for development convenience only)
 - [ ] Trim runtime apt dependencies — current list is conservative
 - [ ] Update Docker image to include new `pregdos/data/spr_tables/` and `pregdos/data/beam_models/` package data

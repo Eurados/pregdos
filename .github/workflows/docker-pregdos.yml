@@ -14,10 +14,8 @@ on:
         description: "TOPAS version to build"
         type: choice
         required: true
-        default: all
+        default: "4.2.3"
         options:
-          - all
-          - "4.0.0"
           - "4.2.3"
 
 jobs:
@@ -31,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        topas_version: ["4.0.0", "4.2.3"]
+        topas_version: ["4.2.3"]
     permissions:
       contents: read
       packages: write
@@ -64,7 +62,6 @@ jobs:
       - name: Build and push
         if: |
           github.event_name == 'workflow_run' ||
-          inputs.topas_version == 'all' ||
           inputs.topas_version == matrix.topas_version
         uses: docker/build-push-action@v7
         with:
@@ -77,12 +74,3 @@ jobs:
           build-args: |
             OPENTOPAS_IMAGE=ghcr.io/${{ steps.owner.outputs.owner_lc }}/pregdos-base-opentopas-v${{ matrix.topas_version }}:latest
             PREGDOS_VERSION=${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || format('0+manual.{0}', github.run_number) }}
-
-      - name: Delete old package versions
-        if: matrix.topas_version == '4.0.0'
-        uses: actions/delete-package-versions@v5
-        with:
-          package-name: pregdos
-          package-type: container
-          min-versions-to-keep: 2
-          delete-only-untagged-versions: false

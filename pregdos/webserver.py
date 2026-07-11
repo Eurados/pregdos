@@ -18,6 +18,7 @@ import io
 import math
 import zipfile
 import os
+import secrets
 from werkzeug.utils import secure_filename
 from pathlib import Path
 import subprocess
@@ -34,11 +35,10 @@ from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
 # The studies root: one directory per uploaded study.  Still called UPLOAD_FOLDER for
 # backwards compatibility with existing deployments and the Docker entrypoint.
 UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER") or os.path.join(tempfile.gettempdir(), "pregdos_uploads")
-ALLOWED_EXTENSIONS = {"dcm", "csv", "txt"}
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-app.secret_key = os.environ.get("PREGDOS_SECRET_KEY", "pregdos_secret_key")
+app.secret_key = os.environ.get("PREGDOS_SECRET_KEY") or secrets.token_urlsafe(32)
 
 # Templates render doses with a shared SI prefix (e.g. "3.8 mSv") via this helper.
 app.jinja_env.globals["fmt_dose"] = results.humanize_dose
@@ -190,10 +190,6 @@ def _dicomexport_cmd_prefix():
         return [console]
     # fallback
     return [sys.executable, "-m", "dicomexport.main"]
-
-
-def allowed_file(filename):
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
 @app.context_processor

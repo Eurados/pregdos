@@ -11,12 +11,15 @@ pre-built OpenTOPAS image. Build that first, then build this one.
 ## Step 1 — Build the OpenTOPAS base image
 
 ```bash
-# Default: OpenTOPAS v4.0.0 on Geant4 11.1.3 (Qt5)
-docker build -t pregdos-base-opentopas-v4.0.0 -f docker/opentopas/4.0.0/Dockerfile .
+docker build -t pregdos-base-opentopas-v4.2.3 -f docker/opentopas/4.2.3/Dockerfile .
 ```
 
 This takes ~35 minutes (Geant4 compile + dataset download). Subsequent builds
 use the Docker layer cache unless `GEANT4_VERSION` changes.
+
+PregDos requires OpenTOPAS 4.2.3 or newer. OpenTOPAS 4.0.0 and legacy TOPAS 3.9
+are unsupported because they can corrupt multithreaded scorer statistics
+(issue #49).
 
 ## Step 2 — Build the combined pregdos image
 
@@ -32,24 +35,12 @@ docker build -t pregdos -f docker/pregdos/Dockerfile . \
     --build-arg PREGDOS_VERSION=1.0.0
 ```
 
-## Switching to OpenTOPAS v4.2.3
-
-Build the v4.2.3 base image first:
-
-```bash
-docker build -t pregdos-base-opentopas-v4.2.3 -f docker/opentopas/4.2.3/Dockerfile .
-```
-
-Then point the pregdos build at it:
+To point the pregdos build at a custom supported OpenTOPAS base image:
 
 ```bash
 docker build -t pregdos -f docker/pregdos/Dockerfile . \
     --build-arg OPENTOPAS_IMAGE=pregdos-base-opentopas-v4.2.3
 ```
-
-> **Note:** v4.2.3 uses Qt6. The runtime Qt libraries in the Dockerfile
-> are currently Qt5 (matching v4.0.0). When switching to v4.2.3, the Qt
-> runtime packages must be updated accordingly (see TODO in Dockerfile).
 
 ## Run
 
