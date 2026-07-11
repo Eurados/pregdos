@@ -19,7 +19,10 @@ dependencies = [
     "requests",
     "tqdm",
     "setuptools-scm",
-    "dicomexport @ git+https://github.com/nbassler/dicomexport@v1.4.1",
+    # >=1.4.3: emits relative DicomDirectory/CloneRTDoseGridFrom (keeps studies relocatable,
+    # pregdos #41), points DicomDirectory at the CT dir (nested-CT #52), sizes the World from
+    # the CT + isocenter, and writes DicomOrigin so the patient is placed correctly.
+    "dicomexport @ git+https://github.com/nbassler/dicomexport@v1.4.3",
 ]
 dynamic = ["version"]
 

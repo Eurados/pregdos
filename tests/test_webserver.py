@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
 
-from pregdos import dicom_intake, studies
+from pregdos import dicom_intake, results, studies
 from tests import dicom_factory
 from pregdos.webserver import app, allowed_file
 from pregdos.models import ConversionParameters, ConversionResult, StructureSelection
@@ -23,6 +23,13 @@ def client(tmp_path):
     app.config["UPLOAD_FOLDER"] = str(tmp_path)
     with app.test_client() as c:
         yield c
+
+
+@pytest.fixture(autouse=True)
+def _allow_submit(monkeypatch):
+    """Let /submit through by default; the #49 toolchain guard has its own test.  Otherwise
+    every submit test would depend on the host's installed TOPAS version."""
+    monkeypatch.setattr("pregdos.webserver.versions.submit_blocker", lambda: None)
 
 
 def _make_study(tmp_path, name="mystudy"):
@@ -332,6 +339,27 @@ def test_submit_runs_topas_in_the_run_dir_without_copying(client, tmp_path, mock
     assert (run_dir / "topas_field01.txt").is_file()
 
 
+def test_submit_runs_structure_mask_prepass_before_fields(client, tmp_path, mocker, monkeypatch):
+    monkeypatch.setenv("PREGDOS_EXECUTOR", "slurm")
+    _make_study(tmp_path)
+    run_id, run_dir = studies.create_run(tmp_path, "mystudy")
+    (run_dir / "structure_mask_prepass.txt").write_text("# mask prepass")
+    (run_dir / "topas_field01.txt").write_text("# topas input")
+
+    mock_run = mocker.patch("pregdos.executor.subprocess.run", return_value=FakeSbatchResult())
+    mocker.patch("pregdos.executor.os.geteuid", return_value=1000)
+    response = client.post(
+        "/submit",
+        data={"study_name": "mystudy", "run_id": run_id, "out_files": "topas_field01.txt"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+
+    submitted = [call.args[0][-1] for call in mock_run.call_args_list]
+    assert "structure_mask_prepass.txt" in submitted[0]
+    assert "topas_field01.txt" in submitted[1]
+
+
 def test_submit_without_slurm_runs_locally(client, tmp_path, monkeypatch):
     """The regression that motivated #43: a workstation has TOPAS but no sbatch/runuser,
     and /submit used to crash with FileNotFoundError: 'runuser'."""
@@ -351,6 +379,41 @@ def test_submit_without_slurm_runs_locally(client, tmp_path, monkeypatch):
     assert response.status_code == 200
     assert b"locally in the background" in response.data
     assert (run_dir / "run.json").is_file()
+
+
+def test_submit_refused_on_broken_toolchain(client, tmp_path, monkeypatch):
+    """#49 pre-flight guard: an unsupported OpenTOPAS (or missing G4 data) must stop the
+    submission before any hours-long field is launched."""
+    monkeypatch.setattr("pregdos.webserver.versions.submit_blocker",
+                        lambda: "OpenTOPAS 4.0.0 corrupts the scorer Sum (issue #49).")
+    _make_study(tmp_path)
+    run_id, run_dir = studies.create_run(tmp_path, "mystudy")
+    (run_dir / "topas_field01.txt").write_text("# topas input")
+
+    resp = client.post(
+        "/submit",
+        data={"study_name": "mystudy", "run_id": run_id, "out_files": "topas_field01.txt"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"Cannot submit" in resp.data and b"#49" in resp.data
+    assert not (run_dir / "run.json").exists()      # nothing was launched
+
+
+def test_debug_is_off_by_default(monkeypatch, mocker):
+    from pregdos import webserver
+    monkeypatch.delenv("PREGDOS_DEBUG", raising=False)
+    run = mocker.patch.object(webserver.app, "run")
+    webserver.main()
+    assert run.call_args.kwargs["debug"] is False
+
+
+def test_debug_opt_in_via_env(monkeypatch, mocker):
+    from pregdos import webserver
+    monkeypatch.setenv("PREGDOS_DEBUG", "1")
+    run = mocker.patch.object(webserver.app, "run")
+    webserver.main()
+    assert run.call_args.kwargs["debug"] is True
 
 
 def test_submit_sbatch_failure_flashes_error(client, tmp_path, mocker, monkeypatch):
@@ -443,7 +506,16 @@ def test_convert_invalid_nstat_creates_no_run_dir(client, tmp_path):
 _FAKE_TOPAS_TEMPLATE = (
     '# fake dicomexport output\n'
     'includeFile                          = {spr}\n'
+    's:Ge/World/Type                      = "TsBox"\n'
+    's:Ge/World/Material                  = "Air"\n'
+    'd:Ge/World/HLX                       = 100 mm\n'
+    'd:Ge/World/HLY                       = 100 mm\n'
+    'd:Ge/World/HLZ                       = 100 mm\n'
+    's:Ge/Patient/Parent                  = "World"\n'
+    's:Ge/Patient/Type                    = "TsDicomPatient"\n'
     's:Ge/Patient/DicomDirectory          = "{dicom}"\n'
+    'sv:Ge/Patient/DicomModalityTags      = 1 "CT"\n'
+    'd:Rt/Plan/IsoCenterX                 = 0 mm\n'
     '\n'
     '##############################################\n'
     '###       S C O R E R    S E T U P         ###\n'
@@ -534,6 +606,22 @@ def test_convert_appends_selected_scorers_and_survives_rerun(client, tmp_path, m
         assert "DoseGamma_CTV" in text, run
 
 
+def test_convert_creates_structure_mask_prepass_from_generated_topas(client, tmp_path, mocker):
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    resp = client.post("/convert", data=_scorer_form(tmp_path), follow_redirects=True)
+    assert resp.status_code == 200
+
+    (run_id,) = studies.list_runs(tmp_path, "mystudy")
+    run_dir = studies.run_path(tmp_path, "mystudy", run_id)
+    text = (run_dir / "structure_mask_prepass.txt").read_text()
+
+    assert 'includeFile                          = ../spr.txt' in text
+    assert 's:Ge/Patient/DicomDirectory          = "../dicom"' in text
+    assert 'b:Sc/PregDosMask_CTV/SetBinToMinusOneIfNotInRTStructure = "True"' in text
+    assert 'sv:Sc/PregDosMask_CTV/OnlyIncludeIfInRTStructure = 1 "CTV"' in text
+    assert b"structure_mask_prepass.txt" in resp.data
+
+
 def test_rerun_creates_a_new_run_dir_and_cannot_inherit_stale_files(client, tmp_path, mocker):
     """Each conversion is isolated in a fresh directory, so a previous run's output can
     never be discovered as if it belonged to this one (#41)."""
@@ -549,7 +637,7 @@ def test_rerun_creates_a_new_run_dir_and_cannot_inherit_stale_files(client, tmp_
     runs = studies.list_runs(tmp_path, "mystudy")
     assert len(runs) == 2
     second_dir = studies.run_path(tmp_path, "mystudy", runs[0])
-    assert sorted(p.name for p in second_dir.glob("*.txt")) == ["topas_field01.txt"]
+    assert sorted(p.name for p in second_dir.glob("*.txt")) == ["structure_mask_prepass.txt", "topas_field01.txt"]
     assert b"topas_field99.txt" not in resp.data
 
 
@@ -596,6 +684,16 @@ def _completed_run(tmp_path, study="alpha"):
     run_id, run_dir = studies.create_run(tmp_path, study)
     for src in (_REAL_CSV, _REAL_TOPAS):
         (run_dir / src.name).write_bytes(src.read_bytes())
+    (run_dir / "structure_metrics.json").write_text(json.dumps({
+        "patient": {"volume_cm3": 25.0},
+        "structures": {
+            "BrainStem": {
+                "mass_g": 20.0,
+                "volume_cm3": 25.0,
+                "average_density_g_cm3": 0.8,
+            }
+        },
+    }))
     (run_dir / "topas_field01.exit_code").write_text("0\n")
     (run_dir / "run.json").write_text(json.dumps({
         "backend": "local", "submitted": "2026-07-09T21:05:06",
@@ -613,6 +711,31 @@ def test_studies_page_lists_tiles_with_status(client, tmp_path):
     body = resp.data.decode()
     assert "alpha" in body and run_id in body and "completed" in body
     assert "beta" in body and "not converted yet" in body
+    assert ">View</a>" in body                         # the per-run button
+
+
+def test_studies_page_shows_a_progress_pie_for_a_running_run(client, tmp_path):
+    """A running run gets a history-weighted progress pie next to the badge; a completed
+    one does not (nothing to show)."""
+    import json
+
+    _make_study(tmp_path, "alpha")
+    run_id, run_dir = studies.create_run(tmp_path, "alpha")
+    # one field, half its histories started
+    (run_dir / "topas_field01.txt").write_text(
+        "uv:Tf/spotWeight/Values                   = 2 100 100\n")
+    (run_dir / "topas_field01.log").write_text(
+        "Begin processing for Run: 0, History: 0\n")     # run 0 of 2 -> 50%
+    (run_dir / "run.json").write_text(json.dumps({
+        "backend": "local", "submitted": "now",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": "1"}],
+    }))
+
+    body = client.get("/studies").data.decode()
+    assert "progress-pie" in body
+    assert "--pct: 50" in body
+    assert "50% of all fields complete" in body          # the title/alt text
+    assert "setTimeout" in body                          # auto-refresh while a run is live
 
 
 def test_jobs_url_redirects_to_studies(client, tmp_path):
@@ -627,9 +750,120 @@ def test_run_detail_shows_scaled_scorer_results(client, tmp_path):
     assert resp.status_code == 200
     body = resp.data.decode()
     assert "AmBDose_BrainStem" in body and "BrainStem" in body and "Sv" in body
-    # 1.049973996636311e-11 Sv * 953656.09 = 1.0013e-05
-    assert "1.001e-05" in body
-    assert "not yet trustworthy" in body      # the #50 caveat is surfaced
+    # 1.049973996636311e-11 Sv * 953656.09 = 1.0013e-05, shown SI-prefixed (~10.01 µSv)
+    disp = results.humanize_dose(1.049973996636311e-11 * 953656.0980490245, None, "Sv")
+    assert disp["value"] in body and disp["unit"] in body
+    assert "under validation" in body         # the #50 caveat is surfaced
+
+
+def test_run_detail_converts_structure_energy_deposit_to_gy(client, tmp_path):
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field01_proton_primary_CTV.csv").write_text(
+        "# TOPAS Version: 4.2.p3\n"
+        "# Parameter File: topas_field01.txt\n"
+        "# Results for scorer: DoseProtonPrimary_CTV\n"
+        '# Filtered by: OnlyIncludeIfInRTStructure = 1 "CTV"\n'
+        "# Scored in component: Patient\n"
+        "# EnergyDeposit ( MeV ) : Sum   \n"
+        "10.0\n"
+    )
+    (run_dir / "structure_metrics.json").write_text(json.dumps({
+        "structures": {
+            "CTV": {
+                "mass_g": 2.0,
+                "volume_cm3": 2.0,
+                "average_density_g_cm3": 1.0,
+            }
+        }
+    }))
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    expected = 10.0 * 953656.0980490245 * 1.602176634e-13 / 0.002
+    assert "DoseProtonPrimary_CTV" in body
+    assert "DoseToMedium" in body
+    assert "mass-normalized" in body
+    disp = results.humanize_dose(expected, None, "Gy")
+    assert disp["value"] in body and disp["unit"] in body
+
+
+def test_run_detail_corrects_structure_ambient_dose_equivalent_by_volume(client, tmp_path):
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "structure_metrics.json").write_text(json.dumps({
+        "patient": {"volume_cm3": 1000.0},
+        "structures": {
+            "BrainStem": {
+                "mass_g": 20.0,
+                "volume_cm3": 25.0,
+                "average_density_g_cm3": 0.8,
+            }
+        },
+    }))
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    # Original fixture value after plan scaling is 1.0013e-05 Sv; volume correction is 40
+    # → ~400.5 µSv, shown SI-prefixed.
+    disp = results.humanize_dose(1.049973996636311e-11 * 953656.0980490245 * 40.0, None, "Sv")
+    assert disp["value"] in body and disp["unit"] in body
+    assert "volume-normalized" in body
+
+
+def test_run_detail_corrects_structure_dose_to_water_by_volume(client, tmp_path):
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field01_dose_to_water_CTV.csv").write_text(
+        "# TOPAS Version: 4.2.p3\n"
+        "# Parameter File: topas_field01.txt\n"
+        "# Results for scorer: DoseWater_CTV\n"
+        '# Filtered by: OnlyIncludeIfInRTStructure = 1 "CTV"\n'
+        "# Scored in component: Patient\n"
+        "# DoseToWater ( Gy ) : Sum   Standard_Deviation   \n"
+        "1.0e-9, 1.0e-10\n"
+    )
+    # DoseToWater is an intensive dose that TOPAS already divided by the whole patient box,
+    # so it is rescaled by the volume ratio V_patient / V_structure (= 100 / 2 = 50), never mass.
+    (run_dir / "structure_metrics.json").write_text(json.dumps({
+        "patient": {"mass_g": 100.0, "volume_cm3": 100.0},
+        "structures": {
+            "CTV": {
+                "mass_g": 2.0,
+                "volume_cm3": 2.0,
+                "average_density_g_cm3": 1.0,
+                "patient_to_structure_mass_ratio": 50.0,
+            }
+        },
+    }))
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    expected = 1.0e-9 * 953656.0980490245 * 50.0
+    assert "DoseWater_CTV" in body
+    assert "DoseToWater" in body
+    assert "volume-normalized" in body
+    disp = results.humanize_dose(expected, None, "Gy")
+    assert disp["value"] in body and disp["unit"] in body
+
+
+def test_run_detail_rejects_structure_dose_to_water_without_component(client, tmp_path):
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field01_dose_to_water_CTV.csv").write_text(
+        "# TOPAS Version: 4.2.p3\n"
+        "# Parameter File: topas_field01.txt\n"
+        "# Results for scorer: DoseWater_CTV\n"
+        '# Filtered by: OnlyIncludeIfInRTStructure = 1 "CTV"\n'
+        "# DoseToWater ( Gy ) : Sum   Standard_Deviation   \n"
+        "1.0e-9, 1.0e-10\n"
+    )
+    (run_dir / "structure_metrics.json").write_text(json.dumps({
+        "patient": {"volume_cm3": 100.0},
+        "structures": {"CTV": {"volume_cm3": 2.0}},
+    }))
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    assert "DoseWater_CTV" in body
+    assert "unusable" in body
+    assert "scorer component" in body
 
 
 def test_run_detail_of_running_job_says_so(client, tmp_path):
@@ -690,7 +924,9 @@ def test_report_csv_marks_nan_rows_unusable(client, tmp_path):
 def _row(scorer="S", field=1, total=1.0, sd=0.1, problem=None, unit="Gy"):
     return {"scorer": scorer, "structure": "CTV", "quantity": "DoseToMedium", "unit": unit,
             "field": field, "field_name": f"Field {field}", "sum": total, "sd": sd,
-            "problem": problem, "raw_sum": total, "scale": 1.0, "csv_name": "x.csv"}
+            "problem": problem, "raw_sum": total, "scale": 1.0, "structure_mass_normalized": False,
+            "structure_volume_normalized": False,
+            "csv_name": "x.csv"}
 
 
 def test_group_rows_totals_fields_and_adds_sd_in_quadrature():
@@ -746,6 +982,7 @@ def _second_field_csv(run_dir, param_file="topas_field02.txt"):
         f"# Parameter File: {param_file}\n"
         "# Results for scorer: AmBDose_BrainStem\n"
         '# Filtered by: OnlyIncludeIfInRTStructure = 1 "BrainStem"\n'
+        "# Scored in component: Patient\n"
         "# AmbientDoseEquivalent ( Sv ) : Sum   Standard_Deviation   \n"
         "2.0e-11, 1.0e-15\n"
     )

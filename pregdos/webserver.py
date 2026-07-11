@@ -13,6 +13,7 @@ import importlib.resources
 import pydicom
 
 import csv
+import datetime
 import io
 import math
 import zipfile
@@ -24,7 +25,7 @@ import sys
 import shutil
 import tempfile
 
-from . import dicom_intake, executor, results, studies, versions
+from . import dicom_intake, executor, results, structure_metrics, studies, versions
 from .models import ConversionParameters, ConversionResult
 from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
@@ -38,6 +39,9 @@ ALLOWED_EXTENSIONS = {"dcm", "csv", "txt"}
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.secret_key = os.environ.get("PREGDOS_SECRET_KEY", "pregdos_secret_key")
+
+# Templates render doses with a shared SI prefix (e.g. "3.8 mSv") via this helper.
+app.jinja_env.globals["fmt_dose"] = results.humanize_dose
 
 
 class UploadRejected(Exception):
@@ -444,9 +448,19 @@ def convert():
                 flash(f"Scorer post-processing failed for {name}: {err}")
             return redirect(url_for("upload_files"))
 
+    prepass = None
+    if selected_structures:
+        try:
+            prepass = structure_metrics.write_mask_prepass(run_dir / result.out_files[0], selected_structures)
+        except Exception as err:
+            shutil.rmtree(run_dir, ignore_errors=True)
+            flash(f"Structure mask pre-pass setup failed: {err}")
+            return redirect(url_for("upload_files"))
+
     return render_template(
         "convert_success.html",
         out_files=result.out_files,
+        prepass_file=prepass,
         study_name=result.study_name,
         run_id=result.run_id,
         selected_structures=result.selected_structures,
@@ -496,9 +510,20 @@ def submit_job():
         flash("Run directory not found.")
         return redirect(url_for("upload_files"))
 
+    # Refuse to launch into a broken toolchain: an unsupported OpenTOPAS would emit NaN doses
+    # (#49) and a stale TOPAS_G4_DATA_DIR would abort every field seconds in.  Cheaper to stop
+    # here than to discover it hours later in a log.
+    blocker = versions.submit_blocker()
+    if blocker:
+        flash(f"Cannot submit — {blocker}")
+        return redirect(url_for("run_detail", study=study_name, run_id=run_id))
+
     # Validate every requested file up front, so a typo cannot start a partial run.
     topas_files = []
     missing = []
+    prepass = structure_metrics.MASK_PREPASS_FILE
+    if (run_dir / prepass).is_file():
+        topas_files.append(prepass)
     for fname in out_files:
         safe_fname = secure_filename(fname)
         if (run_dir / safe_fname).is_file():
@@ -572,6 +597,26 @@ def _funding_logos() -> list[dict]:
 NOT_SUBMITTED = "not submitted"
 
 
+def _format_duration(seconds: float) -> str:
+    """A rough human duration: "~2h 15m", "~45m", "~30s"."""
+    seconds = int(max(seconds, 0))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"~{h}h {m}m"
+    if m:
+        return f"~{m}m"
+    return f"~{s}s"
+
+
+def _completion_clock(finish: datetime.datetime) -> dict:
+    """Local wall-clock finish, split for a two-line box: ``{"time": "14:30", "date": "11 Jul"}``.
+
+    Day-first date, European style.
+    """
+    return {"time": finish.strftime("%H:%M"), "date": f"{finish.day} {finish:%b}"}
+
+
 def _run_status(run_dir: Path) -> str:
     """Status of one run, read entirely from files on disk (see :mod:`pregdos.executor`)."""
     if executor.read_run_metadata(run_dir) is None:
@@ -603,14 +648,29 @@ def list_studies():
         runs = []
         for run_id in studies.list_runs(root, study):
             run_dir = studies.run_path(root, study, run_id)
+            status = _run_status(run_dir)
+            percent = eta = None
+            # Only a running job needs its logs parsed for the pie and completion clock.
+            if status == executor.RUNNING:
+                prog = executor.run_progress(run_dir)
+                total = sum(p.histories_total for p in prog)
+                if total > 0:
+                    percent = round(100 * sum(p.histories_done for p in prog) / total)
+                info = executor.read_run_metadata(run_dir)
+                finish = executor.estimate_completion_time(prog, info.submitted if info else None)
+                eta = _completion_clock(finish) if finish else None
             runs.append({
                 "run_id": run_id,
-                "status": _run_status(run_dir),
+                "status": status,
+                "percent": percent,
+                "eta": eta,
                 "file_count": sum(1 for p in run_dir.iterdir() if p.is_file()),
             })
-        tiles.append({"name": study, "runs": runs, "active": any(r["status"] in
-                     (executor.RUNNING, executor.QUEUED) for r in runs)})
-    return render_template("studies.html", tiles=tiles)
+        active = any(r["status"] in (executor.RUNNING, executor.QUEUED) for r in runs)
+        tiles.append({"name": study, "runs": runs, "active": active})
+    # Keep the page live while any run is in flight, like the detail page.
+    auto_refresh = any(t["active"] for t in tiles)
+    return render_template("studies.html", tiles=tiles, auto_refresh=auto_refresh)
 
 
 @app.route("/studies/<study>/<run_id>")
@@ -633,11 +693,33 @@ def run_detail(study, run_id):
 
     files = [{"name": p.name, "size": p.stat().st_size} for p in sorted(run_dir.iterdir()) if p.is_file()]
     info = executor.read_run_metadata(run_dir)
+    status = _run_status(run_dir)
+    field_progress = executor.run_progress(run_dir)
+    etr = None
+    if status == executor.RUNNING and info is not None:
+        seconds = executor.estimate_remaining_seconds(field_progress, info.submitted)
+        etr = _format_duration(seconds) if seconds is not None else None
+    progress = [
+        {
+            "field": p.topas_file,
+            "status": p.status,
+            "percent": round(100 * p.fraction),
+            "histories_done": p.histories_done,
+            "histories_total": p.histories_total,
+            "runs_started": p.runs_started,
+            "total_runs": p.total_runs,
+        }
+        for p in field_progress
+    ]
     return render_template(
         "run_detail.html",
         study=study,
         run_id=run_id,
-        status=_run_status(run_dir),
+        status=status,
+        # While work is in flight the page refreshes itself so the bars advance.
+        auto_refresh=status in (executor.RUNNING, executor.QUEUED),
+        progress=progress,
+        etr=etr,
         groups=groups,
         files=files,
         backend=info.backend if info else None,
@@ -695,6 +777,8 @@ def _group_rows(rows: list) -> list:
 def _result_rows(run_dir: Path, study: str):
     """Parsed, plan-scaled scorer rows for one run, ready for the results table."""
     parsed, warnings = results.collect_results(run_dir)
+    metrics, metric_warnings = structure_metrics.ensure_metrics(run_dir)
+    warnings.extend(metric_warnings)
 
     # Field names come from the study's RTPLAN.  A field is identified by its DICOM
     # BeamNumber, which need not match its position in the plan -- so show the name a
@@ -708,19 +792,79 @@ def _result_rows(run_dir: Path, study: str):
     for r in parsed:
         scaling = results.scaling_for(r, run_dir)
         total, sd = r.scaled(scaling)
+        metric = None
+        mass_normalized = False
+        volume_normalized = False
+        quantity = r.quantity
+        unit = r.unit
+        problem = r.problem
+        if r.is_single_bin:
+            metric = structure_metrics.structure_metric(metrics, r.structure)
+            if r.quantity == "EnergyDeposit":
+                converted = structure_metrics.energy_deposit_to_gy(metrics, r.structure, r.unit, total, sd)
+                if converted is not None:
+                    total, sd = converted
+                    quantity = "DoseToMedium"
+                    unit = "Gy"
+                    mass_normalized = True
+                elif problem is None:
+                    problem = "structure mass metrics are missing; cannot convert EnergyDeposit to Gy"
+            elif r.quantity == "AmbientDoseEquivalent" and r.structure:
+                correction = (
+                    structure_metrics.fluence_volume_correction_factor(metrics, r.structure)
+                    if r.component == "Patient"
+                    else None
+                )
+                if correction is not None:
+                    if total is not None:
+                        total *= correction
+                    if sd is not None:
+                        sd *= correction
+                    volume_normalized = True
+                elif problem is None:
+                    problem = "structure volume metrics or scorer component are missing; cannot correct fluence denominator"
+            elif r.quantity == "DoseToWater" and r.structure:
+                # DoseToWater is an intensive dose (Gy) that TOPAS divides by the whole
+                # patient-box volume for a single-bin scorer, exactly like the H*(10) fluence
+                # scorer. Rescale that denominator to the structure volume (V_patient/V_struct);
+                # only EnergyDeposit (energy, no volume division) uses the structure mass.
+                correction = (
+                    structure_metrics.fluence_volume_correction_factor(metrics, r.structure)
+                    if r.component == "Patient"
+                    else None
+                )
+                if correction is not None:
+                    if total is not None:
+                        total *= correction
+                    if sd is not None:
+                        sd *= correction
+                    volume_normalized = True
+                elif problem is None:
+                    problem = (
+                        "structure volume metrics or scorer component are missing; "
+                        "cannot correct DoseToWater denominator"
+                    )
+            elif r.quantity == "DoseToMedium" and r.component == "Patient" and r.structure and problem is None:
+                problem = ("structure DoseToMedium from TOPAS is not accepted; "
+                           "rerun with PregDos EnergyDeposit structure scoring")
         number = r.field_number
         rows.append({
             "field": number,
             "field_name": names.get(number, "") if number is not None else "",
             "scorer": r.scorer,
             "structure": r.structure or "—",
-            "quantity": r.quantity,
-            "unit": r.unit,
+            "quantity": quantity,
+            "unit": unit,
             "sum": total,
             "sd": sd,
             "raw_sum": r.raw_sum,
-            "problem": r.problem,
+            "problem": problem,
             "scale": scaling.factor if scaling else None,
+            "structure_volume_cm3": metric.get("volume_cm3") if metric else None,
+            "structure_mass_g": metric.get("mass_g") if metric else None,
+            "structure_average_density_g_cm3": metric.get("average_density_g_cm3") if metric else None,
+            "structure_mass_normalized": mass_normalized,
+            "structure_volume_normalized": volume_normalized,
             "csv_name": r.csv_name,
         })
     return rows, warnings
@@ -738,10 +882,18 @@ def download_report(study, run_id):
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["# PregDos report", f"study={study}", f"run={run_id}"])
-    writer.writerow(["# Doses are scaled to the full plan; see issue #50 before trusting absolute values."])
-    writer.writerow(["# field=ALL rows total a scorer over its fields; their SDs add in quadrature."])
+    writer.writerow(["# Doses are PHYSICAL absorbed dose (Gy) / equivalent dose (Sv); no RBE is "
+                     "applied. Eclipse proton RTDOSE is Gy(RBE) = physical dose-to-water x 1.1."])
+    writer.writerow(["# Doses are scaled to the full plan. Structure EnergyDeposit rows are "
+                     "mass-normalized (energy / structure mass); structure DoseToWater and "
+                     "fluence rows are volume-normalized (patient box rescaled to the structure "
+                     "volume); see issue #50."])
+    writer.writerow(["# dose_uncertainty is the 1-sigma Monte-Carlo statistical error "
+                     "(sqrt(N)*SD/Sum applied to the scaled dose, N = simulated histories)."])
+    writer.writerow(["# field=ALL rows total a scorer over its fields; their uncertainties add in quadrature."])
     writer.writerow(["field", "field_name", "scorer", "structure", "quantity", "unit",
-                     "sum", "standard_deviation", "scale_factor", "note"])
+                     "dose", "dose_uncertainty", "scale_factor", "mass_normalized", "volume_normalized",
+                     "structure_volume_cm3", "structure_mass_g", "structure_average_density_g_cm3", "note"])
     for group in _group_rows(rows):
         for r in group["rows"]:
             writer.writerow([
@@ -750,6 +902,11 @@ def download_report(study, run_id):
                 "" if r["sum"] is None else repr(r["sum"]),
                 "" if r["sd"] is None else repr(r["sd"]),
                 "" if r["scale"] is None else repr(r["scale"]),
+                "yes" if r["structure_mass_normalized"] else "",
+                "yes" if r["structure_volume_normalized"] else "",
+                "" if r["structure_volume_cm3"] is None else repr(r["structure_volume_cm3"]),
+                "" if r["structure_mass_g"] is None else repr(r["structure_mass_g"]),
+                "" if r["structure_average_density_g_cm3"] is None else repr(r["structure_average_density_g_cm3"]),
                 r["problem"] or "",
             ])
         if group["total_sum"] is not None:
@@ -757,7 +914,7 @@ def download_report(study, run_id):
                 "ALL", "", group["scorer"], group["structure"], group["quantity"], group["unit"],
                 repr(group["total_sum"]),
                 "" if group["total_sd"] is None else repr(group["total_sd"]),
-                "", f"sum over {group['n_fields']} fields",
+                "", "", "", "", "", "", f"sum over {group['n_fields']} fields",
             ])
     return Response(
         buf.getvalue(),
@@ -806,8 +963,15 @@ def download_job_file(study, run_id, filename):
     return send_from_directory(str(run_dir), secure_filename(filename), as_attachment=True)
 
 
+def _env_flag(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def main():
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    # Debug is OFF by default: the Werkzeug debugger is an interactive console, and the app
+    # binds all interfaces, so debug=True on a shared network is remote code execution.
+    # Opt in explicitly with PREGDOS_DEBUG=1 for local development only.
+    app.run(debug=_env_flag("PREGDOS_DEBUG"), host="0.0.0.0", port=5000)
 
 
 if __name__ == "__main__":

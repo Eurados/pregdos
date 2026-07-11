@@ -89,13 +89,16 @@ _NEUTRON_ENERGIES, _NEUTRON_VALUES = _load_neutron_table()
 # ---------------------------------------------------------------------------
 
 class ScorerType(str, Enum):
-    """The four out-of-field dose quantities supported by this module."""
+    """The out-of-field dose quantities supported by this module."""
 
     NEUTRON_DOSE_EQUIV = "neutron"
     """Ambient dose equivalent H*(10) from neutrons (TOPAS AmbientDoseEquivalent)."""
 
     GAMMA_DOSE = "gamma"
     """Absorbed dose to medium from photons and their descendants (DoseToMedium)."""
+
+    DOSE_TO_WATER = "dose_to_water"
+    """All-particle absorbed dose to water (TOPAS DoseToWater)."""
 
     PROTON_PRIMARY = "proton_primary"
     """Absorbed dose from protons whose full ancestry contains no neutron.
@@ -191,6 +194,12 @@ SCORER_DEFS = [
         "description": "DoseToMedium, gamma and gamma-ancestor particles",
     },
     {
+        "id": "dose_to_water",
+        "scorer_type": ScorerType.DOSE_TO_WATER,
+        "label": "Absorbed dose to water",
+        "description": "DoseToWater, all particles; useful for Eclipse RTDOSE comparison",
+    },
+    {
         "id": "proton_primary",
         "scorer_type": ScorerType.PROTON_PRIMARY,
         "label": "Proton dose — primary (no neutron ancestors)",
@@ -210,6 +219,7 @@ SCORER_DEFS = [
 _SCORER_NAME = {
     ScorerType.NEUTRON_DOSE_EQUIV: "AmBDose",
     ScorerType.GAMMA_DOSE: "DoseGamma",
+    ScorerType.DOSE_TO_WATER: "DoseWater",
     ScorerType.PROTON_PRIMARY: "DoseProtonPrimary",
     ScorerType.PROTON_SECONDARY: "DoseProtonSecondary",
 }
@@ -219,6 +229,7 @@ _SCORER_NAME = {
 _OUTPUT_SUFFIX = {
     ScorerType.NEUTRON_DOSE_EQUIV: "_neutron",
     ScorerType.GAMMA_DOSE: "_gamma",
+    ScorerType.DOSE_TO_WATER: "_dose_to_water",
     ScorerType.PROTON_PRIMARY: "_proton_primary",
     ScorerType.PROTON_SECONDARY: "_proton_secondary",
 }
@@ -309,11 +320,15 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
     # For grid mode the component is the user-defined TsBox defined separately.
     component = "Patient" if is_structure else "ScoringGrid"
 
-    # Structure mode uses a single voxel (XBins=YBins=ZBins=1) so TOPAS
-    # accumulates dose over the whole ROI and reports a mean dose in Gy.
+    # Structure mode uses a single voxel (XBins=YBins=ZBins=1).  For absorbed-dose
+    # quantities we score EnergyDeposit, not DoseToMedium: TOPAS's structure filter
+    # filters energy deposition but its single-bin dose denominator is not the ROI mass.
+    # PregDos converts the scored energy to Gy after computing the ROI mass from the
+    # TOPAS RTSTRUCT mask pre-pass.
     xbins = 1 if is_structure else (grid.nx if grid else 1)
     ybins = 1 if is_structure else (grid.ny if grid else 1)
     zbins = 1 if is_structure else (grid.nz if grid else 1)
+    absorbed_quantity = "EnergyDeposit" if is_structure else "DoseToMedium"
 
     lines: List[str] = []
 
@@ -359,7 +374,7 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
         # secondary electrons produced by gamma interactions (e.g. Compton
         # electrons), because those electrons carry a "gamma ancestor".
         lines += [
-            f's:Sc/{name}/Quantity                                = "DoseToMedium"',
+            f's:Sc/{name}/Quantity                                = "{absorbed_quantity}"',
             f's:Sc/{name}/Component                               = "{component}"',
             f'sv:Sc/{name}/OnlyIncludeIfParticleOrAncestorNamed  = 1 "gamma"',
             f"i:Sc/{name}/XBins                                   = {xbins}",
@@ -369,8 +384,31 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
         if is_structure:
             lines.append(f'sv:Sc/{name}/OnlyIncludeIfInRTStructure         = 1 "{entry.structure_name}"')
         lines += [
-            # ReferencedDicomPatient links voxel indices to the CT HU values
-            # so TOPAS can look up the stopping-medium properties
+            f's:Sc/{name}/IfOutputFileAlreadyExists               = "Increment"',
+            f's:Sc/{name}/OutputType                              = "csv"',
+            f's:Sc/{name}/OutputFile                              = "{output_file}"',
+            f'sv:Sc/{name}/Report                                 = 2 "Sum" "Standard_Deviation"',
+        ]
+        if not is_structure:
+            # ReferencedDicomPatient links grid voxels to CT HU values for DoseToMedium.
+            lines.insert(-4, f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"')
+
+    elif entry.scorer_type == ScorerType.DOSE_TO_WATER:
+        # ── All-particle absorbed dose to water ───────────────────────────
+        # This scorer is mainly for validation against Eclipse RTDOSE exports.  In
+        # structure mode PregDos corrects the single-bin TOPAS denominator using
+        # the structure volume ratio (V_patient / V_structure) from the RTSTRUCT mask pre-pass.
+        lines += [
+            f's:Sc/{name}/Quantity                                = "DoseToWater"',
+            f'b:Sc/{name}/PreCalculateStoppingPowerRatios          = "True"',
+            f's:Sc/{name}/Component                               = "{component}"',
+            f"i:Sc/{name}/XBins                                   = {xbins}",
+            f"i:Sc/{name}/YBins                                   = {ybins}",
+            f"i:Sc/{name}/ZBins                                   = {zbins}",
+        ]
+        if is_structure:
+            lines.append(f'sv:Sc/{name}/OnlyIncludeIfInRTStructure         = 1 "{entry.structure_name}"')
+        lines += [
             f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"',
             f's:Sc/{name}/IfOutputFileAlreadyExists               = "Increment"',
             f's:Sc/{name}/OutputType                              = "csv"',
@@ -386,7 +424,7 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
         # OnlyIncludeIfParticleOrAncestorNotNamed = "neutron" excludes any
         # proton that is itself a neutron or has a neutron anywhere in its history.
         lines += [
-            f's:Sc/{name}/Quantity                                = "DoseToMedium"',
+            f's:Sc/{name}/Quantity                                = "{absorbed_quantity}"',
             f's:Sc/{name}/Component                               = "{component}"',
             f'sv:Sc/{name}/OnlyIncludeParticlesNamed              = 1 "proton"',
             # Exclude protons produced (directly or indirectly) via neutron interactions
@@ -398,12 +436,13 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
         if is_structure:
             lines.append(f'sv:Sc/{name}/OnlyIncludeIfInRTStructure         = 1 "{entry.structure_name}"')
         lines += [
-            f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"',
             f's:Sc/{name}/IfOutputFileAlreadyExists               = "Increment"',
             f's:Sc/{name}/OutputType                              = "csv"',
             f's:Sc/{name}/OutputFile                              = "{output_file}"',
             f'sv:Sc/{name}/Report                                 = 2 "Sum" "Standard_Deviation"',
         ]
+        if not is_structure:
+            lines.insert(-4, f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"')
 
     elif entry.scorer_type == ScorerType.PROTON_SECONDARY:
         # ── Secondary-proton absorbed dose (neutron-origin) ───────────────
@@ -414,7 +453,7 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
         # OnlyIncludeIfParticleOrAncestorNamed = "neutron" keeps only those
         # protons that have a neutron somewhere in their ancestry.
         lines += [
-            f's:Sc/{name}/Quantity                                = "DoseToMedium"',
+            f's:Sc/{name}/Quantity                                = "{absorbed_quantity}"',
             f's:Sc/{name}/Component                               = "{component}"',
             f'sv:Sc/{name}/OnlyIncludeParticlesNamed              = 1 "proton"',
             # Keep only protons that descend from a neutron interaction
@@ -426,12 +465,13 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
         if is_structure:
             lines.append(f'sv:Sc/{name}/OnlyIncludeIfInRTStructure         = 1 "{entry.structure_name}"')
         lines += [
-            f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"',
             f's:Sc/{name}/IfOutputFileAlreadyExists               = "Increment"',
             f's:Sc/{name}/OutputType                              = "csv"',
             f's:Sc/{name}/OutputFile                              = "{output_file}"',
             f'sv:Sc/{name}/Report                                 = 2 "Sum" "Standard_Deviation"',
         ]
+        if not is_structure:
+            lines.insert(-4, f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"')
 
     return "\n".join(lines) + "\n"
 

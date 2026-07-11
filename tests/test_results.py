@@ -271,14 +271,43 @@ def test_missing_topas_input_returns_none(tmp_path):
     assert parse_plan_scaling(tmp_path / "absent.txt") is None
 
 
-def test_scaled_values_use_the_corrected_factor():
+def test_scaled_dose_uses_the_corrected_factor():
     r = parse_scorer_csv(PROTON)
     s = parse_plan_scaling(TOPAS_INPUT)
-    total, sd = r.scaled(s)
-    assert total == pytest.approx(1.355829448712598e-09 * s.factor)
-    assert sd == pytest.approx(1.271278408327433e-13 * s.factor)
+    dose, _ = r.scaled(s)
+    assert dose == pytest.approx(1.355829448712598e-09 * s.factor)
     # sanity: a per-field CTV dose in the mGy range at these (deliberately low) statistics
-    assert 1e-4 < total < 1e-2
+    assert 1e-4 < dose < 1e-2
+
+
+def test_uncertainty_is_the_statistical_error_not_the_raw_sd():
+    """The reported error is √N·SD/Sum applied to the dose, not SD×factor.  TOPAS's
+    Standard_Deviation is the per-history spread and is √N too small as an error on the sum."""
+    import math
+
+    r = parse_scorer_csv(PROTON)
+    s = parse_plan_scaling(TOPAS_INPUT)
+    raw_sum = 1.355829448712598e-09
+    raw_sd = 1.271278408327433e-13
+    n = s.simulated_histories                       # 19990 for this fixture
+
+    rel = r.relative_uncertainty(s)
+    assert rel == pytest.approx(math.sqrt(n) * raw_sd / raw_sum)
+
+    dose, unc = r.scaled(s)
+    assert unc == pytest.approx(dose * rel)
+    # the relative error is invariant under the plan scaling
+    assert unc / dose == pytest.approx(rel)
+    # and it is √N larger than naively scaling the raw SD (the old, wrong, behaviour)
+    assert unc == pytest.approx(math.sqrt(n) * raw_sd * s.factor)
+
+
+def test_relative_uncertainty_needs_histories():
+    """Without plan scaling there is no N, so no statistical error can be formed."""
+    r = parse_scorer_csv(PROTON)
+    assert r.relative_uncertainty(None) is None
+    _, unc = r.scaled(None)
+    assert unc is None
 
 
 def test_scaled_without_scaling_is_the_raw_value():
@@ -320,3 +349,34 @@ def test_scaling_for_missing_parameter_file(tmp_path):
     p = tmp_path / "s.csv"
     p.write_text("# Results for scorer: A\n# DoseToMedium ( Gy ) : Sum   \n1.0\n")
     assert results.scaling_for(parse_scorer_csv(p), tmp_path) is None
+
+
+def test_humanize_dose_uses_si_prefix_and_shared_scale():
+    d = results.humanize_dose(0.008636, 0.00024, "Sv")
+    # value and uncertainty share the milli prefix so the pair reads together.
+    assert d == {"value": "8.636", "sd": "0.24", "pct": "2.8", "unit": "mSv"}
+
+
+def test_humanize_dose_steps_down_to_micro():
+    d = results.humanize_dose(0.0001626, 1.6e-5, "Gy")
+    assert d["value"] == "162.6"
+    assert d["unit"] == "µGy"
+
+
+def test_humanize_dose_keeps_engineering_mantissa_for_fraction_dose():
+    # 0.2547 Gy has no integer part, so engineering notation renders it in milligray.
+    d = results.humanize_dose(0.2547, 0.0015, "Gy")
+    assert d["value"] == "254.7"
+    assert d["unit"] == "mGy"
+
+
+def test_humanize_dose_handles_missing_value_and_uncertainty():
+    assert results.humanize_dose(None, None, "Gy")["value"] is None
+    no_sd = results.humanize_dose(0.005, None, "Gy")
+    assert no_sd["value"] == "5" and no_sd["unit"] == "mGy"
+    assert no_sd["sd"] is None and no_sd["pct"] is None
+
+
+def test_humanize_dose_zero_value_takes_prefix_from_uncertainty():
+    d = results.humanize_dose(0.0, 0.00024, "Sv")
+    assert d["value"] == "0" and d["unit"] == "µSv"  # 0.00024 Sv = 240 µSv sets the scale

@@ -40,11 +40,19 @@ round away and the gap grows).  Hence::
 
     scale = PARTICLE_SCALING * REQUESTED_HISTORIES / sum(spotWeight)
 
+Uncertainty
+-----------
+TOPAS's ``Standard_Deviation`` column is the sample SD of the *per-history* contributions --
+not a standard error, and √N too small as an error on the reported ``Sum``.  The statistical
+uncertainty we report is the standard error of the estimated dose, ``√N · SD / Sum`` (N =
+simulated histories), which is invariant under the deterministic plan scaling.  See
+:meth:`ScorerResult.relative_uncertainty`.
+
 .. warning::
-   The absolute dose values are **not** currently trustworthy: the structure-average scorers
-   normalise by a mass that is not the structure's, so each structure carries a different
-   error factor.  See issue #50.  The scaling implemented here is a separate, independently
-   correct step, and is applied to whatever TOPAS reports at the units it claims.
+   The **absolute** dose values are still under validation (issue #50): how TOPAS normalises a
+   structure-filtered scorer is being confirmed against a known reference dose.  The scaling
+   and the uncertainty implemented here are separate, independently correct steps applied to
+   whatever TOPAS reports at the units it claims.
 """
 
 from __future__ import annotations
@@ -60,6 +68,7 @@ _QUANTITY_RE = re.compile(r"^#\s*(?P<quantity>\w+)\s*\(\s*(?P<unit>[^)]*?)\s*\)\
 _SCORER_RE = re.compile(r"^#\s*Results for scorer:\s*(?P<name>.+?)\s*$")
 _PARAMETER_FILE_RE = re.compile(r"^#\s*Parameter File:\s*(?P<name>.+?)\s*$")
 _STRUCTURE_RE = re.compile(r'^#\s*Filtered by:\s*OnlyIncludeIfInRTStructure\s*=\s*\d+\s*"(?P<name>.+?)"\s*$')
+_COMPONENT_RE = re.compile(r"^#\s*Scored in component:\s*(?P<name>.+?)\s*$")
 _VERSION_RE = re.compile(r"^#\s*TOPAS Version:\s*(?P<version>.+?)\s*$")
 
 # Plan scaling, from the header dicomexport writes into the TOPAS input.
@@ -130,6 +139,8 @@ class ScorerResult:
     empty bin index."""
     structure: str = ""
     """RT structure the scorer was restricted to, or "" for an unfiltered scorer."""
+    component: str = ""
+    """TOPAS component the scorer was attached to, e.g. ``Patient``."""
     parameter_file: str = ""
     topas_version: str = ""
     run_index: Optional[int] = None
@@ -182,17 +193,48 @@ class ScorerResult:
     def usable(self) -> bool:
         return self.problem is None
 
+    def relative_uncertainty(self, scaling: Optional[PlanScaling]) -> Optional[float]:
+        """Fractional 1σ Monte-Carlo statistical uncertainty on the dose, or None.
+
+        TOPAS reports ``Sum`` (the total over ``N`` simulated histories) and
+        ``Standard_Deviation`` = ``s``, the sample SD of the *per-history* contributions --
+        **not** a standard error, and not the uncertainty on ``Sum``.  The estimate we report
+        is the mean dose per proton (``Sum/N``) multiplied by the plan's proton count, so the
+        relevant error is the standard error of that mean:
+
+            SE(dose)/dose = √N · s / Sum   =   (s / mean) / √N
+
+        ``N`` is the number of histories actually simulated (``Σ spotWeight``), which we
+        already parse for the plan scaling.  This ratio is dimensionless and **invariant under
+        the plan scaling** -- multiplying ``Sum`` by a constant to reach plan dose multiplies
+        the absolute error by the same constant -- so it applies unchanged to the scaled dose.
+        It depends on how many histories were *simulated*, never on the plan's proton count.
+        """
+        if scaling is None:
+            return None
+        sd = self.raw_standard_deviation
+        total = self.raw_sum
+        n = scaling.simulated_histories
+        if sd is None or math.isnan(sd) or total in (None, 0.0) or math.isnan(total) or n <= 0:
+            return None
+        return math.sqrt(n) * sd / abs(total)
+
     def scaled(self, scaling: Optional[PlanScaling]) -> Tuple[Optional[float], Optional[float]]:
-        """``(sum, standard_deviation)`` scaled to plan dose, or ``(None, None)`` if unusable."""
+        """``(dose, uncertainty)`` scaled to plan dose, or ``(None, None)`` if unusable.
+
+        ``uncertainty`` is the **absolute 1σ statistical uncertainty** on the reported dose
+        (``dose × relative_uncertainty``), not the raw ``Standard_Deviation`` column -- see
+        :meth:`relative_uncertainty`.  It is None when the histories needed to form a proper
+        error are unavailable (no plan scaling).
+        """
         if not self.usable:
             return None, None
         factor = scaling.factor if scaling else 1.0
         total = self.raw_sum
-        sd = self.raw_standard_deviation
-        return (
-            None if total is None else total * factor,
-            None if sd is None or math.isnan(sd) else sd * factor,
-        )
+        dose = None if total is None else total * factor
+        rel = self.relative_uncertainty(scaling)
+        uncertainty = None if (dose is None or rel is None) else abs(dose) * rel
+        return dose, uncertainty
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +293,7 @@ def parse_scorer_csv(path: str | Path) -> ScorerResult:
     except OSError as e:
         raise ResultsError(f"{path.name}: cannot read ({e})") from e
 
-    scorer = quantity = unit = structure = parameter_file = topas_version = ""
+    scorer = quantity = unit = structure = component = parameter_file = topas_version = ""
     columns: List[str] = []
     data: List[str] = []
 
@@ -264,6 +306,8 @@ def parse_scorer_csv(path: str | Path) -> ScorerResult:
             scorer = m.group("name")
         elif (m := _STRUCTURE_RE.match(line)):
             structure = m.group("name")
+        elif (m := _COMPONENT_RE.match(line)):
+            component = m.group("name")
         elif (m := _PARAMETER_FILE_RE.match(line)):
             parameter_file = m.group("name")
         elif (m := _VERSION_RE.match(line)):
@@ -309,6 +353,7 @@ def parse_scorer_csv(path: str | Path) -> ScorerResult:
         columns=columns,
         rows=rows,
         structure=structure,
+        component=component,
         parameter_file=parameter_file,
         topas_version=topas_version,
         run_index=run_index,
@@ -375,3 +420,45 @@ def scaling_for(result: ScorerResult, run_dir: str | Path) -> Optional[PlanScali
     if not result.parameter_file:
         return None
     return parse_plan_scaling(Path(run_dir) / Path(result.parameter_file).name)
+
+
+# ── Human-readable SI-prefixed display ────────────────────────────────────────────────
+# Out-of-field doses span many orders of magnitude (Gy down to nGy). Engineering notation
+# keeps the mantissa in [1, 1000) so a value reads as "3.8 mSv" or "163 µGy" instead of
+# "0.0038 Sv". This is for the results view only; CSV export keeps full-precision base units.
+_SI_PREFIXES: Tuple[Tuple[float, str], ...] = (
+    (1e9, "G"), (1e6, "M"), (1e3, "k"), (1.0, ""),
+    (1e-3, "m"), (1e-6, "µ"), (1e-9, "n"), (1e-12, "p"), (1e-15, "f"),
+)
+
+
+def _si_prefix(value: float) -> Tuple[float, str]:
+    """Pick the SI ``(factor, prefix)`` that puts ``abs(value)`` in ``[1, 1000)``."""
+    magnitude = abs(value)
+    if magnitude == 0 or not math.isfinite(magnitude):
+        return 1.0, ""
+    for factor, prefix in _SI_PREFIXES:
+        if magnitude >= factor:
+            return factor, prefix
+    return _SI_PREFIXES[-1]
+
+
+def humanize_dose(value: Optional[float], sd: Optional[float], unit: str) -> dict:
+    """Format a dose and its 1σ uncertainty with a single shared SI prefix.
+
+    Returns display strings ``{"value", "sd", "pct", "unit"}`` (``sd``/``pct`` are ``None``
+    when no uncertainty is given). The prefix is chosen from ``value`` — falling back to
+    ``sd`` when the value is zero — so the pair reads consistently:
+    ``humanize_dose(0.008636, 0.00024, "Sv")`` → value "8.636", sd "0.24", unit "mSv".
+    """
+    if value is None:
+        return {"value": None, "sd": None, "pct": None, "unit": unit}
+    reference = value if value else (sd or 0.0)
+    factor, prefix = _si_prefix(reference)
+    display = {"unit": f"{prefix}{unit}", "value": f"{value / factor:.4g}"}
+    if sd is None:
+        display["sd"] = display["pct"] = None
+    else:
+        display["sd"] = f"{sd / factor:.2g}"
+        display["pct"] = f"{100 * sd / value:.2g}" if value else None
+    return display

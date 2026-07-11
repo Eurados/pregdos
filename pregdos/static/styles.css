@@ -50,6 +50,16 @@ body {
   font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, sans-serif;
   font-size: 17px;
   line-height: 1.55;
+  /* Sticky footer: a full-height flex column so the funding strip drops to the bottom of the
+     viewport on short pages (e.g. the dashboard) instead of crowding the primary buttons. */
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Let the page body absorb the slack so the footer is pushed to the bottom. */
+main {
+  flex: 1 0 auto;
 }
 
 .container {
@@ -573,6 +583,117 @@ button:focus-visible,
   margin: 0;
 }
 
+/* ----------------------------------------------------------
+   Per-field run progress
+   ---------------------------------------------------------- */
+
+.progress-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.progress-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.progress-track {
+  position: relative;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--ring);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--brand);
+  border-radius: 9px 0 0 9px;
+  transition: width 0.4s ease;
+}
+
+.progress-fill.completed { background: var(--success); border-radius: 9px; }
+.progress-fill.failed    { background: var(--danger); }
+
+.progress-pct {
+  position: absolute;
+  top: 0;
+  right: 8px;
+  line-height: 18px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* ----------------------------------------------------------
+   Studies / run listing tables -- weak grid for column clarity
+   ---------------------------------------------------------- */
+
+.run-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.run-table th,
+.run-table td {
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--ring);
+}
+
+/* Weak vertical dividers between columns; --ring is translucent, so it stays soft. */
+.run-table th + th,
+.run-table td + td {
+  border-left: 1px solid var(--ring);
+}
+
+.run-table thead th {
+  border-bottom-width: 2px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.run-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Two-line expected-completion box: time over date. */
+.eta-box {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.eta-time {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.eta-date {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+/* Small progress pie next to a "running" badge on the results list. --pct is 0..100. */
+.progress-pie {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-left: 6px;
+  border-radius: 50%;
+  vertical-align: middle;
+  background: conic-gradient(var(--brand) calc(var(--pct) * 1%), var(--ring) 0);
+}
+
 /* Each scorer is its own <tbody>, so a rule separates scorers rather than rows. */
 .scorer-table tbody.scorer-group + tbody.scorer-group {
   border-top: 2px solid var(--ring);
@@ -645,7 +766,7 @@ button:focus-visible,
 }
 
 .funding-logos.compact .funding-logo {
-  height: 30px;
+  height: 38px;
   opacity: 0.85;
   transition: opacity 0.15s ease;
 }

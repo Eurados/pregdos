@@ -3,10 +3,15 @@
 {% block heading %}Results{% endblock %}
 {% block subtitle %}One tile per study, newest runs first{% endblock %}
 
-{% macro status_badge(status) %}
+{% macro status_badge(status, percent=none) %}
   {% if status == 'completed' %}<span class="badge success">completed</span>
   {% elif status == 'failed' %}<span class="badge danger">failed</span>
-  {% elif status == 'running' %}<span class="badge warning">running</span>
+  {% elif status == 'running' %}
+    <span class="badge warning">running</span>
+    {% if percent is not none %}
+      <span class="progress-pie" title="{{ percent }}% of all fields complete"
+            style="--pct: {{ percent }}"></span>
+    {% endif %}
   {% elif status == 'queued' %}<span class="badge warning">queued</span>
   {% else %}<span class="badge">{{ status }}</span>{% endif %}
 {% endmacro %}
@@ -32,16 +37,24 @@
     </div>
 
     {% if tile.runs %}
-      <table>
-        <thead><tr><th>Run</th><th>Status</th><th>Files</th><th></th></tr></thead>
+      <table class="run-table">
+        <thead><tr><th>Run</th><th>Status</th><th>Exp. compl.</th><th>Files</th><th></th></tr></thead>
         <tbody>
           {% for run in tile.runs %}
             <tr>
               <td><code>{{ run.run_id }}</code></td>
-              <td>{{ status_badge(run.status) }}</td>
+              <td>{{ status_badge(run.status, run.percent) }}</td>
+              <td>
+                {% if run.status == 'running' and run.eta %}
+                  <span class="eta-box" title="Estimated completion (local time)">
+                    <span class="eta-time">{{ run.eta.time }}</span>
+                    <span class="eta-date">{{ run.eta.date }}</span>
+                  </span>
+                {% else %}<span class="hint">—</span>{% endif %}
+              </td>
               <td>{{ run.file_count }}</td>
               <td><a class="btn btn-secondary"
-                     href="{{ url_for('run_detail', study=tile.name, run_id=run.run_id) }}">Results</a></td>
+                     href="{{ url_for('run_detail', study=tile.name, run_id=run.run_id) }}">View</a></td>
             </tr>
           {% endfor %}
         </tbody>
@@ -58,5 +71,14 @@
       <a class="btn btn-secondary" href="{{ url_for('upload_files') }}">New simulation</a>
     </div>
   </section>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if auto_refresh %}
+<script>
+  // A run is in flight; refresh so the progress pies and statuses keep up.
+  setTimeout(function () { location.reload(); }, 5000);
+</script>
 {% endif %}
 {% endblock %}

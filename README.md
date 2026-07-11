@@ -21,6 +21,46 @@ Monte Carlo input files and submits them as SLURM jobs.
 4. Run TOPAS via SLURM (job scheduling)
 5. Post-process and display dose/effective dose per structure
 
+## How structure dose is computed (design note)
+
+PregDos reports a mean dose per RT structure **on the CT voxel grid alone** — it never
+builds a separate RTDOSE dose grid. This is a deliberate design choice.
+
+A single-bin (`1x1x1`) TOPAS scorer filtered to a structure
+(`OnlyIncludeIfInRTStructure`) filters *which hits count* but normalises the result by the
+**whole patient bounding box**, not the structure (see issue #50), so its absolute value is
+wrong by roughly the patient/structure volume ratio. PregDos corrects this without a second
+grid:
+
+1. **Mask pre-pass.** A cheap ~1-history TOPAS run writes a per-structure binary mask on the
+   native CT voxel grid (`SetBinToMinusOneIfNotInRTStructure`).
+2. **Metrics.** From that mask plus the CT Hounsfield units and the Schneider HU→density
+   table already embedded in the TOPAS input, PregDos computes each structure's **volume**
+   (voxel count × voxel volume) and **mass** (Σ density × voxel volume).
+3. **Renormalise.** The single-bin scorer, which TOPAS divided by the patient box, is
+   rescaled to the structure:
+   - `EnergyDeposit` (proton/gamma absorbed dose) — divide by structure **mass** → Gy.
+   - `DoseToWater` and `AmbientDoseEquivalent` (H\*(10)) — multiply by
+     `V_patient / V_structure` (**volume**), since TOPAS already applied the local density.
+
+**Why the CT grid and not an RTDOSE grid:**
+
+- **Memory.** The CT voxel grid is loaded anyway, so structure scoring reuses it and adds
+  nothing. Superimposing a clinical RTDOSE grid over the CT means allocating and tracking a
+  second full voxel grid — the exact pattern that has OOM'd this machine on large cases.
+- **Coverage.** The CT covers the whole patient, so **out-of-field structures such as the
+  fetus are scored even when they lie outside the clinical RTDOSE grid** — which the RTDOSE
+  route cannot reach at all.
+- **Runtime.** Scoring happens only in the CT geometry, not in a dose grid layered on top of
+  it — a modest speedup and simpler geometry.
+
+All PregDos doses are **physical** absorbed dose (Gy) / equivalent dose (Sv); no RBE is
+applied. A clinical Eclipse proton RTDOSE is `Gy(RBE) = physical dose-to-water × 1.1`.
+
+The method is validated against a full in-field RTDOSE cube on the Eclipse grid: the cube's
+CTV mask-mean reproduces the mask/metrics route to ~1.4 %, and lands within ~8 % of the
+Eclipse RTDOSE CTV **mask-mean** (mean-to-mean — not the hotter single-point centroid).
+
 ## Running the webserver locally (development)
 
 ```bash

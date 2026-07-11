@@ -38,16 +38,29 @@ def test_neutron_scorer_block_structure():
 def test_gamma_scorer_block_structure():
     entry = _make_entry(ScorerType.GAMMA_DOSE, structure="uterus")
     block = scorer_block(entry, "topas_field02")
-    assert '"DoseToMedium"' in block
+    assert '"EnergyDeposit"' in block
+    assert "ReferencedDicomPatient" not in block
     assert 'OnlyIncludeIfParticleOrAncestorNamed' in block
     assert '"gamma"' in block
     assert '"uterus"' in block
     assert 'topas_field02_gamma' in block
 
 
+def test_dose_to_water_scorer_block_structure():
+    entry = _make_entry(ScorerType.DOSE_TO_WATER, structure="CTV")
+    block = scorer_block(entry, "topas_field01")
+    assert "DoseWater_CTV" in block
+    assert '"DoseToWater"' in block
+    assert "PreCalculateStoppingPowerRatios" in block
+    assert "ReferencedDicomPatient" in block
+    assert "OnlyIncludeIfInRTStructure" in block
+    assert "topas_field01_dose_to_water_CTV" in block
+
+
 def test_proton_primary_scorer_block():
     entry = _make_entry(ScorerType.PROTON_PRIMARY)
     block = scorer_block(entry, "topas_field01")
+    assert '"EnergyDeposit"' in block
     assert 'OnlyIncludeParticlesNamed' in block
     assert '"proton"' in block
     assert 'OnlyIncludeIfParticleOrAncestorNotNamed' in block
@@ -57,6 +70,7 @@ def test_proton_primary_scorer_block():
 def test_proton_secondary_scorer_block():
     entry = _make_entry(ScorerType.PROTON_SECONDARY)
     block = scorer_block(entry, "topas_field01")
+    assert '"EnergyDeposit"' in block
     assert 'OnlyIncludeParticlesNamed' in block
     assert '"proton"' in block
     # Must use Ancestor*Named (include neutron ancestors), not Not
@@ -69,6 +83,8 @@ def test_user_grid_scorer_uses_scoring_grid_component():
     grid = UserDefinedGrid(size_x_mm=150, size_y_mm=100, size_z_mm=80, nx=15, ny=10, nz=8)
     entry = _make_entry(ScorerType.GAMMA_DOSE, volume_type=VolumeType.USER_GRID)
     block = scorer_block(entry, "topas_field01", grid=grid)
+    assert '"DoseToMedium"' in block
+    assert "ReferencedDicomPatient" in block
     assert '"ScoringGrid"' in block
     assert 'OnlyIncludeIfInRTStructure' not in block
     assert 'XBins                                   = 15' in block
@@ -241,6 +257,14 @@ def test_scorer_config_from_form_multiple_structures():
     assert len(config.scorers) == 2
     assert all(e.scorer_type == ScorerType.GAMMA_DOSE for e in config.scorers)
     assert {e.structure_name for e in config.scorers} == {"fetus", "uterus"}
+
+
+def test_scorer_config_from_form_selects_dose_to_water_scorer():
+    form = FakeForm({"score_dose_to_water": ["CTV"]})
+    config = scorer_config_from_form(form)
+    assert len(config.scorers) == 1
+    assert config.scorers[0].scorer_type == ScorerType.DOSE_TO_WATER
+    assert config.scorers[0].structure_name == "CTV"
 
 
 def test_scorer_config_from_form_no_grid():
