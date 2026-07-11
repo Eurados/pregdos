@@ -397,7 +397,7 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
         # ── All-particle absorbed dose to water ───────────────────────────
         # This scorer is mainly for validation against Eclipse RTDOSE exports.  In
         # structure mode PregDos corrects the single-bin TOPAS denominator using
-        # the structure mass from the RTSTRUCT mask pre-pass.
+        # the structure volume ratio (V_patient / V_structure) from the RTSTRUCT mask pre-pass.
         lines += [
             f's:Sc/{name}/Quantity                                = "DoseToWater"',
             f'b:Sc/{name}/PreCalculateStoppingPowerRatios          = "True"',
