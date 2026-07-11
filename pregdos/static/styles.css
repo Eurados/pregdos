@@ -50,6 +50,16 @@ body {
   font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, sans-serif;
   font-size: 17px;
   line-height: 1.55;
+  /* Sticky footer: a full-height flex column so the funding strip drops to the bottom of the
+     viewport on short pages (e.g. the dashboard) instead of crowding the primary buttons. */
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Let the page body absorb the slack so the footer is pushed to the bottom. */
+main {
+  flex: 1 0 auto;
 }
 
 .container {
@@ -756,7 +766,7 @@ button:focus-visible,
 }
 
 .funding-logos.compact .funding-logo {
-  height: 30px;
+  height: 38px;
   opacity: 0.85;
   transition: opacity 0.15s ease;
 }
