@@ -261,9 +261,30 @@ def _prepass_structures(run_dir: Path) -> list[tuple[str, str]]:
     if not prepass.is_file():
         return []
     text = prepass.read_text()
-    found = []
-    for match in re.finditer(r'OutputFile\s*=\s*"structure_mask_(?P<safe>[^"]+)".+?OnlyIncludeIfInRTStructure\s*=\s*\d+\s*"(?P<name>[^"]+)"', text, re.DOTALL):
-        found.append((match.group("name"), match.group("safe")))
+    scorers: dict[str, dict[str, str]] = {}
+    pattern = re.compile(
+        r'^\s*\w+:Sc/(?P<scorer>[^/]+)/(?P<param>OnlyIncludeIfInRTStructure|OutputFile)\s*=\s*(?P<value>.+?)\s*$',
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(text):
+        scorer = match.group("scorer")
+        param = match.group("param")
+        value = match.group("value")
+        entry = scorers.setdefault(scorer, {})
+        if param == "OnlyIncludeIfInRTStructure":
+            name_match = re.search(r'\d+\s*"(?P<name>[^"]+)"', value)
+            if name_match:
+                entry["name"] = name_match.group("name")
+        elif param == "OutputFile":
+            output = _quoted_or_raw(value)
+            if output.startswith("structure_mask_"):
+                entry["safe"] = output.removeprefix("structure_mask_")
+
+    found = [
+        (entry["name"], entry["safe"])
+        for entry in scorers.values()
+        if "name" in entry and "safe" in entry
+    ]
     if found:
         return found
     for match in re.finditer(r'OnlyIncludeIfInRTStructure\s*=\s*\d+\s*"(?P<name>[^"]+)"', text):
@@ -408,23 +429,10 @@ def fluence_volume_correction_factor(metrics: dict | None, structure: str) -> fl
     return patient_volume / structure_volume
 
 
-def mass_correction_factor(metrics: dict | None, structure: str) -> float | None:
-    """Correction for structure-filtered native TOPAS dose scorers on ``Patient``.
-
-    For single-bin structure scorers TOPAS filters hits to the RT structure, but the
-    denominator is the whole scoring component.  Multiplying by patient mass divided by
-    structure mass restores the intended structure mean dose.
-    """
-    metric = structure_metric(metrics, structure)
-    if not metric:
-        return None
-    try:
-        factor = float(metric["patient_to_structure_mass_ratio"])
-    except (KeyError, TypeError, ValueError):
-        try:
-            patient_mass = float(metrics["patient"]["mass_g"]) if metrics else 0.0
-            structure_mass = float(metric["mass_g"])
-            factor = patient_mass / structure_mass
-        except (KeyError, TypeError, ValueError, ZeroDivisionError):
-            return None
-    return factor if factor > 0 else None
+# NOTE: a "mass_correction_factor" (M_patient / M_structure) was intentionally removed.
+# A single-bin structure scorer on ``Patient`` is normalized by TOPAS to the whole patient
+# box: EnergyDeposit (energy) is divided by nothing and needs ÷ structure mass
+# (energy_deposit_to_gy); every intensive dose/fluence quantity (DoseToWater, DoseToMedium,
+# AmbientDoseEquivalent) is already divided by the patient volume and needs the volume ratio
+# V_patient / V_structure (fluence_volume_correction_factor). The mass ratio is never the
+# right correction for a dose quantity, so it is not offered.

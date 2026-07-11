@@ -124,11 +124,14 @@
       is √N too small as an error on the total.
     </p>
     <p class="hint">
-      Single-bin structure absorbed-dose rows are scored as TOPAS <code>EnergyDeposit</code>
-      and converted to Gy with the TOPAS RTSTRUCT mask pre-pass: PregDos computes the structure
-      mass from the selected CT HU-density table and applies <code>energy / structure mass</code>.
-      Single-bin structure fluence-derived rows, such as H*(10), are corrected from TOPAS's
-      scorer-bin volume to the structure volume from the same mask.
+      Single-bin structure rows are normalized with the TOPAS RTSTRUCT mask pre-pass, which gives
+      the structure mass and volume from the selected CT HU-density table.
+      <strong>Energy</strong> rows (<code>EnergyDeposit</code>) are converted to Gy by
+      <code>energy / structure mass</code> (mass-normalized).
+      <strong>Intensive dose and fluence</strong> rows (<code>DoseToWater</code>, H*(10)) are
+      divided by the whole patient box by TOPAS, so PregDos rescales them from that scorer-bin
+      volume to the structure volume — <code>× V<sub>patient</sub> / V<sub>structure</sub></code>
+      (volume-normalized).
       Absolute doses remain under validation until issue #50 is closed.
     </p>
 

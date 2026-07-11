@@ -805,7 +805,7 @@ def test_run_detail_corrects_structure_ambient_dose_equivalent_by_volume(client,
     assert "volume-normalized" in body
 
 
-def test_run_detail_corrects_structure_dose_to_water_by_mass(client, tmp_path):
+def test_run_detail_corrects_structure_dose_to_water_by_volume(client, tmp_path):
     run_id, run_dir = _completed_run(tmp_path)
     (run_dir / "topas_field01_dose_to_water_CTV.csv").write_text(
         "# TOPAS Version: 4.2.p3\n"
@@ -816,8 +816,10 @@ def test_run_detail_corrects_structure_dose_to_water_by_mass(client, tmp_path):
         "# DoseToWater ( Gy ) : Sum   Standard_Deviation   \n"
         "1.0e-9, 1.0e-10\n"
     )
+    # DoseToWater is an intensive dose that TOPAS already divided by the whole patient box,
+    # so it is rescaled by the volume ratio V_patient / V_structure (= 100 / 2 = 50), never mass.
     (run_dir / "structure_metrics.json").write_text(json.dumps({
-        "patient": {"mass_g": 100.0},
+        "patient": {"mass_g": 100.0, "volume_cm3": 100.0},
         "structures": {
             "CTV": {
                 "mass_g": 2.0,
@@ -833,7 +835,7 @@ def test_run_detail_corrects_structure_dose_to_water_by_mass(client, tmp_path):
     expected = 1.0e-9 * 953656.0980490245 * 50.0
     assert "DoseWater_CTV" in body
     assert "DoseToWater" in body
-    assert "mass-normalized" in body
+    assert "volume-normalized" in body
     assert f"{expected:.4g}" in body
 
 

@@ -31,6 +31,22 @@ def test_write_mask_prepass_reuses_generated_topas_paths(tmp_path):
     assert 's:Sc/PregDosMask_Brain_Stem/OutputFile = "structure_mask_Brain_Stem"' in text
 
 
+def test_prepass_structures_keeps_mask_file_with_its_scorer(tmp_path):
+    (tmp_path / "structure_mask_prepass.txt").write_text(
+        's:Sc/PregDosMask_BrainStem/Quantity = "StepCount"\n'
+        'sv:Sc/PregDosMask_BrainStem/OnlyIncludeIfInRTStructure = 1 "BrainStem"\n'
+        's:Sc/PregDosMask_BrainStem/OutputFile = "structure_mask_BrainStem"\n'
+        's:Sc/PregDosMask_CTV/Quantity = "StepCount"\n'
+        'sv:Sc/PregDosMask_CTV/OnlyIncludeIfInRTStructure = 1 "CTV"\n'
+        's:Sc/PregDosMask_CTV/OutputFile = "structure_mask_CTV"\n'
+    )
+
+    assert structure_metrics._prepass_structures(tmp_path) == [
+        ("BrainStem", "BrainStem"),
+        ("CTV", "CTV"),
+    ]
+
+
 def test_energy_deposit_to_gy_uses_structure_mass():
     metrics = {"structures": {"CTV": {"mass_g": 2.0}}}
 
@@ -54,24 +70,6 @@ def test_fluence_volume_correction_factor_is_patient_over_structure_volume():
     }
 
     assert structure_metrics.fluence_volume_correction_factor(metrics, "BrainStem") == pytest.approx(40.0)
-
-
-def test_mass_correction_factor_uses_cached_patient_to_structure_ratio():
-    metrics = {
-        "patient": {"mass_g": 100.0},
-        "structures": {"CTV": {"mass_g": 2.0, "patient_to_structure_mass_ratio": 51.0}},
-    }
-
-    assert structure_metrics.mass_correction_factor(metrics, "CTV") == pytest.approx(51.0)
-
-
-def test_mass_correction_factor_can_fall_back_to_masses():
-    metrics = {
-        "patient": {"mass_g": 100.0},
-        "structures": {"CTV": {"mass_g": 2.0}},
-    }
-
-    assert structure_metrics.mass_correction_factor(metrics, "CTV") == pytest.approx(50.0)
 
 
 def test_ensure_metrics_reports_failed_prepass(tmp_path):

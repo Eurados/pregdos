@@ -821,15 +821,19 @@ def _result_rows(run_dir: Path, study: str):
                 elif problem is None:
                     problem = "structure volume metrics or scorer component are missing; cannot correct fluence denominator"
             elif r.quantity == "DoseToWater" and r.component == "Patient" and r.structure:
-                correction = structure_metrics.mass_correction_factor(metrics, r.structure)
+                # DoseToWater is an intensive dose (Gy) that TOPAS divides by the whole
+                # patient-box volume for a single-bin scorer, exactly like the H*(10) fluence
+                # scorer. Rescale that denominator to the structure volume (V_patient/V_struct);
+                # only EnergyDeposit (energy, no volume division) uses the structure mass.
+                correction = structure_metrics.fluence_volume_correction_factor(metrics, r.structure)
                 if correction is not None:
                     if total is not None:
                         total *= correction
                     if sd is not None:
                         sd *= correction
-                    mass_normalized = True
+                    volume_normalized = True
                 elif problem is None:
-                    problem = "structure mass metrics are missing; cannot correct DoseToWater denominator"
+                    problem = "structure volume metrics are missing; cannot correct DoseToWater denominator"
             elif r.quantity == "DoseToMedium" and r.component == "Patient" and r.structure and problem is None:
                 problem = "structure DoseToMedium from TOPAS is not accepted; rerun with PregDos EnergyDeposit structure scoring"
         number = r.field_number
@@ -867,7 +871,10 @@ def download_report(study, run_id):
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["# PregDos report", f"study={study}", f"run={run_id}"])
-    writer.writerow(["# Doses are scaled to the full plan. Structure absorbed-dose rows use PregDos mass metrics; structure fluence-derived rows use PregDos volume metrics; see issue #50."])
+    writer.writerow(["# Doses are scaled to the full plan. Structure EnergyDeposit rows are "
+                     "mass-normalized (energy / structure mass); structure DoseToWater and "
+                     "fluence rows are volume-normalized (patient box rescaled to the structure "
+                     "volume); see issue #50."])
     writer.writerow(["# dose_uncertainty is the 1-sigma Monte-Carlo statistical error "
                      "(sqrt(N)*SD/Sum applied to the scaled dose, N = simulated histories)."])
     writer.writerow(["# field=ALL rows total a scorer over its fields; their uncertainties add in quadrature."])
