@@ -221,8 +221,25 @@ def ensure_dose_export(run_dir: str | Path) -> Tuple[List[Path], List[str]]:
     exists to avoid.
     """
     run_dir = Path(run_dir)
-    if (run_dir / PLAN_DOSE_NAME).is_file():
+
+    plan_dose = run_dir / PLAN_DOSE_NAME
+    bundle = run_dir / PLAN_IMPORT_BUNDLE_NAME
+
+    # Only consider the export "done" once the Eclipse import bundle exists too.
+    if plan_dose.is_file() and bundle.is_file():
         return exported_files(run_dir), []
+
+    # If the plan dose exists but the bundle doesn't, a previous export may have been interrupted.
+    if plan_dose.is_file() and not bundle.is_file():
+        plan_path = _rtplan_path(run_dir)
+        if plan_path is None:
+            return exported_files(run_dir), ["cannot build RTDOSE import bundle: RTPLAN not found"]
+        try:
+            _write_plan_import_bundle(run_dir, plan_path, plan_dose)
+            return exported_files(run_dir), []
+        except Exception as exc:  # noqa: BLE001 - must degrade to a warning, not a 500
+            return exported_files(run_dir), [str(exc)]
+
     if not field_cubes(run_dir):
         return [], []
     try:
