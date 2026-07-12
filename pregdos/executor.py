@@ -318,6 +318,12 @@ def start_next_local_run(studies_root: str | os.PathLike) -> Optional[Path]:
                 status = run_status(run_dir)
                 if status == RUNNING:
                     return None
+                if status == CANCELED and any(f.ident for f in info.fields):
+                    try:
+                        os.killpg(int(info.fields[0].ident), 0)
+                        return None
+                    except (ProcessLookupError, PermissionError, ValueError, OSError):
+                        pass
                 if _local_run_is_queued(run_dir, info):
                     queued.append((info.submitted, run_dir, info))
 
