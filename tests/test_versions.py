@@ -287,7 +287,7 @@ def _active_nav_items(html):
 @pytest.mark.parametrize("path,expected", [
     ("/", "PregDos"),                 # the dashboard highlights the brand, not a neighbour
     ("/upload", "New simulation"),
-    ("/studies", "Results"),
+    ("/studies", "Tasks"),
     ("/about", "About"),
 ])
 def test_exactly_one_nav_item_is_active(monkeypatch, tmp_path, path, expected):

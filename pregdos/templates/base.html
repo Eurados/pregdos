@@ -26,7 +26,7 @@
         </a>
         <a href="{{ url_for('list_studies') }}"
            class="tab-nav-tab{% if request.path.startswith('/studies') or request.path.startswith('/jobs') %} active{% endif %}">
-          Results
+          Tasks
         </a>
         <a href="{{ url_for('about') }}"
            class="tab-nav-tab{% if request.path == '/about' %} active{% endif %}">

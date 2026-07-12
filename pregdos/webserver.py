@@ -596,6 +596,18 @@ def _finished_clock(run_dir: Path) -> dict | None:
     return _completion_clock(datetime.datetime.fromtimestamp(latest))
 
 
+def _requested_histories(run_dir: Path) -> int | None:
+    """Requested primary-history count (nstat) for a run, from its first field input."""
+    for field_file in sorted(run_dir.glob("*_field*.txt")):
+        try:
+            scaling = results.parse_plan_scaling(field_file)
+        except Exception:
+            scaling = None
+        if scaling is not None:
+            return scaling.requested_histories
+    return None
+
+
 def _run_status(run_dir: Path) -> str:
     """Status of one run, read entirely from files on disk (see :mod:`pregdos.executor`)."""
     if executor.read_run_metadata(run_dir) is None:
@@ -646,10 +658,14 @@ def list_studies():
                 "status": status,
                 "percent": percent,
                 "eta": eta,
+                "histories": _requested_histories(run_dir),
                 "file_count": sum(1 for p in run_dir.iterdir() if p.is_file()),
             })
         active = any(r["status"] in (executor.RUNNING, executor.QUEUED) for r in runs)
         tiles.append({"name": study, "runs": runs, "active": active})
+    # Newest task on top: sort studies by their most recent run id (run_YYYYmmdd_HHMMSS
+    # sorts chronologically), studies with no runs last.
+    tiles.sort(key=lambda t: max((r["run_id"] for r in t["runs"]), default=""), reverse=True)
     # Keep the page live while any run is in flight, like the detail page.
     auto_refresh = any(t["active"] for t in tiles)
     return render_template("studies.html", tiles=tiles, auto_refresh=auto_refresh)

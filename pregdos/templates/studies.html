@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block title %}Results · PregDos{% endblock %}
-{% block heading %}Results{% endblock %}
-{% block subtitle %}One tile per study, newest runs first{% endblock %}
+{% block title %}Tasks · PregDos{% endblock %}
+{% block heading %}Tasks{% endblock %}
+{% block subtitle %}One tile per study, newest first{% endblock %}
 
 {% macro status_badge(status, percent=none) %}
   {% if status == 'completed' %}<span class="badge success">completed</span>
@@ -48,7 +48,12 @@
         <tbody>
           {% for run in tile.runs %}
             <tr>
-              <td><code>{{ run.run_id }}</code></td>
+              <td>
+                <code>{{ run.run_id }}</code>
+                {% if run.histories %}
+                  <span class="hint" title="Requested primary histories">· {{ '{:,}'.format(run.histories) }}</span>
+                {% endif %}
+              </td>
               <td>{{ status_badge(run.status, run.percent) }}</td>
               <td>
                 {% if run.status == 'running' and run.eta %}
