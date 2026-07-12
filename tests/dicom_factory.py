@@ -21,7 +21,7 @@ SOP = {
 STUDY_UID = "1.2.826.0.1.1"
 
 
-def write(path: Path, modality, patient="PAT1", study=STUDY_UID, series=None, rois=()):
+def write(path: Path, modality, patient="PAT1", study=STUDY_UID, series=None, rois=(), fractions=None):
     """Write one DICOM file of the given modality."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -47,6 +47,12 @@ def write(path: Path, modality, patient="PAT1", study=STUDY_UID, series=None, ro
             roi.ROIName = name
             seq.append(roi)
         ds.StructureSetROISequence = seq
+
+    if modality == "RTPLAN" and fractions is not None:
+        group = Dataset()
+        group.FractionGroupNumber = 1
+        group.NumberOfFractionsPlanned = int(fractions)
+        ds.FractionGroupSequence = [group]
 
     ds.save_as(str(path), enforce_file_format=True)
     return path

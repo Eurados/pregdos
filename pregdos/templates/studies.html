@@ -7,11 +7,16 @@
   {% if status == 'completed' %}<span class="badge success">completed</span>
   {% elif status == 'failed' %}<span class="badge danger">failed</span>
   {% elif status == 'running' %}
-    <span class="badge warning">running</span>
-    {% if percent is not none %}
-      <span class="progress-pie" title="{{ percent }}% of all fields complete"
-            style="--pct: {{ percent }}"></span>
-    {% endif %}
+	    <span class="badge warning">running</span>
+	    {% if percent is not none %}
+	      <span class="progress-pie" title="{{ percent }}% of all fields complete">
+	        <svg viewBox="0 0 20 20" aria-hidden="true">
+	          <circle class="progress-pie-bg" cx="10" cy="10" r="8" pathLength="100"></circle>
+	          <circle class="progress-pie-fg" cx="10" cy="10" r="8" pathLength="100"
+	                  stroke-dasharray="{{ percent }} 100"></circle>
+	        </svg>
+	      </span>
+	    {% endif %}
   {% elif status == 'queued' %}<span class="badge warning">queued</span>
   {% else %}<span class="badge">{{ status }}</span>{% endif %}
 {% endmacro %}

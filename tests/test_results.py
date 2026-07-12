@@ -109,7 +109,7 @@ def test_field_number_is_none_without_a_parameter_file(tmp_path):
     assert parse_scorer_csv(p).field_number is None
 
 
-def _rtplan(tmp_path, beams, sequence="IonBeamSequence"):
+def _rtplan(tmp_path, beams, sequence="IonBeamSequence", fractions=None):
     """Write a minimal but well-formed RTPLAN carrying BeamNumber -> BeamName.
 
     The file gets a real File Meta header, as any clinical RTPLAN would -- a headerless
@@ -135,6 +135,11 @@ def _rtplan(tmp_path, beams, sequence="IonBeamSequence"):
         beam.BeamName = name
         seq.append(beam)
     setattr(ds, sequence, seq)
+    if fractions is not None:
+        group = Dataset()
+        group.FractionGroupNumber = 1
+        group.NumberOfFractionsPlanned = fractions
+        ds.FractionGroupSequence = [group]
 
     path = tmp_path / "RN.plan.dcm"
     ds.save_as(str(path), enforce_file_format=True)
@@ -169,6 +174,17 @@ def test_beam_names_unreadable_plan_is_empty(tmp_path):
     bad = tmp_path / "RN.bad.dcm"
     bad.write_text("not dicom")
     assert results.beam_names(bad) == {}
+
+
+def test_planned_fractions_from_fraction_group(tmp_path):
+    path = _rtplan(tmp_path, [(1, "Field 1")], fractions=5)
+    assert results.planned_fractions(path) == 5
+
+
+def test_planned_fractions_missing_or_unreadable_is_none(tmp_path):
+    assert results.planned_fractions(None) is None
+    assert results.planned_fractions(tmp_path / "absent.dcm") is None
+    assert results.planned_fractions(_rtplan(tmp_path, [(1, "Field 1")])) is None
 
 
 def test_results_are_grouped_by_field(tmp_path):

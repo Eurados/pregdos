@@ -682,7 +682,7 @@ def run_detail(study, run_id):
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
 
-    rows, warnings = _result_rows(run_dir, study)
+    rows, warnings, plan_fractions = _result_rows(run_dir, study)
     groups = _group_rows(rows)
     for w in warnings:
         flash(f"Could not read scorer output: {w}")
@@ -717,6 +717,7 @@ def run_detail(study, run_id):
         progress=progress,
         etr=etr,
         groups=groups,
+        plan_fractions=plan_fractions,
         files=files,
         backend=info.backend if info else None,
         submitted=info.submitted if info else None,
@@ -779,10 +780,14 @@ def _result_rows(run_dir: Path, study: str):
     # Field names come from the study's RTPLAN.  A field is identified by its DICOM
     # BeamNumber, which need not match its position in the plan -- so show the name a
     # clinician would recognise, not just an index.
+    plan_fractions = None
     try:
-        names = results.beam_names(studies.find_rtplan(studies_root(), study))
+        rtplan = studies.find_rtplan(studies_root(), study)
+        names = results.beam_names(rtplan)
+        plan_fractions = results.planned_fractions(rtplan)
     except StudyError:
         names = {}
+    fraction_multiplier = plan_fractions or 1
 
     rows = []
     for r in parsed:
@@ -843,6 +848,11 @@ def _result_rows(run_dir: Path, study: str):
             elif r.quantity == "DoseToMedium" and r.component == "Patient" and r.structure and problem is None:
                 problem = ("structure DoseToMedium from TOPAS is not accepted; "
                            "rerun with PregDos EnergyDeposit structure scoring")
+        if fraction_multiplier != 1:
+            if total is not None:
+                total *= fraction_multiplier
+            if sd is not None:
+                sd *= fraction_multiplier
         number = r.field_number
         rows.append({
             "field": number,
@@ -855,7 +865,7 @@ def _result_rows(run_dir: Path, study: str):
             "sd": sd,
             "raw_sum": r.raw_sum,
             "problem": problem,
-            "scale": scaling.factor if scaling else None,
+            "scale": scaling.factor * fraction_multiplier if scaling else None,
             "structure_volume_cm3": metric.get("volume_cm3") if metric else None,
             "structure_mass_g": metric.get("mass_g") if metric else None,
             "structure_average_density_g_cm3": metric.get("average_density_g_cm3") if metric else None,
@@ -863,7 +873,7 @@ def _result_rows(run_dir: Path, study: str):
             "structure_volume_normalized": volume_normalized,
             "csv_name": r.csv_name,
         })
-    return rows, warnings
+    return rows, warnings, plan_fractions
 
 
 @app.route("/studies/<study>/<run_id>/report.csv")
@@ -874,14 +884,20 @@ def download_report(study, run_id):
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
 
-    rows, _ = _result_rows(run_dir, study)
+    rows, _, plan_fractions = _result_rows(run_dir, study)
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["# PregDos report", f"study={study}", f"run={run_id}"])
     writer.writerow(["# Doses are PHYSICAL absorbed dose (Gy) / equivalent dose (Sv); no RBE is "
                      "applied. Eclipse proton RTDOSE is Gy(RBE) = physical dose-to-water x 1.1."])
-    writer.writerow(["# Doses are scaled to the full plan. Structure EnergyDeposit rows are "
-                     "mass-normalized (energy / structure mass); structure DoseToWater and "
+    if plan_fractions:
+        writer.writerow([f"# Planned fractions: {plan_fractions}; reported values are total course dose."])
+    else:
+        writer.writerow(["# Planned fractions: unavailable; reported values are per generated TOPAS plan scale."])
+    writer.writerow(["# Doses are scaled from the simulated histories to the per-fraction plan "
+                     "scale (and to total course dose when planned fractions are available). "
+                     "Structure EnergyDeposit rows are mass-normalized (energy / structure mass); "
+                     "structure DoseToWater and "
                      "fluence rows are volume-normalized (patient box rescaled to the structure "
                      "volume); see issue #50."])
     writer.writerow(["# dose_uncertainty is the 1-sigma Monte-Carlo statistical error "
@@ -890,6 +906,9 @@ def download_report(study, run_id):
     writer.writerow(["field", "field_name", "scorer", "structure", "quantity", "unit",
                      "dose", "dose_uncertainty", "scale_factor", "mass_normalized", "volume_normalized",
                      "structure_volume_cm3", "structure_mass_g", "structure_average_density_g_cm3", "note"])
+    writer.writerow(["units", "", "", "", "", "Gy or Sv",
+                     "Gy or Sv", "Gy or Sv", "1", "", "",
+                     "cm3", "g", "g/cm3", ""])
     for group in _group_rows(rows):
         for r in group["rows"]:
             writer.writerow([
