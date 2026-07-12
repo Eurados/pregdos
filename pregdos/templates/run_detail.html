@@ -40,7 +40,9 @@
             </span>
           </div>
           <div class="progress-track">
-            <div class="progress-fill {{ p.status }}" style="width: {{ p.percent }}%"></div>
+            <progress class="progress-meter {{ p.status }}" value="{{ p.percent }}" max="100">
+              {{ p.percent }}%
+            </progress>
             <span class="progress-pct">{{ p.percent }}%</span>
           </div>
         </div>
@@ -131,12 +133,17 @@
       multiply a PregDos dose-to-water by 1.1 before comparing it to Eclipse.
     </p>
     <p class="hint">
-      Doses are scaled from the simulated histories to the planned treatment course
-      (<code>PARTICLE_SCALING × REQUESTED_HISTORIES / Σ spotWeight × fractions</code>). The
-      uncertainty is the 1σ Monte-Carlo statistical error, <code>√N · SD / Sum</code> (N =
-      simulated histories), scaled by the same course factor — the plain TOPAS
+      {% if plan_fractions %}
+        Doses are scaled from the simulated histories to the planned treatment course
+        (<code>PARTICLE_SCALING × REQUESTED_HISTORIES / Σ spotWeight × fractions</code>).
+      {% else %}
+        Doses are scaled from the simulated histories to the generated TOPAS plan scale
+        (<code>PARTICLE_SCALING × REQUESTED_HISTORIES / Σ spotWeight</code>).
+      {% endif %}
+      The uncertainty is the 1σ Monte-Carlo statistical error, <code>√N · SD / Sum</code>
+      (N = simulated histories), scaled by the same factor — the plain TOPAS
       <code>Standard_Deviation</code> is the per-history spread and is √N too small as an
-      error on the total.
+      error on the reported dose.
     </p>
     <p class="hint">
       Single-bin structure rows are normalized with the TOPAS RTSTRUCT mask pre-pass, which gives

@@ -866,7 +866,6 @@ def _result_rows(run_dir: Path, study: str):
             "raw_sum": r.raw_sum,
             "problem": problem,
             "scale": scaling.factor * fraction_multiplier if scaling else None,
-            "plan_fractions": plan_fractions,
             "structure_volume_cm3": metric.get("volume_cm3") if metric else None,
             "structure_mass_g": metric.get("mass_g") if metric else None,
             "structure_average_density_g_cm3": metric.get("average_density_g_cm3") if metric else None,
@@ -895,8 +894,10 @@ def download_report(study, run_id):
         writer.writerow([f"# Planned fractions: {plan_fractions}; reported values are total course dose."])
     else:
         writer.writerow(["# Planned fractions: unavailable; reported values are per generated TOPAS plan scale."])
-    writer.writerow(["# Doses are scaled from the simulated histories to the per-fraction plan scale (and to total course dose when planned fractions are available). Structure EnergyDeposit rows are "
-                     "mass-normalized (energy / structure mass); structure DoseToWater and "
+    writer.writerow(["# Doses are scaled from the simulated histories to the per-fraction plan "
+                     "scale (and to total course dose when planned fractions are available). "
+                     "Structure EnergyDeposit rows are mass-normalized (energy / structure mass); "
+                     "structure DoseToWater and "
                      "fluence rows are volume-normalized (patient box rescaled to the structure "
                      "volume); see issue #50."])
     writer.writerow(["# dose_uncertainty is the 1-sigma Monte-Carlo statistical error "
@@ -905,6 +906,9 @@ def download_report(study, run_id):
     writer.writerow(["field", "field_name", "scorer", "structure", "quantity", "unit",
                      "dose", "dose_uncertainty", "scale_factor", "mass_normalized", "volume_normalized",
                      "structure_volume_cm3", "structure_mass_g", "structure_average_density_g_cm3", "note"])
+    writer.writerow(["units", "", "", "", "", "Gy or Sv",
+                     "Gy or Sv", "Gy or Sv", "1", "", "",
+                     "cm3", "g", "g/cm3", ""])
     for group in _group_rows(rows):
         for r in group["rows"]:
             writer.writerow([

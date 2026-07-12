@@ -1,3 +1,4 @@
+import csv
 import io
 import json
 import zipfile
@@ -724,7 +725,7 @@ def test_studies_page_shows_a_progress_pie_for_a_running_run(client, tmp_path):
 
     body = client.get("/studies").data.decode()
     assert "progress-pie" in body
-    assert "--pct: 50" in body
+    assert 'stroke-dasharray="50 100"' in body
     assert "50% of all fields complete" in body          # the title/alt text
     assert "setTimeout" in body                          # auto-refresh while a run is live
 
@@ -745,6 +746,9 @@ def test_run_detail_shows_scaled_scorer_results(client, tmp_path):
     disp = results.humanize_dose(1.049973996636311e-11 * 953656.0980490245, None, "Sv")
     assert disp["value"] in body and disp["unit"] in body
     assert "under validation" in body         # the #50 caveat is surfaced
+    assert "Planned fractions unavailable" in body
+    assert "generated TOPAS plan scale" in body
+    assert "spotWeight × fractions" not in body
 
 
 def test_run_detail_scales_results_to_planned_fraction_count(client, tmp_path):
@@ -907,6 +911,19 @@ def test_report_csv_download(client, tmp_path):
     assert "#50" in body                          # caveat travels with the data
 
 
+def test_report_csv_includes_units_row_before_results(client, tmp_path):
+    run_id, _ = _completed_run(tmp_path)
+    rows = list(csv.reader(io.StringIO(client.get(f"/studies/alpha/{run_id}/report.csv").data.decode())))
+
+    header_index = next(i for i, row in enumerate(rows) if row and row[0] == "field")
+    assert rows[header_index + 1] == [
+        "units", "", "", "", "", "Gy or Sv",
+        "Gy or Sv", "Gy or Sv", "1", "", "",
+        "cm3", "g", "g/cm3", "",
+    ]
+    assert rows[header_index + 2][2] == "AmBDose_BrainStem"
+
+
 def test_report_csv_includes_fraction_count_and_course_scaled_dose(client, tmp_path):
     run_id, _ = _completed_run(tmp_path)
     dicom_factory.write(tmp_path / "alpha" / studies.DICOM_SUBDIR / "RN.dcm", "RTPLAN", fractions=5)
@@ -936,7 +953,14 @@ def test_report_csv_marks_nan_rows_unusable(client, tmp_path):
 
 # --- grouping and per-scorer totals ---
 
-def _row(scorer="S", field=1, total=1.0, sd=0.1, problem=None, unit="Gy"):
+def _row(
+    scorer: str = "S",
+    field: int = 1,
+    total: float | None = 1.0,
+    sd: float | None = 0.1,
+    problem: str | None = None,
+    unit: str = "Gy",
+):
     return {"scorer": scorer, "structure": "CTV", "quantity": "DoseToMedium", "unit": unit,
             "field": field, "field_name": f"Field {field}", "sum": total, "sd": sd,
             "problem": problem, "raw_sum": total, "scale": 1.0, "structure_mass_normalized": False,
