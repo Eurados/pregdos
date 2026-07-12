@@ -894,8 +894,10 @@ def download_report(study, run_id):
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["# PregDos report", f"study={study}", f"run={run_id}"])
-    writer.writerow(["# Doses are PHYSICAL absorbed dose (Gy) / equivalent dose (Sv); no RBE is "
-                     "applied. Eclipse proton RTDOSE is Gy(RBE) = physical dose-to-water x 1.1."])
+    writer.writerow(["# DoseToWater is physical absorbed dose in Gy; PregDos does not apply "
+                     "proton RBE to this quantity. Clinical Eclipse proton RTDOSE values are "
+                     "commonly stored as Gy(RBE), so compare those separately from physical "
+                     "DoseToWater."])
     if plan_fractions:
         writer.writerow([f"# Planned fractions: {plan_fractions}; reported values are total course dose."])
     else:

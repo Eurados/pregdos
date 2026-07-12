@@ -18,7 +18,7 @@
 	        </svg>
 	      </span>
 	    {% endif %}
-  {% elif status == 'queued' %}<span class="badge warning">queued</span>
+  {% elif status == 'queued' %}<span class="badge info">queued</span>
   {% else %}<span class="badge">{{ status }}</span>{% endif %}
 {% endmacro %}
 
@@ -44,7 +44,7 @@
 
     {% if tile.runs %}
       <table class="run-table">
-        <thead><tr><th>Run</th><th>Status</th><th>Time</th><th>Files</th><th></th></tr></thead>
+        <thead><tr><th>Run</th><th>Status</th><th>Est. Finish</th><th>Files</th><th></th></tr></thead>
         <tbody>
           {% for run in tile.runs %}
             <tr>

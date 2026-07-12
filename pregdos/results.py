@@ -410,6 +410,8 @@ def planned_fractions(rtplan_path: Optional[str | Path]) -> Optional[int]:
     counts = set()
     for group in getattr(ds, "FractionGroupSequence", []) or []:
         value = getattr(group, "NumberOfFractionsPlanned", None)
+        if value is None:
+            continue
         try:
             count = int(value)
         except (TypeError, ValueError):
@@ -474,22 +476,22 @@ def _si_prefix(value: float) -> Tuple[float, str]:
     return _SI_PREFIXES[-1]
 
 
-def humanize_dose(value: Optional[float], sd: Optional[float], unit: str) -> dict:
+def humanize_dose(value: Optional[float], sd: Optional[float], unit: str) -> Dict[str, Optional[str]]:
     """Format a dose and its 1σ uncertainty with a single shared SI prefix.
 
     Returns display strings ``{"value", "sd", "pct", "unit"}`` (``sd``/``pct`` are ``None``
     when no uncertainty is given). The prefix is chosen from ``value`` — falling back to
     ``sd`` when the value is zero — so the pair reads consistently:
-    ``humanize_dose(0.008636, 0.00024, "Sv")`` → value "8.636", sd "0.24", unit "mSv".
+    ``humanize_dose(0.008636, 0.00024, "Sv")`` → value "8.64", sd "0.24", unit "mSv".
     """
     if value is None:
         return {"value": None, "sd": None, "pct": None, "unit": unit}
     reference = value if value else (sd or 0.0)
     factor, prefix = _si_prefix(reference)
-    display = {"unit": f"{prefix}{unit}", "value": f"{value / factor:.4g}"}
+    display: Dict[str, Optional[str]] = {"unit": f"{prefix}{unit}", "value": f"{value / factor:.3g}"}
     if sd is None:
         display["sd"] = display["pct"] = None
     else:
-        display["sd"] = f"{sd / factor:.2g}"
-        display["pct"] = f"{100 * sd / value:.2g}" if value else None
+        display["sd"] = f"{sd / factor:.3g}"
+        display["pct"] = f"{100 * sd / value:.3g}" if value else None
     return display

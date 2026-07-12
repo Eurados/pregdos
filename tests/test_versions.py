@@ -332,3 +332,38 @@ def test_about_page_warns_about_missing_g4_data(monkeypatch, tmp_path):
     with app.test_client() as c:
         body = c.get("/about").data.decode()
     assert "missing" in body and "restart it" in body
+
+
+# --- dicomexport minimum (dicomexport #66: the mirrored beam) ---
+
+def test_dicomexport_at_the_minimum_is_accepted(monkeypatch):
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.4.4")
+    assert versions.dicomexport_warning() is None
+
+
+def test_dicomexport_below_the_minimum_is_rejected(monkeypatch):
+    """1.4.3 mirrors every field 180 deg, so the dose is wrong without looking wrong."""
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.4.3")
+    warning = versions.dicomexport_warning()
+    assert warning is not None and "1.4.3" in warning and "mirror" in warning
+
+
+def test_dicomexport_of_unknown_version_is_rejected(monkeypatch):
+    """Unlike TOPAS, dicomexport always runs on this host -- so we can insist on knowing it."""
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: versions.UNKNOWN)
+    assert versions.dicomexport_warning() is not None
+
+
+def test_an_old_dicomexport_blocks_submission(monkeypatch):
+    _with_version(monkeypatch, "4.2.p3")               # TOPAS itself is fine
+    monkeypatch.delenv("TOPAS_G4_DATA_DIR", raising=False)
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.4.3")
+    blocker = versions.submit_blocker()
+    assert blocker is not None and "dicomexport" in blocker
+
+
+def test_a_current_dicomexport_does_not_block_submission(monkeypatch):
+    _with_version(monkeypatch, "4.2.p3")
+    monkeypatch.delenv("TOPAS_G4_DATA_DIR", raising=False)
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.4.4")
+    assert versions.submit_blocker() is None

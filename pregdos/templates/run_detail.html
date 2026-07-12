@@ -11,7 +11,7 @@
     {% elif status == 'failed' %}<span class="badge danger">failed</span>
     {% elif status == 'canceled' %}<span class="badge danger">canceled</span>
     {% elif status == 'running' %}<span class="badge warning">running</span>
-    {% elif status == 'queued' %}<span class="badge warning">queued</span>
+    {% elif status == 'queued' %}<span class="badge info">queued</span>
     {% else %}<span class="badge">{{ status }}</span>{% endif %}
     {% if backend %} · <strong>Backend:</strong> {{ backend }}{% endif %}
     {% if submitted %} · <strong>Submitted:</strong> {{ submitted }}{% endif %}
@@ -46,7 +46,7 @@
 
   {% if progress %}
     {% if etr %}
-      <p class="hint" style="margin-top: 12px;">Estimated time remaining: <strong>{{ etr }}</strong> (rough)</p>
+      <p class="hint" style="margin-top: 12px;">Estimated time remaining: <strong>{{ etr }}</strong></p>
     {% endif %}
     <div class="progress-list">
       {% for p in progress %}
@@ -149,11 +149,10 @@
     </div>
 
     <p class="hint">
-      All PregDos doses are <strong>physical absorbed dose</strong> — gamma/proton in
-      <strong>Gy</strong> (to water or to medium, as the Quantity column labels), neutron H*(10)
-      as <strong>equivalent dose in Sv</strong>. <strong>No RBE is applied.</strong> A clinical
-      Eclipse proton RTDOSE is <strong>Gy(RBE) = physical dose-to-water × 1.1</strong>, so
-      multiply a PregDos dose-to-water by 1.1 before comparing it to Eclipse.
+      <code>DoseToWater</code> is reported as physical absorbed dose in <strong>Gy</strong>;
+      PregDos does not apply proton RBE to this quantity. Clinical Eclipse proton RTDOSE
+      values are commonly stored as Gy(RBE), so compare those separately from physical
+      <code>DoseToWater</code>.
     </p>
     <p class="hint">
       {% if plan_fractions %}

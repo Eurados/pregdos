@@ -116,6 +116,7 @@ def _rtplan(tmp_path, beams, sequence="IonBeamSequence", fractions=None):
     dataset is rejected by pydicom, and `beam_names()` is meant to reject it too.
     """
     import pydicom
+    import pydicom.uid
     from pydicom.dataset import Dataset, FileMetaDataset
 
     sop_class = pydicom.uid.RTIonPlanStorage
@@ -370,19 +371,19 @@ def test_scaling_for_missing_parameter_file(tmp_path):
 def test_humanize_dose_uses_si_prefix_and_shared_scale():
     d = results.humanize_dose(0.008636, 0.00024, "Sv")
     # value and uncertainty share the milli prefix so the pair reads together.
-    assert d == {"value": "8.636", "sd": "0.24", "pct": "2.8", "unit": "mSv"}
+    assert d == {"value": "8.64", "sd": "0.24", "pct": "2.78", "unit": "mSv"}
 
 
 def test_humanize_dose_steps_down_to_micro():
     d = results.humanize_dose(0.0001626, 1.6e-5, "Gy")
-    assert d["value"] == "162.6"
+    assert d["value"] == "163"
     assert d["unit"] == "µGy"
 
 
 def test_humanize_dose_keeps_engineering_mantissa_for_fraction_dose():
     # 0.2547 Gy has no integer part, so engineering notation renders it in milligray.
     d = results.humanize_dose(0.2547, 0.0015, "Gy")
-    assert d["value"] == "254.7"
+    assert d["value"] == "255"
     assert d["unit"] == "mGy"
 
 

@@ -550,6 +550,12 @@ button:focus-visible,
   border: 1px solid rgba(214, 69, 69, 0.35);
 }
 
+.badge.info {
+  background: rgba(47, 123, 229, 0.12);
+  color: var(--brand);
+  border: 1px solid rgba(47, 123, 229, 0.35);
+}
+
 /* ----------------------------------------------------------
    Results / study tiles
    ---------------------------------------------------------- */

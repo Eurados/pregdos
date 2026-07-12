@@ -19,7 +19,14 @@
             </tr>
             <tr>
                 <td>dicomexport</td>
-                <td>{{ versions.dicomexport }}</td>
+                <td>
+                    {{ versions.dicomexport }}
+                    {% if versions.dicomexport_warning %}
+                        <span class="badge danger">unsupported</span>
+                    {% else %}
+                        <span class="badge success">ok</span>
+                    {% endif %}
+                </td>
             </tr>
             <tr>
                 <td>OpenTOPAS</td>
@@ -55,6 +62,13 @@
     {% if versions.topas_warning %}
       <div class="alert" style="margin-top: 16px;">
         <strong>⚠ {{ versions.topas_warning }}</strong>
+      </div>
+    {% endif %}
+    {% if versions.dicomexport_warning %}
+      <div class="alert" style="margin-top: 16px;">
+        <strong>⚠ {{ versions.dicomexport_warning }}</strong>
+        Runs are blocked until dicomexport is upgraded &mdash; a mirrored beam produces a dose
+        that is wrong without looking wrong.
       </div>
     {% endif %}
     {% if versions.g4_data_dir_problem %}

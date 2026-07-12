@@ -7,6 +7,7 @@ dataset, and so should we.
 from pathlib import Path
 
 import pydicom
+import pydicom.uid  # pydicom re-exports this at runtime, but only an explicit import declares it
 from pydicom.dataset import Dataset, FileMetaDataset
 
 SERIES_NUM = {"CT": 1, "RTSTRUCT": 2, "RTPLAN": 3, "RTDOSE": 4}

@@ -28,13 +28,14 @@ from __future__ import annotations
 
 import copy
 import re
+import zipfile
 from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
 import pydicom
 from pydicom.dataset import Dataset
-from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+from pydicom.uid import ExplicitVRLittleEndian, ImplicitVRLittleEndian, generate_uid
 
 from . import results
 
@@ -44,6 +45,7 @@ _CUBE_RE = re.compile(r"^topas_field(\d+)\.dcm$")
 
 FIELD_DOSE_PREFIX = "rtdose_field"
 PLAN_DOSE_NAME = "rtdose_plan.dcm"
+PLAN_IMPORT_BUNDLE_NAME = "rtdose_plan_eclipse_import.zip"
 
 #: Constant proton RBE.  Applied *only* on the way out to a TPS, so the cube overlays the
 #: clinical plan (which is Gy(RBE)).  PregDos itself never reports RBE-weighted dose.
@@ -95,29 +97,60 @@ def _plan_scale(run_dir: Path, field_number: int) -> float:
     return scaling.factor
 
 
+def _max_stored_value(ds: Dataset) -> int:
+    if int(ds.PixelRepresentation) != 0:
+        raise RTDoseError("signed RTDOSE pixel data is not supported")
+    return 2 ** int(ds.BitsStored) - 1
+
+
+def _pixel_dtype(ds: Dataset) -> np.dtype:
+    bits = int(ds.BitsAllocated)
+    if bits == 16:
+        return np.dtype("<u2")
+    if bits == 32:
+        return np.dtype("<u4")
+    raise RTDoseError(f"unsupported RTDOSE pixel depth: {bits} bits")
+
+
+def _format_ds(value: float) -> str:
+    """Return a DICOM DS string, whose value representation is limited to 16 chars."""
+    if value == 0:
+        return "0"
+    for precision in range(10, 1, -1):
+        text = f"{value:.{precision}g}"
+        if len(text) <= 16 and float(text) >= value:
+            return text
+    text = f"{value:.8e}"
+    if float(text) < value:
+        text = f"{np.nextafter(value, np.inf):.8e}"
+    if len(text) > 16:
+        raise RTDoseError(f"cannot encode DoseGridScaling {value} as a DICOM DS value")
+    return text
+
+
 def _encode(ds: Dataset, dose_gy: np.ndarray) -> None:
-    """Store ``dose_gy`` in ``ds`` as a 32-bit grid, and set the matching DoseGridScaling.
-
-    32-bit is not cosmetic: the fetal dose can be many orders of magnitude below the target
-    dose, and a 16-bit grid scaled to the target would round it to zero.
-    """
+    """Replace the dose grid while preserving the template pixel format when possible."""
     peak = float(dose_gy.max())
-    scaling = peak / _UINT32_MAX if peak > 0 else 1.0
-    grid = np.rint(dose_gy / scaling).astype("<u4") if peak > 0 else np.zeros(dose_gy.shape, "<u4")
+    max_stored = _max_stored_value(ds)
+    dtype = _pixel_dtype(ds)
 
-    ds.DoseGridScaling = scaling
-    ds.BitsAllocated = 32
-    ds.BitsStored = 32
-    ds.HighBit = 31
-    ds.PixelRepresentation = 0
-    ds.SamplesPerPixel = 1
-    ds.PhotometricInterpretation = "MONOCHROME2"
+    scaling = float(ds.DoseGridScaling)
+    if peak > 0 and np.rint(peak / scaling) > max_stored:
+        # Keep the template bit depth, but choose the smallest valid scaling that fits.
+        scaling = float(_format_ds((peak / max_stored) * (1.0 + 1e-8)))
+        ds.DoseGridScaling = _format_ds(scaling)
+
+    grid = (
+        np.rint(dose_gy / scaling).clip(0, max_stored).astype(dtype)
+        if peak > 0
+        else np.zeros(dose_gy.shape, dtype)
+    )
     ds.PixelData = grid.tobytes()
-    ds["PixelData"].VR = "OW"
+    ds["PixelData"].VR = "OW" if int(ds.BitsAllocated) > 8 else "OB"
 
 
-def _derive(template: Dataset, series_uid: str, summation: str, description: str,
-            plan: Dataset, beam_number: Optional[str] = None) -> Dataset:
+def _derive(template: Dataset, series_uid: str, summation: str, description: Optional[str],
+            plan: Dataset, beam_number: Optional[str] = None, preserve_identity: bool = False) -> Dataset:
     """Copy the clinical RTDOSE and re-identify it as *our* dose, keeping its plan reference.
 
     The ``ReferencedRTPlanSequence`` is inherited verbatim, so the dose points at exactly the
@@ -140,22 +173,36 @@ def _derive(template: Dataset, series_uid: str, summation: str, description: str
         ref_group.ReferencedBeamSequence = [ref_beam]
         ref_plan.ReferencedFractionGroupSequence = [ref_group]
 
-    # A derived object needs its own identity, but stays in the patient/study/frame it describes.
-    ds.SOPInstanceUID = generate_uid()
-    ds.SeriesInstanceUID = series_uid
-    ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
-    ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    if not preserve_identity:
+        # Field-dose objects need their own identity; the plan dose intentionally keeps the
+        # Eclipse RD identity because Eclipse is strict about reconnecting cloned doses.
+        ds.SOPInstanceUID = generate_uid()
+        ds.SeriesInstanceUID = series_uid
+        ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+    transfer_syntax = ds.file_meta.get("TransferSyntaxUID", ExplicitVRLittleEndian)
     ds.is_little_endian = True
-    ds.is_implicit_VR = False
-    ds.SeriesDescription = description
-    ds.DoseComment = "PregDos/TOPAS: Gy(RBE)=physical x1.1, whole course"  # LO: max 64 chars
+    ds.is_implicit_VR = transfer_syntax == ImplicitVRLittleEndian
+    if description is not None:
+        ds.SeriesDescription = description
+    if not preserve_identity:
+        ds.DoseComment = "PregDos/TOPAS: Gy(RBE)=physical x1.1, whole course"  # LO: max 64 chars
     return ds
+
+
+def _write_plan_import_bundle(run_dir: Path, plan_path: Path, dose_path: Path) -> Path:
+    """Bundle the generated PLAN dose with the RTPLAN Eclipse needs to connect it."""
+    out = run_dir / PLAN_IMPORT_BUNDLE_NAME
+    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.write(plan_path, arcname=plan_path.name)
+        zf.write(dose_path, arcname=dose_path.name)
+    return out
 
 
 def postprocess(run_dir: str | Path) -> List[Path]:
     """Write importable per-field (BEAM) and summed (PLAN) RTDOSE files for a finished run.
 
-    Returns the paths written, plan dose last.  The raw TOPAS cubes are left untouched.
+    Returns the paths written, with the plan dose and Eclipse import bundle last.  The raw
+    TOPAS cubes are left untouched.
     """
     run_dir = Path(run_dir)
     cubes = field_cubes(run_dir)
@@ -200,9 +247,10 @@ def postprocess(run_dir: str | Path) -> List[Path]:
 
     # The summed cube: what clinical staff actually review, rather than field-by-field.
     assert total is not None
-    ds = _derive(template, series_uid, "PLAN", "PregDos TOPAS plan", plan)
+    ds = _derive(template, series_uid, "PLAN", None, plan, preserve_identity=True)
     _encode(ds, total)
     plan_out = run_dir / PLAN_DOSE_NAME
     ds.save_as(plan_out, enforce_file_format=True)
     written.append(plan_out)
+    written.append(_write_plan_import_bundle(run_dir, plan_path, plan_out))
     return written
