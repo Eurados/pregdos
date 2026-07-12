@@ -638,6 +638,8 @@ button:focus-visible,
 .progress-meter.completed::-moz-progress-bar      { background: var(--success); border-radius: 9px; }
 .progress-meter.failed::-webkit-progress-value    { background: var(--danger); }
 .progress-meter.failed::-moz-progress-bar         { background: var(--danger); }
+.progress-meter.canceled::-webkit-progress-value  { background: var(--danger); }
+.progress-meter.canceled::-moz-progress-bar       { background: var(--danger); }
 
 .progress-pct {
   position: absolute;

@@ -9,6 +9,7 @@
     <strong>Status:</strong>
     {% if status == 'completed' %}<span class="badge success">completed</span>
     {% elif status == 'failed' %}<span class="badge danger">failed</span>
+    {% elif status == 'canceled' %}<span class="badge danger">canceled</span>
     {% elif status == 'running' %}<span class="badge warning">running</span>
     {% elif status == 'queued' %}<span class="badge warning">queued</span>
     {% else %}<span class="badge">{{ status }}</span>{% endif %}
@@ -23,6 +24,26 @@
     </p>
   {% endif %}
 
+  {% if can_cancel or can_rerun or can_move_up %}
+    <div class="actions">
+      {% if can_cancel %}
+        <form method="POST" action="{{ url_for('cancel_run', study=study, run_id=run_id) }}">
+          <button type="submit" class="btn btn-danger">Cancel run</button>
+        </form>
+      {% endif %}
+      {% if can_move_up %}
+        <form method="POST" action="{{ url_for('move_run_up', study=study, run_id=run_id) }}">
+          <button type="submit" class="btn btn-secondary">Move up</button>
+        </form>
+      {% endif %}
+      {% if can_rerun %}
+        <form method="POST" action="{{ url_for('rerun_run', study=study, run_id=run_id) }}">
+          <button type="submit" class="btn btn-secondary">Rerun</button>
+        </form>
+      {% endif %}
+    </div>
+  {% endif %}
+
   {% if progress %}
     {% if etr %}
       <p class="hint" style="margin-top: 12px;">Estimated time remaining: <strong>{{ etr }}</strong> (rough)</p>
@@ -33,8 +54,10 @@
           <div class="progress-label">
             <code>{{ p.field }}</code>
             <span class="hint">
-              {% if p.status == 'completed' %}done
+              {% if p.status == 'completed' %}done{% if p.histories_total %} · {{ '{:,}'.format(p.histories_total) }} histories{% endif %}
+              {% elif p.status == 'canceled' %}canceled
               {% elif p.status == 'failed' %}failed at run {{ p.runs_started }}/{{ p.total_runs }}
+              {% elif p.status == 'queued' %}queued
               {% elif p.total_runs %}run {{ p.runs_started }}/{{ p.total_runs }} · {{ '{:,}'.format(p.histories_done) }}/{{ '{:,}'.format(p.histories_total) }} histories
               {% else %}starting…{% endif %}
             </span>

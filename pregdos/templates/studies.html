@@ -6,6 +6,7 @@
 {% macro status_badge(status, percent=none) %}
   {% if status == 'completed' %}<span class="badge success">completed</span>
   {% elif status == 'failed' %}<span class="badge danger">failed</span>
+  {% elif status == 'canceled' %}<span class="badge danger">canceled</span>
   {% elif status == 'running' %}
 	    <span class="badge warning">running</span>
 	    {% if percent is not none %}
@@ -43,7 +44,7 @@
 
     {% if tile.runs %}
       <table class="run-table">
-        <thead><tr><th>Run</th><th>Status</th><th>Exp. compl.</th><th>Files</th><th></th></tr></thead>
+        <thead><tr><th>Run</th><th>Status</th><th>Time</th><th>Files</th><th></th></tr></thead>
         <tbody>
           {% for run in tile.runs %}
             <tr>
@@ -52,6 +53,11 @@
               <td>
                 {% if run.status == 'running' and run.eta %}
                   <span class="eta-box" title="Estimated completion (local time)">
+                    <span class="eta-time">{{ run.eta.time }}</span>
+                    <span class="eta-date">{{ run.eta.date }}</span>
+                  </span>
+                {% elif run.eta %}
+                  <span class="eta-box" title="Finished (local time)">
                     <span class="eta-time">{{ run.eta.time }}</span>
                     <span class="eta-date">{{ run.eta.date }}</span>
                   </span>

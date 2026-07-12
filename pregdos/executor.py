@@ -37,9 +37,12 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
+
+import fcntl
 
 # Backend identifiers, also written into run.json.
 SLURM = "slurm"
@@ -50,8 +53,11 @@ QUEUED = "queued"
 RUNNING = "running"
 COMPLETED = "completed"
 FAILED = "failed"
+CANCELED = "canceled"
 
 RUN_METADATA = "run.json"
+CANCEL_MARKER = "run.cancelled"
+LOCAL_SCHEDULER_LOCK = ".pregdos_local_scheduler.lock"
 
 
 def topas_bin() -> str:
@@ -149,6 +155,10 @@ def _write_run_metadata(run_dir: Path, info: RunInfo) -> None:
     (run_dir / RUN_METADATA).write_text(json.dumps(payload, indent=2) + "\n")
 
 
+def _cancel_marker(run_dir: str | os.PathLike) -> Path:
+    return Path(run_dir) / CANCEL_MARKER
+
+
 def read_run_metadata(run_dir: str | os.PathLike) -> Optional[RunInfo]:
     """Load ``run.json``, or None when the run was never submitted.
 
@@ -222,15 +232,56 @@ def _submit_slurm(run_dir: Path, topas_files: List[str], info: RunInfo) -> None:
             info.errors.append(f"sbatch failed for {topas_file}: {result.stderr.strip()}")
 
 
-def _submit_local(run_dir: Path, topas_files: List[str], info: RunInfo) -> None:
-    """Run the fields **sequentially** in one detached background shell.
+def _studies_root_for(run_dir: Path) -> Path:
+    """Root containing all studies for this run directory."""
+    if run_dir.name.startswith("run_"):
+        return run_dir.parent.parent
+    return run_dir
+
+
+def _scheduler_argv(studies_root: Path) -> str:
+    q = shlex.quote
+    return f"{q(sys.executable)} -m pregdos.executor --start-next {q(str(studies_root))}"
+
+
+def _local_run_dirs(studies_root: str | os.PathLike) -> List[Path]:
+    root = Path(studies_root)
+    if not root.is_dir():
+        return []
+    if (root / RUN_METADATA).exists():
+        return [root]
+    direct = [p for p in root.iterdir() if p.is_dir() and (p / RUN_METADATA).exists()]
+    nested = [
+        p
+        for study in root.iterdir()
+        if study.is_dir()
+        for p in study.iterdir()
+        if p.is_dir() and p.name.startswith("run_")
+    ]
+    return sorted({*direct, *nested})
+
+
+def _local_run_is_queued(run_dir: Path, info: RunInfo) -> bool:
+    """A local run has been submitted but its worker process has not started yet."""
+    return (
+        info.backend == LOCAL
+        and bool(info.fields)
+        and not _cancel_marker(run_dir).exists()
+        and all(not f.ident for f in info.fields)
+        and not any((run_dir / exit_code_name(f.topas_file)).exists() for f in info.fields)
+    )
+
+
+def _launch_local_worker(run_dir: Path, studies_root: Path, info: RunInfo) -> None:
+    """Run this run's fields **sequentially** in one detached background shell.
 
     TOPAS is itself multi-threaded, so launching every field at once would oversubscribe a
     workstation badly.  Chaining them with ``;`` also means a field that crashes does not
     prevent the remaining ones from running -- and each still writes its own log and
     exit-code sentinel, so per-field status is unaffected by the sharing of one shell.
     """
-    script = "; ".join(field_command(f) for f in topas_files)
+    script = "; ".join(field_command(f.topas_file) for f in info.fields)
+    script = f"{script}; {_scheduler_argv(studies_root)}"
     proc = subprocess.Popen(
         ["sh", "-c", script],
         cwd=str(run_dir),
@@ -241,8 +292,82 @@ def _submit_local(run_dir: Path, topas_files: List[str], info: RunInfo) -> None:
         # reload of the Flask dev server.
         start_new_session=True,
     )
-    for topas_file in topas_files:
-        info.fields.append(FieldJob(topas_file, str(proc.pid)))
+    for job in info.fields:
+        job.ident = str(proc.pid)
+    _write_run_metadata(run_dir, info)
+
+
+def start_next_local_run(studies_root: str | os.PathLike) -> Optional[Path]:
+    """Start the oldest queued local run if no local run is currently active.
+
+    This is intentionally filesystem-driven.  It can be called by the web process when a
+    page is rendered, and by the detached local worker after it finishes a run.  The lock
+    prevents two near-simultaneous submissions from starting two local workers.
+    """
+    root = Path(studies_root)
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / LOCAL_SCHEDULER_LOCK
+    with lock_path.open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            queued: list[tuple[str, Path, RunInfo]] = []
+            for run_dir in _local_run_dirs(root):
+                info = read_run_metadata(run_dir)
+                if info is None or info.backend != LOCAL:
+                    continue
+                status = run_status(run_dir)
+                if status == RUNNING:
+                    return None
+                if _local_run_is_queued(run_dir, info):
+                    queued.append((info.submitted, run_dir, info))
+
+            if not queued:
+                return None
+            _, run_dir, info = min(queued, key=lambda item: (item[0], item[1].name))
+            _launch_local_worker(run_dir, root, info)
+            return run_dir
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def move_local_run_up(studies_root: str | os.PathLike, target_run_dir: str | os.PathLike) -> bool:
+    """Move one queued local run one slot earlier in FIFO order."""
+    root = Path(studies_root)
+    target = Path(target_run_dir).resolve()
+    lock_path = root / LOCAL_SCHEDULER_LOCK
+    with lock_path.open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            queued: list[tuple[str, Path, RunInfo]] = []
+            for run_dir in _local_run_dirs(root):
+                info = read_run_metadata(run_dir)
+                if info is not None and _local_run_is_queued(run_dir, info):
+                    queued.append((info.submitted, run_dir, info))
+            queued.sort(key=lambda item: (item[0], item[1].name))
+            for index, (_, run_dir, info) in enumerate(queued):
+                if run_dir.resolve() != target:
+                    continue
+                if index == 0:
+                    return False
+                previous_info = queued[index - 1][2]
+                previous_dir = queued[index - 1][1]
+                info.submitted, previous_info.submitted = previous_info.submitted, info.submitted
+                _write_run_metadata(run_dir, info)
+                _write_run_metadata(previous_dir, previous_info)
+                return True
+            return False
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _submit_local(run_dir: Path, topas_files: List[str], info: RunInfo) -> None:
+    """Queue a local run and kick the FIFO scheduler."""
+    info.fields = [FieldJob(topas_file, "") for topas_file in topas_files]
+    _write_run_metadata(run_dir, info)
+    start_next_local_run(_studies_root_for(run_dir))
+    refreshed = read_run_metadata(run_dir)
+    if refreshed is not None:
+        info.fields = refreshed.fields
 
 
 def submit_run(run_dir: str | os.PathLike, topas_files: List[str]) -> RunInfo:
@@ -273,6 +398,8 @@ def submit_run(run_dir: str | os.PathLike, topas_files: List[str]) -> RunInfo:
 def field_status(run_dir: str | os.PathLike, topas_file: str) -> str:
     """Status of one field, read from its exit-code sentinel."""
     sentinel = Path(run_dir) / exit_code_name(topas_file)
+    if _cancel_marker(run_dir).exists() and not sentinel.is_file():
+        return CANCELED
     if not sentinel.is_file():
         return RUNNING
     try:
@@ -293,7 +420,14 @@ def run_status(run_dir: str | os.PathLike) -> str:
     info = read_run_metadata(run_dir)
     if info is None or not info.fields:
         return QUEUED
+    run_dir = Path(run_dir)
+    if _cancel_marker(run_dir).exists():
+        return CANCELED
+    if _local_run_is_queued(run_dir, info):
+        return QUEUED
     statuses = [field_status(run_dir, f.topas_file) for f in info.fields]
+    if CANCELED in statuses:
+        return CANCELED
     if FAILED in statuses:
         return FAILED
     if RUNNING in statuses:
@@ -388,6 +522,20 @@ def run_progress(run_dir: str | os.PathLike) -> List[FieldProgress]:
     info = read_run_metadata(run_dir)
     if info is None:
         return []
+    run_dir = Path(run_dir)
+    if _local_run_is_queued(run_dir, info):
+        progress = []
+        for f in info.fields:
+            weights = _spot_weights(run_dir, f.topas_file)
+            progress.append(FieldProgress(
+                topas_file=f.topas_file,
+                status=QUEUED,
+                histories_done=0,
+                histories_total=sum(weights),
+                runs_started=0,
+                total_runs=len(weights),
+            ))
+        return progress
     return [field_progress(run_dir, f.topas_file) for f in info.fields]
 
 
@@ -436,9 +584,14 @@ def cancel_run(run_dir: str | os.PathLike) -> None:
     Never raises: a job that already exited, or a pid that has been recycled away, is not
     an error at the call site (a user pressing "delete").
     """
+    run_dir = Path(run_dir)
     info = read_run_metadata(run_dir)
     if info is None:
         return
+    try:
+        _cancel_marker(run_dir).write_text(datetime.datetime.now().isoformat(timespec="seconds") + "\n")
+    except OSError:
+        pass
 
     if info.backend == SLURM:
         idents = sorted({f.ident for f in info.fields if f.ident})
@@ -453,3 +606,17 @@ def cancel_run(run_dir: str | os.PathLike) -> None:
             os.killpg(int(pid), signal.SIGTERM)
         except (ProcessLookupError, PermissionError, ValueError, OSError):
             pass
+    start_next_local_run(_studies_root_for(run_dir))
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """Small worker entry point used by the local FIFO scheduler."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if len(argv) == 2 and argv[0] == "--start-next":
+        start_next_local_run(argv[1])
+        return 0
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

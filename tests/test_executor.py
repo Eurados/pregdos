@@ -111,6 +111,69 @@ def test_local_backend_continues_after_a_failing_field(run_dir, monkeypatch):
     assert executor.field_status(run_dir, "topas_field02.txt") == executor.FAILED
 
 
+def test_local_backend_queues_second_run_while_one_is_running(tmp_path, monkeypatch):
+    monkeypatch.setenv("PREGDOS_EXECUTOR", "local")
+    monkeypatch.setenv("TOPAS_BIN", "sleep")
+    study = tmp_path / "alpha"
+    run1 = study / "run_20260712_100000"
+    run2 = study / "run_20260712_100001"
+    run1.mkdir(parents=True)
+    run2.mkdir()
+
+    info1 = executor.submit_run(run1, ["30"])
+    info2 = executor.submit_run(run2, ["30"])
+
+    assert info1.fields[0].ident
+    assert info2.fields[0].ident == ""
+    assert executor.run_status(run1) == executor.RUNNING
+    assert executor.run_status(run2) == executor.QUEUED
+
+    executor.cancel_run(run1)
+    # Canceling the active run advances the queue, so clean up the second worker too.
+    deadline = time.time() + 2
+    while time.time() < deadline and not executor.read_run_metadata(run2).fields[0].ident:
+        time.sleep(0.02)
+    pid2 = executor.read_run_metadata(run2).fields[0].ident
+    executor.cancel_run(run2)
+    if pid2:
+        deadline = time.time() + 5
+        while time.time() < deadline and _proc_state(int(pid2)) not in ("", "Z"):
+            time.sleep(0.02)
+
+
+def test_cancel_marks_local_run_as_canceled(run_dir):
+    (run_dir / executor.RUN_METADATA).write_text(json.dumps({
+        "backend": "local", "submitted": "now",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": ""}],
+    }))
+
+    executor.cancel_run(run_dir)
+
+    assert executor.run_status(run_dir) == executor.CANCELED
+    assert executor.field_status(run_dir, "topas_field01.txt") == executor.CANCELED
+
+
+def test_move_local_run_up_swaps_fifo_order(tmp_path):
+    study = tmp_path / "alpha"
+    run1 = study / "run_20260712_100000"
+    run2 = study / "run_20260712_100001"
+    run1.mkdir(parents=True)
+    run2.mkdir()
+    (run1 / executor.RUN_METADATA).write_text(json.dumps({
+        "backend": "local", "submitted": "2026-07-12T10:00:00",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": ""}],
+    }))
+    (run2 / executor.RUN_METADATA).write_text(json.dumps({
+        "backend": "local", "submitted": "2026-07-12T10:01:00",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": ""}],
+    }))
+
+    assert executor.move_local_run_up(tmp_path, run2)
+
+    assert executor.read_run_metadata(run1).submitted == "2026-07-12T10:01:00"
+    assert executor.read_run_metadata(run2).submitted == "2026-07-12T10:00:00"
+
+
 # --- slurm backend ---
 
 def test_slurm_backend_chdirs_into_run_dir(run_dir, monkeypatch, mocker):
