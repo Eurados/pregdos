@@ -1192,3 +1192,59 @@ def test_conversion_result_fields():
     assert r.out_files == ["topas_field01.txt"]
     assert r.selected_structures == []
     assert r.stdout is None
+
+
+# --- RTDOSE export for a TPS (issue #62) ---
+
+def test_rtdose_bundle_is_refused_while_the_run_is_unfinished(client, tmp_path):
+    """A partial run would sum only the cubes that exist, yielding a PLAN dose missing fields."""
+    _make_study(tmp_path, "alpha")
+    run_id, run_dir = studies.create_run(tmp_path, "alpha")
+    (run_dir / "run.json").write_text(json.dumps({
+        "backend": "local", "submitted": "now",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": "1"}],
+    }))
+    (run_dir / "topas_field1.dcm").write_bytes(b"cube")     # a cube exists, but the run does not
+
+    resp = client.get(f"/studies/alpha/{run_id}/rtdose", follow_redirects=True)
+
+    assert b"must finish" in resp.data
+    assert not (run_dir / "rtdose_plan_eclipse_import.zip").exists()
+
+
+def test_rtdose_bundle_is_built_on_demand_and_served(client, tmp_path, mocker):
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field1.dcm").write_bytes(b"cube")
+
+    def fake_export(target):
+        (Path(target) / "rtdose_plan_eclipse_import.zip").write_bytes(b"PK\x03\x04bundle")
+        return [Path(target) / "rtdose_plan_eclipse_import.zip"], []
+
+    export = mocker.patch("pregdos.webserver.rtdose.ensure_dose_export", side_effect=fake_export)
+
+    resp = client.get(f"/studies/alpha/{run_id}/rtdose")
+
+    assert resp.status_code == 200
+    assert resp.data == b"PK\x03\x04bundle"
+    export.assert_called_once()
+
+
+def test_rtdose_bundle_reports_why_it_could_not_be_built(client, tmp_path, mocker):
+    """A study with no clinical RTDOSE to clone must flash, not 500."""
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field1.dcm").write_bytes(b"cube")
+    mocker.patch("pregdos.webserver.rtdose.ensure_dose_export",
+                 return_value=([], ["study needs both an RTPLAN and a clinical RTDOSE"]))
+
+    resp = client.get(f"/studies/alpha/{run_id}/rtdose", follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert b"Could not build the RTDOSE export" in resp.data
+
+
+def test_run_page_offers_the_export_only_when_a_cube_exists(client, tmp_path):
+    run_id, run_dir = _completed_run(tmp_path)
+    assert b"Download dose for TPS" not in client.get(f"/studies/alpha/{run_id}").data
+
+    (run_dir / "topas_field1.dcm").write_bytes(b"cube")
+    assert b"Download dose for TPS" in client.get(f"/studies/alpha/{run_id}").data

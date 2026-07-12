@@ -106,3 +106,31 @@ def test_write_plan_import_bundle_contains_total_dose_and_referenced_plan(tmp_pa
         assert sorted(zf.namelist()) == ["RN.1.2.3.dcm", rtdose.PLAN_DOSE_NAME]
         assert zf.read("RN.1.2.3.dcm") == b"plan"
         assert zf.read(rtdose.PLAN_DOSE_NAME) == b"dose"
+
+
+def test_ensure_dose_export_is_idempotent(tmp_path, mocker):
+    """Built once on first request, reused after -- the page must not rebuild 11M-voxel grids."""
+    (tmp_path / "topas_field1.dcm").write_bytes(b"cube")
+    post = mocker.patch("pregdos.rtdose.postprocess",
+                        side_effect=lambda d: [(tmp_path / rtdose.PLAN_DOSE_NAME).write_bytes(b"x")])
+
+    rtdose.ensure_dose_export(tmp_path)
+    assert (tmp_path / rtdose.PLAN_DOSE_NAME).is_file()
+    post.assert_called_once()
+
+    rtdose.ensure_dose_export(tmp_path)      # already there
+    post.assert_called_once()                # still once: not rebuilt
+
+
+def test_ensure_dose_export_without_a_cube_does_nothing(tmp_path):
+    assert rtdose.ensure_dose_export(tmp_path) == ([], [])
+
+
+def test_ensure_dose_export_reports_failure_instead_of_raising(tmp_path, mocker):
+    (tmp_path / "topas_field1.dcm").write_bytes(b"cube")
+    mocker.patch("pregdos.rtdose.postprocess",
+                 side_effect=rtdose.RTDoseError("no clinical RTDOSE"))
+
+    paths, warnings = rtdose.ensure_dose_export(tmp_path)
+
+    assert paths == [] and warnings == ["no clinical RTDOSE"]

@@ -24,7 +24,7 @@
     </p>
   {% endif %}
 
-  {% if can_cancel or can_rerun or can_move_up %}
+  {% if can_cancel or can_rerun or can_move_up or can_export_dose %}
     <div class="actions">
       {% if can_cancel %}
         <form method="POST" action="{{ url_for('cancel_run', study=study, run_id=run_id) }}">
@@ -36,12 +36,27 @@
           <button type="submit" class="btn btn-secondary">Move up</button>
         </form>
       {% endif %}
+      {% if can_export_dose %}
+        <a class="btn primary"
+           href="{{ url_for('download_rtdose_bundle', study=study, run_id=run_id) }}"
+           title="RTPLAN + summed PLAN dose, ready to import into a TPS">Download dose for TPS</a>
+      {% endif %}
       {% if can_rerun %}
         <form method="POST" action="{{ url_for('rerun_run', study=study, run_id=run_id) }}">
           <button type="submit" class="btn btn-secondary">Rerun</button>
         </form>
       {% endif %}
     </div>
+    {% if can_export_dose %}
+      <p class="hint" style="margin-top: 8px;">
+        The TPS bundle holds the plan's RTPLAN and the summed <strong>PLAN</strong> dose (the
+        RTPLAN is included because a TPS refuses a dose whose plan it cannot find). Per-field
+        <strong>BEAM</strong> doses are written alongside it and listed under Files &mdash; import
+        them <em>separately</em>, as a TPS drops field doses when a plan dose is in the same batch.
+        Values are <strong>Gy(RBE)</strong> (physical &times; 1.1, whole course) so they overlay the
+        clinical plan directly &mdash; unlike the physical doses reported above.
+      </p>
+    {% endif %}
   {% endif %}
 
   {% if progress %}

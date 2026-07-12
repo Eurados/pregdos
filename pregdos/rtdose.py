@@ -30,7 +30,7 @@ import copy
 import re
 import zipfile
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pydicom
@@ -196,6 +196,39 @@ def _write_plan_import_bundle(run_dir: Path, plan_path: Path, dose_path: Path) -
         zf.write(plan_path, arcname=plan_path.name)
         zf.write(dose_path, arcname=dose_path.name)
     return out
+
+
+def exported_files(run_dir: str | Path) -> List[Path]:
+    """The importable RTDOSE files already generated for this run, in import order."""
+    run_dir = Path(run_dir)
+    out = sorted(run_dir.glob(f"{FIELD_DOSE_PREFIX}*.dcm"))
+    for name in (PLAN_DOSE_NAME, PLAN_IMPORT_BUNDLE_NAME):
+        if (run_dir / name).is_file():
+            out.append(run_dir / name)
+    return out
+
+
+def ensure_dose_export(run_dir: str | Path) -> Tuple[List[Path], List[str]]:
+    """Generate the importable RTDOSE files once, returning ``(paths, warnings)``.
+
+    Idempotent -- the files are built on first request and reused after -- and it never raises:
+    a study without a clinical RTDOSE to build from, or an unreadable cube, must degrade to a
+    message on the page rather than a 500.
+
+    **Only call this on a finished run.**  ``postprocess`` sums whichever cubes it finds, so on
+    a half-finished run it would happily write a PLAN dose that silently omits the fields that
+    have not run yet -- which is exactly the sort of plausible-looking wrong dose this project
+    exists to avoid.
+    """
+    run_dir = Path(run_dir)
+    if (run_dir / PLAN_DOSE_NAME).is_file():
+        return exported_files(run_dir), []
+    if not field_cubes(run_dir):
+        return [], []
+    try:
+        return postprocess(run_dir), []
+    except Exception as exc:  # noqa: BLE001 - a bad DICOM must not take down the results page
+        return [], [str(exc)]
 
 
 def postprocess(run_dir: str | Path) -> List[Path]:

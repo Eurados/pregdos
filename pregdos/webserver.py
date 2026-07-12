@@ -26,7 +26,7 @@ import sys
 import shutil
 import tempfile
 
-from . import dicom_intake, executor, results, structure_metrics, studies, versions
+from . import dicom_intake, executor, results, rtdose, structure_metrics, studies, versions
 from .models import ConversionParameters, ConversionResult
 from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
@@ -727,6 +727,9 @@ def run_detail(study, run_id):
         can_cancel=status in (executor.RUNNING, executor.QUEUED),
         can_rerun=status in (executor.COMPLETED, executor.FAILED, executor.CANCELED),
         can_move_up=status == executor.QUEUED and info is not None and info.backend == executor.LOCAL,
+        # Only a finished run has every field's cube, and only a run that scored the in-field
+        # grid has any cube at all.
+        can_export_dose=status == executor.COMPLETED and bool(rtdose.field_cubes(run_dir)),
         logs=[f["name"] for f in files if f["name"].endswith(".log")],
     )
 
@@ -1101,6 +1104,40 @@ def download_job_file(study, run_id, filename):
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
     return send_from_directory(str(run_dir), secure_filename(filename), as_attachment=True)
+
+
+@app.route("/studies/<study>/<run_id>/rtdose")
+def download_rtdose_bundle(study, run_id):
+    """Build (once) and serve the TPS import bundle: the PLAN dose plus the RTPLAN it needs.
+
+    The cubes are built on demand rather than at render time.  Rewriting six 11M-voxel grids
+    would stall the results page, and it is only worth doing for someone who actually wants to
+    import them.  Once built they also appear in the run's file list.
+
+    Refused on an unfinished run: ``postprocess`` sums the cubes that exist, so a partial run
+    would yield a PLAN dose quietly missing its remaining fields.
+    """
+    run_dir = _resolve_run(study, run_id)
+    if run_dir is None:
+        flash("Run directory not found.")
+        return redirect(url_for("list_studies"))
+
+    if _run_status(run_dir) != executor.COMPLETED:
+        flash("The run must finish before its dose can be exported — a partial plan dose "
+              "would silently omit the fields that have not run.")
+        return redirect(url_for("run_detail", study=study, run_id=run_id))
+
+    _, warnings = rtdose.ensure_dose_export(run_dir)
+    for warning in warnings:
+        flash(f"Could not build the RTDOSE export: {warning}")
+
+    if not (run_dir / rtdose.PLAN_IMPORT_BUNDLE_NAME).is_file():
+        if not warnings:
+            flash("This run has no in-field dose cube to export. Re-convert with the in-field "
+                  "dose scorer enabled.")
+        return redirect(url_for("run_detail", study=study, run_id=run_id))
+
+    return send_from_directory(str(run_dir), rtdose.PLAN_IMPORT_BUNDLE_NAME, as_attachment=True)
 
 
 def _env_flag(name: str) -> bool:
