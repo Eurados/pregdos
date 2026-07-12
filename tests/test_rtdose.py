@@ -111,8 +111,12 @@ def test_write_plan_import_bundle_contains_total_dose_and_referenced_plan(tmp_pa
 def test_ensure_dose_export_is_idempotent(tmp_path, mocker):
     """Built once on first request, reused after -- the page must not rebuild 11M-voxel grids."""
     (tmp_path / "topas_field1.dcm").write_bytes(b"cube")
-    post = mocker.patch("pregdos.rtdose.postprocess",
-                        side_effect=lambda d: [(tmp_path / rtdose.PLAN_DOSE_NAME).write_bytes(b"x")])
+    def fake_postprocess(d):
+        path = tmp_path / rtdose.PLAN_DOSE_NAME
+        path.write_bytes(b"x")
+        return [path]
+
+    post = mocker.patch("pregdos.rtdose.postprocess", side_effect=fake_postprocess)
 
     rtdose.ensure_dose_export(tmp_path)
     assert (tmp_path / rtdose.PLAN_DOSE_NAME).is_file()
