@@ -956,7 +956,11 @@ def _clear_run_outputs(run_dir: Path) -> None:
     for path in run_dir.iterdir():
         if path.name in (executor.RUN_METADATA, executor.CANCEL_MARKER, structure_metrics.METRICS_FILE):
             path.unlink(missing_ok=True)
-        elif path.suffix in (".log", ".csv", ".dcm") or path.name.endswith(".exit_code"):
+        elif (
+            path.suffix in (".log", ".csv", ".dcm")
+            or path.name.endswith(".exit_code")
+            or (path.suffix == ".zip" and path.name.startswith("rtdose_"))
+        ):
             path.unlink(missing_ok=True)
         elif path.name.startswith("structure_mask_") and path.suffix in (".bin", ".binheader"):
             path.unlink(missing_ok=True)
