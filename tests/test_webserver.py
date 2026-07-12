@@ -747,6 +747,19 @@ def test_run_detail_shows_scaled_scorer_results(client, tmp_path):
     assert "under validation" in body         # the #50 caveat is surfaced
 
 
+def test_run_detail_scales_results_to_planned_fraction_count(client, tmp_path):
+    run_id, _ = _completed_run(tmp_path)
+    dicom_factory.write(tmp_path / "alpha" / studies.DICOM_SUBDIR / "RN.dcm", "RTPLAN", fractions=5)
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    expected = 1.049973996636311e-11 * 953656.0980490245 * 5
+    disp = results.humanize_dose(expected, None, "Sv")
+    assert "Planned fractions: 5" in body
+    assert "total course dose" in body
+    assert disp["value"] in body and disp["unit"] in body
+
+
 def test_run_detail_converts_structure_energy_deposit_to_gy(client, tmp_path):
     run_id, run_dir = _completed_run(tmp_path)
     (run_dir / "topas_field01_proton_primary_CTV.csv").write_text(
@@ -892,6 +905,17 @@ def test_report_csv_download(client, tmp_path):
     body = resp.data.decode()
     assert "AmBDose_BrainStem" in body and "AmbientDoseEquivalent" in body
     assert "#50" in body                          # caveat travels with the data
+
+
+def test_report_csv_includes_fraction_count_and_course_scaled_dose(client, tmp_path):
+    run_id, _ = _completed_run(tmp_path)
+    dicom_factory.write(tmp_path / "alpha" / studies.DICOM_SUBDIR / "RN.dcm", "RTPLAN", fractions=5)
+
+    body = client.get(f"/studies/alpha/{run_id}/report.csv").data.decode()
+
+    expected = 1.049973996636311e-11 * 953656.0980490245 * 5
+    assert "Planned fractions: 5" in body
+    assert repr(expected) in body
 
 
 def test_report_csv_marks_nan_rows_unusable(client, tmp_path):

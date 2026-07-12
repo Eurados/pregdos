@@ -390,6 +390,37 @@ def beam_names(rtplan_path: Optional[str | Path]) -> Dict[int, str]:
     return names
 
 
+def planned_fractions(rtplan_path: Optional[str | Path]) -> Optional[int]:
+    """Number of planned fractions from an RTPLAN, or None when unavailable.
+
+    RT Ion Plan and classic RT Plan both carry this in ``FractionGroupSequence``.  Most
+    plans have exactly one fraction group; if a plan has several groups with the same
+    fraction count, that count is still unambiguous.  Anything missing, corrupt, or
+    inconsistent falls back to None so the results page can render per-fraction values.
+    """
+    if rtplan_path is None:
+        return None
+    try:
+        import pydicom
+
+        ds = pydicom.dcmread(str(rtplan_path), stop_before_pixels=True)
+    except Exception:  # noqa: BLE001 - a bad RTPLAN must not break the results page
+        return None
+
+    counts = set()
+    for group in getattr(ds, "FractionGroupSequence", []) or []:
+        value = getattr(group, "NumberOfFractionsPlanned", None)
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            counts.add(count)
+    if len(counts) == 1:
+        return counts.pop()
+    return None
+
+
 def collect_results(run_dir: str | Path) -> Tuple[List[ScorerResult], List[str]]:
     """Parse every scorer CSV in a run directory.
 
