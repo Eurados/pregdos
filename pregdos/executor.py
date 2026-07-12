@@ -385,7 +385,7 @@ def submit_run(run_dir: str | os.PathLike, topas_files: List[str]) -> RunInfo:
     """
     run_dir = Path(run_dir)
     backend = select_backend()
-    info = RunInfo(backend=backend, submitted=datetime.datetime.now().isoformat(timespec="seconds"))
+    info = RunInfo(backend=backend, submitted=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     if backend == SLURM:
         _submit_slurm(run_dir, topas_files, info)
