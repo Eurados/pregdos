@@ -550,6 +550,12 @@ button:focus-visible,
   border: 1px solid rgba(214, 69, 69, 0.35);
 }
 
+.badge.info {
+  background: rgba(47, 123, 229, 0.12);
+  color: var(--brand);
+  border: 1px solid rgba(47, 123, 229, 0.35);
+}
+
 /* ----------------------------------------------------------
    Results / study tiles
    ---------------------------------------------------------- */
@@ -638,6 +644,8 @@ button:focus-visible,
 .progress-meter.completed::-moz-progress-bar      { background: var(--success); border-radius: 9px; }
 .progress-meter.failed::-webkit-progress-value    { background: var(--danger); }
 .progress-meter.failed::-moz-progress-bar         { background: var(--danger); }
+.progress-meter.canceled::-webkit-progress-value  { background: var(--danger); }
+.progress-meter.canceled::-moz-progress-bar       { background: var(--danger); }
 
 .progress-pct {
   position: absolute;

@@ -111,6 +111,106 @@ def test_local_backend_continues_after_a_failing_field(run_dir, monkeypatch):
     assert executor.field_status(run_dir, "topas_field02.txt") == executor.FAILED
 
 
+def test_local_backend_queues_second_run_while_one_is_running(tmp_path, monkeypatch):
+    monkeypatch.setenv("PREGDOS_EXECUTOR", "local")
+    monkeypatch.setenv("TOPAS_BIN", "sleep")
+    study = tmp_path / "alpha"
+    run1 = study / "run_20260712_100000"
+    run2 = study / "run_20260712_100001"
+    run1.mkdir(parents=True)
+    run2.mkdir()
+
+    info1 = executor.submit_run(run1, ["30"])
+    info2 = executor.submit_run(run2, ["30"])
+
+    assert info1.fields[0].ident
+    assert info2.fields[0].ident == ""
+    assert executor.run_status(run1) == executor.RUNNING
+    assert executor.run_status(run2) == executor.QUEUED
+
+    executor.cancel_run(run1)
+    # Canceling the active run advances the queue, so clean up the second worker too.
+    deadline = time.time() + 2
+    while time.time() < deadline and not executor.read_run_metadata(run2).fields[0].ident:
+        time.sleep(0.02)
+    pid2 = executor.read_run_metadata(run2).fields[0].ident
+    executor.cancel_run(run2)
+    if pid2:
+        deadline = time.time() + 5
+        while time.time() < deadline and _proc_state(int(pid2)) not in ("", "Z"):
+            time.sleep(0.02)
+
+
+def test_scheduler_waits_for_a_canceled_worker_to_actually_die(tmp_path, monkeypatch, mocker):
+    """SIGTERM is asynchronous: a multithreaded TOPAS flushing its scorers takes time to exit.
+
+    The cancel marker makes ``run_status`` report CANCELED immediately, so without an explicit
+    liveness check the scheduler would see "nothing is RUNNING" and launch the next run *while
+    the old one is still on the CPU* -- exactly what the one-run-at-a-time queue exists to stop.
+    """
+    monkeypatch.setenv("PREGDOS_EXECUTOR", "local")
+    study = tmp_path / "alpha"
+    dying = study / "run_20260712_100000"
+    queued = study / "run_20260712_100001"
+    dying.mkdir(parents=True)
+    queued.mkdir()
+
+    (dying / executor.RUN_METADATA).write_text(json.dumps({
+        "backend": "local", "submitted": "a",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": "4242"}],
+    }))
+    (dying / executor.CANCEL_MARKER).write_text("now\n")
+    (queued / executor.RUN_METADATA).write_text(json.dumps({
+        "backend": "local", "submitted": "b",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": ""}],
+    }))
+
+    launch = mocker.patch("pregdos.executor._launch_local_worker")
+
+    # The canceled worker has not exited yet: probing its process group succeeds.
+    mocker.patch("pregdos.executor.os.killpg")
+    assert executor.start_next_local_run(tmp_path) is None
+    launch.assert_not_called()
+
+    # It is gone now, so the queue may advance.
+    mocker.patch("pregdos.executor.os.killpg", side_effect=ProcessLookupError)
+    assert executor.start_next_local_run(tmp_path) == queued
+    launch.assert_called_once()
+
+
+def test_cancel_marks_local_run_as_canceled(run_dir):
+    (run_dir / executor.RUN_METADATA).write_text(json.dumps({
+        "backend": "local", "submitted": "now",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": ""}],
+    }))
+
+    executor.cancel_run(run_dir)
+
+    assert executor.run_status(run_dir) == executor.CANCELED
+    assert executor.field_status(run_dir, "topas_field01.txt") == executor.CANCELED
+
+
+def test_move_local_run_up_swaps_fifo_order(tmp_path):
+    study = tmp_path / "alpha"
+    run1 = study / "run_20260712_100000"
+    run2 = study / "run_20260712_100001"
+    run1.mkdir(parents=True)
+    run2.mkdir()
+    (run1 / executor.RUN_METADATA).write_text(json.dumps({
+        "backend": "local", "submitted": "2026-07-12T10:00:00",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": ""}],
+    }))
+    (run2 / executor.RUN_METADATA).write_text(json.dumps({
+        "backend": "local", "submitted": "2026-07-12T10:01:00",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": ""}],
+    }))
+
+    assert executor.move_local_run_up(tmp_path, run2)
+
+    assert executor.read_run_metadata(run1).submitted == "2026-07-12T10:01:00"
+    assert executor.read_run_metadata(run2).submitted == "2026-07-12T10:00:00"
+
+
 # --- slurm backend ---
 
 def test_slurm_backend_chdirs_into_run_dir(run_dir, monkeypatch, mocker):
@@ -249,7 +349,11 @@ def test_cancel_local_run_kills_the_process_group(run_dir, monkeypatch, mocker):
     }))
     killpg = mocker.patch("pregdos.executor.os.killpg")
     executor.cancel_run(run_dir)
-    killpg.assert_called_once_with(4242, executor.signal.SIGTERM)
+    # `killpg` is called more than once: cancel_run() kicks the scheduler, which probes the same
+    # process group with signal 0 to find out whether the worker has actually exited yet -- it
+    # must not start the next run while a SIGTERMed TOPAS is still shutting down.  What this test
+    # is about is only that the TERM was delivered to the group.
+    killpg.assert_any_call(4242, executor.signal.SIGTERM)
 
 
 def test_cancel_slurm_run_calls_scancel(run_dir, mocker):

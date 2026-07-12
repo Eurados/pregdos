@@ -26,7 +26,7 @@ import sys
 import shutil
 import tempfile
 
-from . import dicom_intake, executor, results, structure_metrics, studies, versions
+from . import dicom_intake, executor, results, rtdose, structure_metrics, studies, versions
 from .models import ConversionParameters, ConversionResult
 from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
@@ -506,54 +506,28 @@ def submit_job():
         flash("Run directory not found.")
         return redirect(url_for("upload_files"))
 
-    # Refuse to launch into a broken toolchain: an unsupported OpenTOPAS would emit NaN doses
-    # (#49) and a stale TOPAS_G4_DATA_DIR would abort every field seconds in.  Cheaper to stop
-    # here than to discover it hours later in a log.
-    blocker = versions.submit_blocker()
-    if blocker:
-        flash(f"Cannot submit — {blocker}")
+    status = _run_status(run_dir)
+    if status in (executor.RUNNING, executor.QUEUED):
+        flash(f"Run {run_id} is already {status}.")
         return redirect(url_for("run_detail", study=study_name, run_id=run_id))
 
     # Validate every requested file up front, so a typo cannot start a partial run.
-    topas_files = []
+    valid_out_files = []
     missing = []
-    prepass = structure_metrics.MASK_PREPASS_FILE
-    if (run_dir / prepass).is_file():
-        topas_files.append(prepass)
     for fname in out_files:
         safe_fname = secure_filename(fname)
         if (run_dir / safe_fname).is_file():
-            topas_files.append(safe_fname)
+            valid_out_files.append(safe_fname)
         else:
             missing.append(safe_fname)
-    if missing or not topas_files:
+    if missing or not valid_out_files:
         for name in missing:
             flash(f"Error: File not found: {name}")
-        if not topas_files:
+        if not valid_out_files:
             flash("Error: Nothing to submit.")
         return redirect(url_for("upload_files"))
 
-    # Under SLURM the job runs as the `slurm` user, which must own the directory it writes
-    # logs and scorer CSVs into.  Harmless (and skipped) elsewhere.
-    if executor.select_backend() == executor.SLURM:
-        try:
-            shutil.chown(run_dir, user="slurm", group="slurm")
-        except (LookupError, PermissionError, OSError):
-            pass  # slurm user not present outside the container
-
-    info = executor.submit_run(run_dir, topas_files)
-
-    if info.backend == executor.SLURM:
-        for job in info.fields:
-            flash(f"Submitted {job.topas_file} → SLURM job {job.ident}")
-    elif info.fields:
-        flash(
-            f"Running {len(info.fields)} field(s) locally in the background "
-            f"(no SLURM found; pid {info.fields[0].ident}). Progress appears in the run directory."
-        )
-    for e in info.errors:
-        flash(f"Error: {e}")
-    return redirect(url_for("list_jobs"))
+    return _submit_topas_files(study_name, run_id, run_dir, valid_out_files)
 
 
 @app.route("/about")
@@ -613,6 +587,27 @@ def _completion_clock(finish: datetime.datetime) -> dict:
     return {"time": finish.strftime("%H:%M"), "date": f"{finish.day} {finish:%b}"}
 
 
+def _finished_clock(run_dir: Path) -> dict | None:
+    """Best available local finish time from TOPAS exit-code sentinel mtimes."""
+    sentinels = list(run_dir.glob("*.exit_code"))
+    if not sentinels:
+        return None
+    latest = max(p.stat().st_mtime for p in sentinels)
+    return _completion_clock(datetime.datetime.fromtimestamp(latest))
+
+
+def _requested_histories(run_dir: Path) -> int | None:
+    """Requested primary-history count (nstat) for a run, from its first field input."""
+    for field_file in sorted(run_dir.glob("*_field*.txt")):
+        try:
+            scaling = results.parse_plan_scaling(field_file)
+        except Exception:
+            scaling = None
+        if scaling is not None:
+            return scaling.requested_histories
+    return None
+
+
 def _run_status(run_dir: Path) -> str:
     """Status of one run, read entirely from files on disk (see :mod:`pregdos.executor`)."""
     if executor.read_run_metadata(run_dir) is None:
@@ -639,6 +634,7 @@ def list_jobs():
 def list_studies():
     """One tile per study, each listing its conversion runs and their status."""
     root = studies_root()
+    executor.start_next_local_run(root)
     tiles = []
     for study in studies.list_studies(root):
         runs = []
@@ -655,15 +651,21 @@ def list_studies():
                 info = executor.read_run_metadata(run_dir)
                 finish = executor.estimate_completion_time(prog, info.submitted if info else None)
                 eta = _completion_clock(finish) if finish else None
+            elif status in (executor.COMPLETED, executor.FAILED, executor.CANCELED):
+                eta = _finished_clock(run_dir)
             runs.append({
                 "run_id": run_id,
                 "status": status,
                 "percent": percent,
                 "eta": eta,
+                "histories": _requested_histories(run_dir),
                 "file_count": sum(1 for p in run_dir.iterdir() if p.is_file()),
             })
         active = any(r["status"] in (executor.RUNNING, executor.QUEUED) for r in runs)
         tiles.append({"name": study, "runs": runs, "active": active})
+    # Newest task on top: sort studies by their most recent run id (run_YYYYmmdd_HHMMSS
+    # sorts chronologically), studies with no runs last.
+    tiles.sort(key=lambda t: max((r["run_id"] for r in t["runs"]), default=""), reverse=True)
     # Keep the page live while any run is in flight, like the detail page.
     auto_refresh = any(t["active"] for t in tiles)
     return render_template("studies.html", tiles=tiles, auto_refresh=auto_refresh)
@@ -681,6 +683,7 @@ def run_detail(study, run_id):
     if run_dir is None:
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
+    executor.start_next_local_run(studies_root())
 
     rows, warnings, plan_fractions = _result_rows(run_dir, study)
     groups = _group_rows(rows)
@@ -721,6 +724,12 @@ def run_detail(study, run_id):
         files=files,
         backend=info.backend if info else None,
         submitted=info.submitted if info else None,
+        can_cancel=status in (executor.RUNNING, executor.QUEUED),
+        can_rerun=status in (executor.COMPLETED, executor.FAILED, executor.CANCELED),
+        can_move_up=status == executor.QUEUED and info is not None and info.backend == executor.LOCAL,
+        # Only a finished run has every field's cube, and only a run that scored the in-field
+        # grid has any cube at all.
+        can_export_dose=status == executor.COMPLETED and bool(rtdose.field_cubes(run_dir)),
         logs=[f["name"] for f in files if f["name"].endswith(".log")],
     )
 
@@ -888,8 +897,10 @@ def download_report(study, run_id):
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["# PregDos report", f"study={study}", f"run={run_id}"])
-    writer.writerow(["# Doses are PHYSICAL absorbed dose (Gy) / equivalent dose (Sv); no RBE is "
-                     "applied. Eclipse proton RTDOSE is Gy(RBE) = physical dose-to-water x 1.1."])
+    writer.writerow(["# DoseToWater is physical absorbed dose in Gy; PregDos does not apply "
+                     "proton RBE to this quantity. Clinical Eclipse proton RTDOSE values are "
+                     "commonly stored as Gy(RBE), so compare those separately from physical "
+                     "DoseToWater."])
     if plan_fractions:
         writer.writerow([f"# Planned fractions: {plan_fractions}; reported values are total course dose."])
     else:
@@ -938,6 +949,123 @@ def download_report(study, run_id):
     )
 
 
+def _run_input_files(run_dir: Path) -> list[str]:
+    """TOPAS field inputs for rerunning an existing conversion."""
+    return sorted(p.name for p in run_dir.glob("*_field*.txt"))
+
+
+def _clear_run_outputs(run_dir: Path) -> None:
+    """Remove generated execution/result files before rerunning the same TOPAS inputs."""
+    for path in run_dir.iterdir():
+        if path.name in (executor.RUN_METADATA, executor.CANCEL_MARKER, structure_metrics.METRICS_FILE):
+            path.unlink(missing_ok=True)
+        elif (
+            path.suffix in (".log", ".csv", ".dcm")
+            or path.name.endswith(".exit_code")
+            or (path.suffix == ".zip" and path.name.startswith("rtdose_"))
+        ):
+            path.unlink(missing_ok=True)
+        elif path.name.startswith("structure_mask_") and path.suffix in (".bin", ".binheader"):
+            path.unlink(missing_ok=True)
+
+
+def _submit_topas_files(study_name: str, run_id: str, run_dir: Path, out_files: list[str]):
+    """Submit a prepared run directory and flash the user-facing outcome."""
+    blocker = versions.submit_blocker()
+    if blocker:
+        flash(f"Cannot submit — {blocker}")
+        return redirect(url_for("run_detail", study=study_name, run_id=run_id))
+
+    topas_files = []
+    prepass = structure_metrics.MASK_PREPASS_FILE
+    if (run_dir / prepass).is_file():
+        topas_files.append(prepass)
+    topas_files.extend(out_files)
+
+    if not topas_files:
+        flash("Error: Nothing to submit.")
+        return redirect(url_for("run_detail", study=study_name, run_id=run_id))
+
+    if executor.select_backend() == executor.SLURM:
+        try:
+            shutil.chown(run_dir, user="slurm", group="slurm")
+        except (LookupError, PermissionError, OSError):
+            pass  # slurm user not present outside the container
+
+    info = executor.submit_run(run_dir, topas_files)
+
+    if info.backend == executor.SLURM:
+        for job in info.fields:
+            flash(f"Submitted {job.topas_file} → SLURM job {job.ident}")
+    elif info.fields:
+        if any(job.ident for job in info.fields):
+            flash(
+                f"Running {len(info.fields)} field(s) locally in the background "
+                f"(no SLURM found; pid {info.fields[0].ident}). Progress appears in the run directory."
+            )
+        else:
+            flash(f"Queued {len(info.fields)} field(s) for local FIFO execution.")
+    for e in info.errors:
+        flash(f"Error: {e}")
+    return redirect(url_for("list_jobs"))
+
+
+@app.route("/studies/<study>/<run_id>/cancel", methods=["POST"])
+def cancel_run(study, run_id):
+    run_dir = _resolve_run(study, run_id)
+    if run_dir is None:
+        flash("Run directory not found.")
+        return redirect(url_for("list_studies"))
+    status = _run_status(run_dir)
+    if status in (executor.RUNNING, executor.QUEUED):
+        executor.cancel_run(run_dir)
+        flash(f"Cancelled run {run_id}.")
+    else:
+        flash(f"Run {run_id} is {status}; nothing to cancel.")
+    return redirect(url_for("run_detail", study=study, run_id=run_id))
+
+
+@app.route("/studies/<study>/<run_id>/rerun", methods=["POST"])
+def rerun_run(study, run_id):
+    run_dir = _resolve_run(study, run_id)
+    if run_dir is None:
+        flash("Run directory not found.")
+        return redirect(url_for("list_studies"))
+    status = _run_status(run_dir)
+    if status in (executor.RUNNING, executor.QUEUED):
+        flash(f"Run {run_id} is still {status}; cancel it before rerunning.")
+        return redirect(url_for("run_detail", study=study, run_id=run_id))
+
+    out_files = _run_input_files(run_dir)
+    if not out_files:
+        flash("No TOPAS field input files found to rerun.")
+        return redirect(url_for("run_detail", study=study, run_id=run_id))
+
+    blocker = versions.submit_blocker()
+    if blocker:
+        flash(f"Cannot submit — {blocker}")
+        return redirect(url_for("run_detail", study=study, run_id=run_id))
+
+    _clear_run_outputs(run_dir)
+    return _submit_topas_files(study, run_id, run_dir, out_files)
+
+
+@app.route("/studies/<study>/<run_id>/move-up", methods=["POST"])
+def move_run_up(study, run_id):
+    run_dir = _resolve_run(study, run_id)
+    if run_dir is None:
+        flash("Run directory not found.")
+        return redirect(url_for("list_studies"))
+    if _run_status(run_dir) != executor.QUEUED:
+        flash(f"Run {run_id} is not queued.")
+        return redirect(url_for("run_detail", study=study, run_id=run_id))
+    if executor.move_local_run_up(studies_root(), run_dir):
+        flash(f"Moved run {run_id} up in the local queue.")
+    else:
+        flash(f"Run {run_id} is already first in the local queue.")
+    return redirect(url_for("run_detail", study=study, run_id=run_id))
+
+
 @app.route("/studies/<study>/delete", methods=["POST"])
 def delete_study(study):
     """Remove a study and everything under it.
@@ -976,6 +1104,40 @@ def download_job_file(study, run_id, filename):
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
     return send_from_directory(str(run_dir), secure_filename(filename), as_attachment=True)
+
+
+@app.route("/studies/<study>/<run_id>/rtdose")
+def download_rtdose_bundle(study, run_id):
+    """Build (once) and serve the TPS import bundle: the PLAN dose plus the RTPLAN it needs.
+
+    The cubes are built on demand rather than at render time.  Rewriting six 11M-voxel grids
+    would stall the results page, and it is only worth doing for someone who actually wants to
+    import them.  Once built they also appear in the run's file list.
+
+    Refused on an unfinished run: ``postprocess`` sums the cubes that exist, so a partial run
+    would yield a PLAN dose quietly missing its remaining fields.
+    """
+    run_dir = _resolve_run(study, run_id)
+    if run_dir is None:
+        flash("Run directory not found.")
+        return redirect(url_for("list_studies"))
+
+    if _run_status(run_dir) != executor.COMPLETED:
+        flash("The run must finish before its dose can be exported — a partial plan dose "
+              "would silently omit the fields that have not run.")
+        return redirect(url_for("run_detail", study=study, run_id=run_id))
+
+    _, warnings = rtdose.ensure_dose_export(run_dir)
+    for warning in warnings:
+        flash(f"Could not build the RTDOSE export: {warning}")
+
+    if not (run_dir / rtdose.PLAN_IMPORT_BUNDLE_NAME).is_file():
+        if not warnings:
+            flash("This run has no in-field dose cube to export. Re-convert with the in-field "
+                  "dose scorer enabled.")
+        return redirect(url_for("run_detail", study=study, run_id=run_id))
+
+    return send_from_directory(str(run_dir), rtdose.PLAN_IMPORT_BUNDLE_NAME, as_attachment=True)
 
 
 def _env_flag(name: str) -> bool:

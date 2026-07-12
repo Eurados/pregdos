@@ -27,9 +27,17 @@
 
     <section class="card">
       <div class="form-row">
-        <label>Number of primary proton histories</label>
+        <label>Number of primary proton histories (per field)</label>
         <div class="radio-group">
           <div class="radio-group-row">
+            <label class="radio-label">
+              <input type="radio" name="nstat" value="10000">
+              <span>10<sup>4</sup></span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="nstat" value="100000">
+              <span>10<sup>5</sup></span>
+            </label>
             <label class="radio-label">
               <input type="radio" name="nstat" value="1000000" checked>
               <span>10<sup>6</sup></span>
@@ -55,7 +63,8 @@
                    onclick="document.getElementById('nstat_custom_radio').checked=true">
           </label>
         </div>
-        <small class="hint">More primaries give better statistics at the cost of longer runtime.</small>
+        <small class="hint">Simulated <strong>per field</strong>, so the total is this value × the number of fields.
+          More primaries give better statistics at the cost of longer runtime.</small>
       </div>
     </section>
 

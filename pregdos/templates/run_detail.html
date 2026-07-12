@@ -9,8 +9,9 @@
     <strong>Status:</strong>
     {% if status == 'completed' %}<span class="badge success">completed</span>
     {% elif status == 'failed' %}<span class="badge danger">failed</span>
+    {% elif status == 'canceled' %}<span class="badge danger">canceled</span>
     {% elif status == 'running' %}<span class="badge warning">running</span>
-    {% elif status == 'queued' %}<span class="badge warning">queued</span>
+    {% elif status == 'queued' %}<span class="badge info">queued</span>
     {% else %}<span class="badge">{{ status }}</span>{% endif %}
     {% if backend %} · <strong>Backend:</strong> {{ backend }}{% endif %}
     {% if submitted %} · <strong>Submitted:</strong> {{ submitted }}{% endif %}
@@ -23,9 +24,44 @@
     </p>
   {% endif %}
 
+  {% if can_cancel or can_rerun or can_move_up or can_export_dose %}
+    <div class="actions">
+      {% if can_cancel %}
+        <form method="POST" action="{{ url_for('cancel_run', study=study, run_id=run_id) }}">
+          <button type="submit" class="btn btn-danger">Cancel run</button>
+        </form>
+      {% endif %}
+      {% if can_move_up %}
+        <form method="POST" action="{{ url_for('move_run_up', study=study, run_id=run_id) }}">
+          <button type="submit" class="btn btn-secondary">Move up</button>
+        </form>
+      {% endif %}
+      {% if can_export_dose %}
+        <a class="btn primary"
+           href="{{ url_for('download_rtdose_bundle', study=study, run_id=run_id) }}"
+           title="RTPLAN + summed PLAN dose, ready to import into a TPS">Download dose for TPS</a>
+      {% endif %}
+      {% if can_rerun %}
+        <form method="POST" action="{{ url_for('rerun_run', study=study, run_id=run_id) }}">
+          <button type="submit" class="btn btn-secondary">Rerun</button>
+        </form>
+      {% endif %}
+    </div>
+    {% if can_export_dose %}
+      <p class="hint" style="margin-top: 8px;">
+        The TPS bundle holds the plan's RTPLAN and the summed <strong>PLAN</strong> dose (the
+        RTPLAN is included because a TPS refuses a dose whose plan it cannot find). Per-field
+        <strong>BEAM</strong> doses are written alongside it and listed under Files &mdash; import
+        them <em>separately</em>, as a TPS drops field doses when a plan dose is in the same batch.
+        Values are <strong>Gy(RBE)</strong> (physical &times; 1.1, whole course) so they overlay the
+        clinical plan directly &mdash; unlike the physical doses reported above.
+      </p>
+    {% endif %}
+  {% endif %}
+
   {% if progress %}
     {% if etr %}
-      <p class="hint" style="margin-top: 12px;">Estimated time remaining: <strong>{{ etr }}</strong> (rough)</p>
+      <p class="hint" style="margin-top: 12px;">Estimated time remaining: <strong>{{ etr }}</strong></p>
     {% endif %}
     <div class="progress-list">
       {% for p in progress %}
@@ -33,8 +69,10 @@
           <div class="progress-label">
             <code>{{ p.field }}</code>
             <span class="hint">
-              {% if p.status == 'completed' %}done
+              {% if p.status == 'completed' %}done{% if p.histories_total %} · {{ '{:,}'.format(p.histories_total) }} histories{% endif %}
+              {% elif p.status == 'canceled' %}canceled
               {% elif p.status == 'failed' %}failed at run {{ p.runs_started }}/{{ p.total_runs }}
+              {% elif p.status == 'queued' %}queued
               {% elif p.total_runs %}run {{ p.runs_started }}/{{ p.total_runs }} · {{ '{:,}'.format(p.histories_done) }}/{{ '{:,}'.format(p.histories_total) }} histories
               {% else %}starting…{% endif %}
             </span>
@@ -126,11 +164,10 @@
     </div>
 
     <p class="hint">
-      All PregDos doses are <strong>physical absorbed dose</strong> — gamma/proton in
-      <strong>Gy</strong> (to water or to medium, as the Quantity column labels), neutron H*(10)
-      as <strong>equivalent dose in Sv</strong>. <strong>No RBE is applied.</strong> A clinical
-      Eclipse proton RTDOSE is <strong>Gy(RBE) = physical dose-to-water × 1.1</strong>, so
-      multiply a PregDos dose-to-water by 1.1 before comparing it to Eclipse.
+      <code>DoseToWater</code> is reported as physical absorbed dose in <strong>Gy</strong>;
+      PregDos does not apply proton RBE to this quantity. Clinical Eclipse proton RTDOSE
+      values are commonly stored as Gy(RBE), so compare those separately from physical
+      <code>DoseToWater</code>.
     </p>
     <p class="hint">
       {% if plan_fractions %}

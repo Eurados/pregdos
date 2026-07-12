@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
 
-from pregdos import dicom_intake, results, studies
+from pregdos import dicom_intake, executor, results, studies
 from tests import dicom_factory
 from pregdos.webserver import app
 from pregdos.models import ConversionParameters, ConversionResult
@@ -885,6 +885,81 @@ def test_run_detail_of_running_job_says_so(client, tmp_path):
     assert b"still going" in resp.data
 
 
+def test_run_detail_shows_cancel_button_for_unfinished_run(client, tmp_path):
+    _make_study(tmp_path, "alpha")
+    run_id, run_dir = studies.create_run(tmp_path, "alpha")
+    (run_dir / "run.json").write_text(json.dumps({
+        "backend": "local", "submitted": "now",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": "1"}],
+    }))
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    assert "Cancel run" in body
+    assert f"/studies/alpha/{run_id}/cancel" in body
+
+
+def test_cancel_run_route_cancels_unfinished_run(client, tmp_path, mocker):
+    _make_study(tmp_path, "alpha")
+    run_id, run_dir = studies.create_run(tmp_path, "alpha")
+    (run_dir / "run.json").write_text(json.dumps({
+        "backend": "local", "submitted": "now",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": "1"}],
+    }))
+    cancel = mocker.patch("pregdos.webserver.executor.cancel_run")
+
+    resp = client.post(f"/studies/alpha/{run_id}/cancel", follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert b"Cancelled run" in resp.data
+    cancel.assert_called_once_with(run_dir)
+
+
+def test_move_run_up_route_reorders_queued_local_run(client, tmp_path):
+    _make_study(tmp_path, "alpha")
+    run1, run_dir1 = studies.create_run(tmp_path, "alpha")
+    run2, run_dir2 = studies.create_run(tmp_path, "alpha")
+    (run_dir1 / "run.json").write_text(json.dumps({
+        "backend": "local", "submitted": "2026-07-12T10:00:00",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": ""}],
+    }))
+    (run_dir2 / "run.json").write_text(json.dumps({
+        "backend": "local", "submitted": "2026-07-12T10:01:00",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": ""}],
+    }))
+
+    resp = client.post(f"/studies/alpha/{run2}/move-up")
+
+    info1 = executor.read_run_metadata(run_dir1)
+    info2 = executor.read_run_metadata(run_dir2)
+    assert resp.status_code == 302
+    assert info1 is not None and info1.submitted == "2026-07-12T10:01:00"
+    assert info2 is not None and info2.submitted == "2026-07-12T10:00:00"
+    assert run1 != run2
+
+
+def test_rerun_clears_outputs_and_submits_same_inputs(client, tmp_path, mocker, monkeypatch):
+    monkeypatch.setenv("PREGDOS_EXECUTOR", "local")
+    run_id, run_dir = _completed_run(tmp_path, "alpha")
+    (run_dir / "topas_field01.log").write_text("old log")
+    submit = mocker.patch(
+        "pregdos.webserver.executor.submit_run",
+        return_value=executor.RunInfo(
+            backend=executor.LOCAL,
+            submitted="now",
+            fields=[executor.FieldJob("topas_field01.txt", "")],
+        ),
+    )
+
+    resp = client.post(f"/studies/alpha/{run_id}/rerun", follow_redirects=True)
+
+    assert resp.status_code == 200
+    submit.assert_called_once_with(run_dir, ["topas_field01.txt"])
+    assert not (run_dir / "topas_field01.exit_code").exists()
+    assert not (run_dir / "topas_field01_neutron_BrainStem.csv").exists()
+    assert not (run_dir / "topas_field01.log").exists()
+
+
 def test_run_detail_unparseable_csv_warns_not_500(client, tmp_path):
     run_id, run_dir = _completed_run(tmp_path)
     (run_dir / "broken.csv").write_text("# nothing useful\n")
@@ -1117,3 +1192,59 @@ def test_conversion_result_fields():
     assert r.out_files == ["topas_field01.txt"]
     assert r.selected_structures == []
     assert r.stdout is None
+
+
+# --- RTDOSE export for a TPS (issue #62) ---
+
+def test_rtdose_bundle_is_refused_while_the_run_is_unfinished(client, tmp_path):
+    """A partial run would sum only the cubes that exist, yielding a PLAN dose missing fields."""
+    _make_study(tmp_path, "alpha")
+    run_id, run_dir = studies.create_run(tmp_path, "alpha")
+    (run_dir / "run.json").write_text(json.dumps({
+        "backend": "local", "submitted": "now",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": "1"}],
+    }))
+    (run_dir / "topas_field1.dcm").write_bytes(b"cube")     # a cube exists, but the run does not
+
+    resp = client.get(f"/studies/alpha/{run_id}/rtdose", follow_redirects=True)
+
+    assert b"must finish" in resp.data
+    assert not (run_dir / "rtdose_plan_eclipse_import.zip").exists()
+
+
+def test_rtdose_bundle_is_built_on_demand_and_served(client, tmp_path, mocker):
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field1.dcm").write_bytes(b"cube")
+
+    def fake_export(target):
+        (Path(target) / "rtdose_plan_eclipse_import.zip").write_bytes(b"PK\x03\x04bundle")
+        return [Path(target) / "rtdose_plan_eclipse_import.zip"], []
+
+    export = mocker.patch("pregdos.webserver.rtdose.ensure_dose_export", side_effect=fake_export)
+
+    resp = client.get(f"/studies/alpha/{run_id}/rtdose")
+
+    assert resp.status_code == 200
+    assert resp.data == b"PK\x03\x04bundle"
+    export.assert_called_once()
+
+
+def test_rtdose_bundle_reports_why_it_could_not_be_built(client, tmp_path, mocker):
+    """A study with no clinical RTDOSE to clone must flash, not 500."""
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field1.dcm").write_bytes(b"cube")
+    mocker.patch("pregdos.webserver.rtdose.ensure_dose_export",
+                 return_value=([], ["study needs both an RTPLAN and a clinical RTDOSE"]))
+
+    resp = client.get(f"/studies/alpha/{run_id}/rtdose", follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert b"Could not build the RTDOSE export" in resp.data
+
+
+def test_run_page_offers_the_export_only_when_a_cube_exists(client, tmp_path):
+    run_id, run_dir = _completed_run(tmp_path)
+    assert b"Download dose for TPS" not in client.get(f"/studies/alpha/{run_id}").data
+
+    (run_dir / "topas_field1.dcm").write_bytes(b"cube")
+    assert b"Download dose for TPS" in client.get(f"/studies/alpha/{run_id}").data

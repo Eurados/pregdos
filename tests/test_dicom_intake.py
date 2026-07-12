@@ -43,6 +43,7 @@ def test_scan_ignores_parseable_dicom_without_a_modality(tmp_path):
     """A real DICOMDIR parses fine but names no Modality, so it is unusable as input --
     and `flatten` deletes it.  It must land in `ignored`, not in `files`."""
     import pydicom
+    import pydicom.uid
     from pydicom.dataset import Dataset, FileMetaDataset
 
     _flat_study(tmp_path)

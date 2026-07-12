@@ -19,6 +19,7 @@ Nothing here raises: a missing binary or a slow NFS mount yields ``"unknown"``, 
 from __future__ import annotations
 
 import functools
+import importlib.metadata
 import os
 import re
 import shutil
@@ -30,6 +31,13 @@ UNKNOWN = "unknown"
 
 # Minimum OpenTOPAS that reports a trustworthy scorer Sum and Standard_Deviation (#49).
 MINIMUM_TOPAS = (4, 2, 3)
+
+# Minimum dicomexport that aims the beam at the right side of the patient.  Up to and including
+# 1.4.3 the ``--nozzle-side`` default put the source on the far side of the isocenter, mirroring
+# every field by 180 deg: the dose landed ~9 cm off, so a target read milligray instead of gray
+# while still looking plausible (dicomexport #66).  Nothing downstream can detect that, which is
+# why it is checked here rather than trusted to the install.
+MINIMUM_DICOMEXPORT = (1, 4, 4)
 
 MARKER_DIR = Path("/etc/pregdos")
 
@@ -172,6 +180,28 @@ def topas_warning() -> Optional[str]:
     return None
 
 
+def dicomexport_version() -> str:
+    """Version of the installed ``dicomexport`` package, or ``"unknown"``."""
+    try:
+        return importlib.metadata.version("dicomexport")
+    except importlib.metadata.PackageNotFoundError:
+        return UNKNOWN
+
+
+def dicomexport_warning() -> Optional[str]:
+    """Why the installed dicomexport must not be trusted, or None when it is fine."""
+    reported = dicomexport_version()
+    minimum = ".".join(map(str, MINIMUM_DICOMEXPORT))
+    parsed = parse_version(reported)
+    if parsed is None:
+        return f"dicomexport version cannot be determined. PregDos requires {minimum} or newer."
+    if parsed < MINIMUM_DICOMEXPORT:
+        return (f"dicomexport {reported} is older than {minimum}, which mirrors every proton "
+                "field 180 deg about the isocenter: the dose lands on the wrong side of the "
+                "patient (dicomexport #66).")
+    return None
+
+
 def g4_data_dir_problem() -> Optional[str]:
     """Why ``TOPAS_G4_DATA_DIR`` will make Geant4 abort, or None.
 
@@ -196,6 +226,8 @@ def submit_blocker() -> Optional[str]:
       in (the stale-environment failure from issue #52's neighbourhood).
     * TOPAS reports a version we can read and it is below the #49 minimum -- every scorer Sum
       would come out NaN.
+    * dicomexport is below the #66 minimum (or unreadable) -- every field would be mirrored
+      about the isocenter, putting the dose on the wrong side of the patient.
 
     An **unknown** TOPAS version does *not* block: under the SLURM backend the binary runs on
     a compute node, not on the webserver host, so the host's ``topas --version`` (or its
@@ -204,6 +236,12 @@ def submit_blocker() -> Optional[str]:
     g4 = g4_data_dir_problem()
     if g4:
         return g4
+    # dicomexport always runs on this host, so its version *is* authoritative -- and a mirrored
+    # beam produces a wrong dose that looks entirely plausible, so an unreadable version blocks
+    # too.  This is the one failure nothing downstream can catch (dicomexport #66).
+    dicomexport = dicomexport_warning()
+    if dicomexport:
+        return dicomexport
     # topas_warning() is None when supported, a message when the *parsed* version is too old.
     if parse_version(topas_version()) is not None:
         return topas_warning()
@@ -219,4 +257,6 @@ def summary() -> dict:
         "g4_data_dir": os.environ.get("TOPAS_G4_DATA_DIR") or "",
         "g4_data_dir_problem": g4_data_dir_problem(),
         "minimum_topas": ".".join(map(str, MINIMUM_TOPAS)),
+        "dicomexport_warning": dicomexport_warning(),
+        "minimum_dicomexport": ".".join(map(str, MINIMUM_DICOMEXPORT)),
     }

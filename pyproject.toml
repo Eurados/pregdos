@@ -22,13 +22,13 @@ dependencies = [
     # >=1.4.3: emits relative DicomDirectory/CloneRTDoseGridFrom (keeps studies relocatable,
     # pregdos #41), points DicomDirectory at the CT dir (nested-CT #52), sizes the World from
     # the CT + isocenter, and writes DicomOrigin so the patient is placed correctly.
-    "dicomexport @ git+https://github.com/nbassler/dicomexport@v1.4.3",
+    "dicomexport @ git+https://github.com/nbassler/dicomexport@v1.4.4",
 ]
 dynamic = ["version"]
 
 [project.optional-dependencies]
 # web = ["streamlit>=1.12.0"]
-dev = ["ruff>=0.15.7", "pytest>=7.2.1", "pytest-mock>=3.10.0"]
+dev = ["ruff>=0.15.7", "pytest>=7.2.1", "pytest-mock>=3.10.0", "pyright>=1.1.400"]
 
 [project.scripts]
 pregdos-web = "pregdos.webserver:main"
@@ -63,6 +63,34 @@ line-length = 127
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]
+
+# Point the type checker at the project venv.  Both pyright and Pylance read this, so without
+# it they resolve against whatever interpreter the editor happens to have selected and report
+# every third-party import (flask, werkzeug, pydicom) as missing -- and then mis-resolve their
+# signatures on top.
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+include = ["pregdos", "tests"]
+
+# The library is held to the full standard.  Tests are not, deliberately: they dereference an
+# Optional straight after the call that produced it (`s = parse_plan_scaling(...); s.factor`),
+# where a None fails the test anyway -- and does so with a clearer message than padding every
+# assertion with `assert s is not None` would give.  They also read mock attributes such as
+# `call_args`, which no stub declares.  Muting those rules here keeps `pregdos/` itself at zero
+# type errors instead of drowning the real ones in test noise.
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+extraPaths = ["."]   # tests import the package from the repo root, not from tests/
+reportOptionalMemberAccess = "none"
+reportOptionalOperand = "none"
+reportOperatorIssue = "none"
+reportGeneralTypeIssues = "none"
+reportFunctionMemberAccess = "none"
+reportArgumentType = "none"
+
+[[tool.pyright.executionEnvironments]]
+root = "pregdos"
 
 [tool.yapf]
 based_on_style = "pep8"

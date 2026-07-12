@@ -1,11 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Results · PregDos{% endblock %}
-{% block heading %}Results{% endblock %}
-{% block subtitle %}One tile per study, newest runs first{% endblock %}
+{% block title %}Tasks · PregDos{% endblock %}
+{% block heading %}Tasks{% endblock %}
+{% block subtitle %}One tile per study, newest first{% endblock %}
 
 {% macro status_badge(status, percent=none) %}
   {% if status == 'completed' %}<span class="badge success">completed</span>
   {% elif status == 'failed' %}<span class="badge danger">failed</span>
+  {% elif status == 'canceled' %}<span class="badge danger">canceled</span>
   {% elif status == 'running' %}
 	    <span class="badge warning">running</span>
 	    {% if percent is not none %}
@@ -17,7 +18,7 @@
 	        </svg>
 	      </span>
 	    {% endif %}
-  {% elif status == 'queued' %}<span class="badge warning">queued</span>
+  {% elif status == 'queued' %}<span class="badge info">queued</span>
   {% else %}<span class="badge">{{ status }}</span>{% endif %}
 {% endmacro %}
 
@@ -43,15 +44,25 @@
 
     {% if tile.runs %}
       <table class="run-table">
-        <thead><tr><th>Run</th><th>Status</th><th>Exp. compl.</th><th>Files</th><th></th></tr></thead>
+        <thead><tr><th>Run</th><th>Status</th><th>Est. Finish</th><th>Files</th><th></th></tr></thead>
         <tbody>
           {% for run in tile.runs %}
             <tr>
-              <td><code>{{ run.run_id }}</code></td>
+              <td>
+                <code>{{ run.run_id }}</code>
+                {% if run.histories %}
+                  <span class="hint" title="Requested primary histories">· {{ '{:,}'.format(run.histories) }}</span>
+                {% endif %}
+              </td>
               <td>{{ status_badge(run.status, run.percent) }}</td>
               <td>
                 {% if run.status == 'running' and run.eta %}
                   <span class="eta-box" title="Estimated completion (local time)">
+                    <span class="eta-time">{{ run.eta.time }}</span>
+                    <span class="eta-date">{{ run.eta.date }}</span>
+                  </span>
+                {% elif run.eta %}
+                  <span class="eta-box" title="Finished (local time)">
                     <span class="eta-time">{{ run.eta.time }}</span>
                     <span class="eta-date">{{ run.eta.date }}</span>
                   </span>
