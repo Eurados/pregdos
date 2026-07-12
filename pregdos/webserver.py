@@ -895,7 +895,7 @@ def download_report(study, run_id):
         writer.writerow([f"# Planned fractions: {plan_fractions}; reported values are total course dose."])
     else:
         writer.writerow(["# Planned fractions: unavailable; reported values are per generated TOPAS plan scale."])
-    writer.writerow(["# Doses are scaled to the planned course. Structure EnergyDeposit rows are "
+    writer.writerow(["# Doses are scaled from the simulated histories to the per-fraction plan scale (and to total course dose when planned fractions are available). Structure EnergyDeposit rows are "
                      "mass-normalized (energy / structure mass); structure DoseToWater and "
                      "fluence rows are volume-normalized (patient box rescaled to the structure "
                      "volume); see issue #50."])
