@@ -34,7 +34,7 @@ def _clear(monkeypatch):
 
 @pytest.mark.parametrize("text,expected", [
     ("4.2.p3", (4, 2, 3)),      # OpenTOPAS patch releases use a `p` prefix
-    ("3.9", (3, 9)),
+    ("4.2", (4, 2)),
     ("11.3.2", (11, 3, 2)),
     ("Version 4.2.p3", (4, 2, 3)),
 ])
@@ -145,13 +145,6 @@ def test_supported_version_has_no_warning(monkeypatch):
     assert versions.topas_warning() is None
 
 
-def test_version_3_9_is_flagged_as_ambiguous(monkeypatch):
-    """OpenTOPAS 4.0.0 reports itself as 3.9, so a "3.9" build cannot be trusted either way."""
-    _with_version(monkeypatch, "3.9")
-    warning = versions.topas_warning()
-    assert "4.0.0" in warning and "misreports" in warning and "#49" in warning
-
-
 def test_older_opentopas_is_flagged(monkeypatch):
     _with_version(monkeypatch, "4.1.p0")
     assert "#49" in versions.topas_warning()
@@ -199,7 +192,7 @@ def test_submit_blocker_none_for_supported_topas(monkeypatch):
 
 
 def test_submit_blocker_blocks_unsupported_topas(monkeypatch):
-    _with_version(monkeypatch, "3.9")
+    _with_version(monkeypatch, "4.1.p0")
     assert "#49" in versions.submit_blocker()
 
 
@@ -245,7 +238,7 @@ def test_about_page_reports_newer_pregdos_release(monkeypatch):
 
 def test_about_page_warns_about_unsupported_topas(monkeypatch):
     from pregdos.webserver import app
-    _with_version(monkeypatch, "3.9")
+    _with_version(monkeypatch, "4.1.p0")
     monkeypatch.setattr(versions, "geant4_version", lambda: "11.1.3")
     app.config["TESTING"] = True
     with app.test_client() as c:

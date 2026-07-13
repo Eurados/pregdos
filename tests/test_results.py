@@ -216,7 +216,7 @@ def test_nan_sum_is_flagged_as_a_version_problem(tmp_path):
     and it must never be rendered as one."""
     p = tmp_path / "old.csv"
     p.write_text(
-        "# TOPAS Version: 3.9\n"
+        "# TOPAS Version: 4.1.p0\n"
         "# Results for scorer: AmBDose_Fetus\n"
         "# AmbientDoseEquivalent ( Sv ) : Sum   Standard_Deviation   \n"
         "-nan, 4.148248342996396e-15\n"

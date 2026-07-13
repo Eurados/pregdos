@@ -8,13 +8,16 @@ A tool for calculating dose to a fetus in proton therapy.
 Converts DICOM RT plans to [OpenTOPAS](https://github.com/OpenTOPAS/OpenTOPAS)
 Monte Carlo input files and submits them as SLURM jobs.
 
-<img width="1122" height="679" alt="image" src="https://github.com/user-attachments/assets/22f3f24e-62b6-43ca-b341-69f2e1588dc0" />
-
-<img width="1091" height="729" alt="image" src="https://github.com/user-attachments/assets/f4741bcf-0546-46a6-8c53-3038208adc1b" />
-
-<img width="1109" height="637" alt="image" src="https://github.com/user-attachments/assets/4d014c03-303c-4415-831d-56ff1eee3963" />
-
-<img width="1178" height="896" alt="image" src="https://github.com/user-attachments/assets/95258f2a-c256-4a44-898f-943a10be5a34" />
+<table>
+  <tr>
+    <td><img alt="PregDos upload page" src="https://github.com/user-attachments/assets/22f3f24e-62b6-43ca-b341-69f2e1588dc0" /></td>
+    <td><img alt="PregDos task list" src="https://github.com/user-attachments/assets/f4741bcf-0546-46a6-8c53-3038208adc1b" /></td>
+  </tr>
+  <tr>
+    <td><img alt="PregDos scorer results" src="https://github.com/user-attachments/assets/4d014c03-303c-4415-831d-56ff1eee3963" /></td>
+    <td><img alt="PregDos PDF report" src="https://github.com/user-attachments/assets/95258f2a-c256-4a44-898f-943a10be5a34" /></td>
+  </tr>
+</table>
 
 
 > Still under development — not ready for use.
@@ -67,8 +70,7 @@ docker run --rm -it --hostname localhost -p 5000:5000 ghcr.io/eurados/pregdos:la
 Then open http://localhost:5000 in a browser.
 
 PregDos requires OpenTOPAS 4.2.3 or newer. Older TOPAS/OpenTOPAS builds are not supported
-because OpenTOPAS 4.0.0 and legacy TOPAS 3.9 can corrupt multithreaded scorer statistics
-(issue #49).
+because older multithreaded scorer statistics can be corrupted (issue #49).
 
 | Tag | OpenTOPAS | Geant4 |
 |-----|-----------|--------|

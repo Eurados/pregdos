@@ -8,10 +8,9 @@ Sources, in order of precedence:
    the Geant4 libraries TOPAS is linked against.
 
 The build-time sources come first because they are authoritative about *what was installed*,
-whereas the runtime answer can be wrong: **OpenTOPAS 4.0.0 reports its version as "3.9"**.
-That is not a legacy TOPAS 3.9 -- it is a 4.0.0 build that misreports, and it carries the
-multithreaded scorer bug that corrupts every dose (see issue #49).  4.2.3 reports "4.2.p3"
-honestly.
+whereas the runtime answer can be less authoritative than the build marker.  PregDos only
+supports OpenTOPAS 4.2.3 or newer because older builds can corrupt multithreaded scorer
+statistics (issue #49).
 
 Nothing here raises: a missing binary or a slow NFS mount yields ``"unknown"``, never a 500.
 """
@@ -44,7 +43,7 @@ MINIMUM_DICOMEXPORT = (1, 4, 4)
 
 MARKER_DIR = Path("/etc/pregdos")
 
-# "4.2.p3" -> (4, 2, 3);  "3.9" -> (3, 9);  "11.3.2" -> (11, 3, 2)
+# "4.2.p3" -> (4, 2, 3);  "4.2" -> (4, 2);  "11.3.2" -> (11, 3, 2)
 _VERSION_RE = re.compile(r"(\d+)(?:\.(\d+))?(?:\.p?(\d+))?")
 
 # The versioned Geant4 directory sits next to the libG4*.so files, e.g.
@@ -169,13 +168,6 @@ def topas_warning() -> Optional[str]:
     parsed = parse_version(reported)
     if parsed is None:
         return f"Could not interpret the reported TOPAS version {reported!r}."
-
-    if parsed[:2] == (3, 9):
-        # OpenTOPAS 4.0.0 misreports itself as 3.9, so we cannot tell the two apart.
-        return ("This build reports version 3.9. Either it is legacy TOPAS 3.9, or it is "
-                "OpenTOPAS 4.0.0, which misreports its version. Both corrupt the scorer Sum "
-                f"under multithreading (issue #49). Upgrade to OpenTOPAS "
-                f"{'.'.join(map(str, MINIMUM_TOPAS))} or newer.")
 
     if parsed < MINIMUM_TOPAS:
         return (f"OpenTOPAS {reported} is older than "

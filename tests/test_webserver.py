@@ -380,7 +380,7 @@ def test_submit_refused_on_broken_toolchain(client, tmp_path, monkeypatch):
     """#49 pre-flight guard: an unsupported OpenTOPAS (or missing G4 data) must stop the
     submission before any hours-long field is launched."""
     monkeypatch.setattr("pregdos.webserver.versions.submit_blocker",
-                        lambda: "OpenTOPAS 4.0.0 corrupts the scorer Sum (issue #49).")
+                        lambda: "OpenTOPAS 4.1.p0 corrupts the scorer Sum (issue #49).")
     _make_study(tmp_path)
     run_id, run_dir = studies.create_run(tmp_path, "mystudy")
     (run_dir / "topas_field01.txt").write_text("# topas input")
