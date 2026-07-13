@@ -1296,7 +1296,13 @@ def test_rtdose_bundle_reports_why_it_could_not_be_built(client, tmp_path, mocke
 
 def test_run_page_offers_the_export_only_when_a_cube_exists(client, tmp_path):
     run_id, run_dir = _completed_run(tmp_path)
-    assert b"Download dose for TPS" not in client.get(f"/studies/alpha/{run_id}").data
+    body = client.get(f"/studies/alpha/{run_id}").data
+    assert f"/studies/alpha/{run_id}/rtdose".encode() not in body
+    assert b"Download dose for TPS" not in body
 
     (run_dir / "topas_field1.dcm").write_bytes(b"cube")
-    assert b"Download dose for TPS" in client.get(f"/studies/alpha/{run_id}").data
+    body = client.get(f"/studies/alpha/{run_id}").data
+    assert f"/studies/alpha/{run_id}/rtdose".encode() in body
+    assert b"RTDOSE" in body
+    assert b"RTDOSE for TPS" not in body
+    assert b"Download dose for TPS" not in body

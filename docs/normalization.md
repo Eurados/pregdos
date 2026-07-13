@@ -7,6 +7,43 @@ Relevant issue: [#50](https://github.com/Eurados/pregdos/issues/50).
 
 ---
 
+## Design choice: score structures on the CT grid
+
+PregDos reports a mean dose per RT structure **on the native CT voxel grid**. It does not build
+or overlay a separate RTDOSE dose grid for structure scoring.
+
+That is deliberate:
+
+- **Memory.** The CT voxel grid is loaded anyway, so structure scoring reuses it. Adding a
+  clinical RTDOSE grid means allocating and tracking a second full voxel grid, which is exactly
+  the pattern that can exhaust memory on large cases.
+- **Coverage.** The CT covers the whole patient. Out-of-field structures such as the fetus can
+  be scored even when they lie outside the clinical RTDOSE grid.
+- **Runtime and geometry.** Scoring happens only in the CT geometry, not in a dose grid layered
+  on top of it, which keeps the setup simpler and modestly faster.
+
+The structure workflow is:
+
+1. **Mask pre-pass.** A cheap TOPAS run writes a per-structure binary mask on the native CT
+   grid (`SetBinToMinusOneIfNotInRTStructure`).
+2. **Metrics.** From that mask plus the CT Hounsfield units and the Schneider HU-to-density
+   table already embedded in the TOPAS input, PregDos computes each structure's volume and
+   mass.
+3. **Renormalization.** The production single-bin scorer result is converted or rescaled using
+   those structure metrics, as described below.
+
+All PregDos doses are physical absorbed dose (Gy) or equivalent dose (Sv). PregDos does not
+apply proton RBE. A clinical Eclipse proton RTDOSE is commonly stored as
+`Gy(RBE) = physical dose-to-water x 1.1`, so compare those separately from physical
+`DoseToWater`.
+
+The method has been checked against a full in-field RTDOSE cube on the Eclipse grid: the
+cube's CTV mask mean reproduces the mask/metrics route to about 1.4%, and lands within about
+8% of the Eclipse RTDOSE CTV mask mean. This is a mean-to-mean comparison, not a comparison
+against the hotter single-point centroid.
+
+---
+
 ## The root cause: TOPAS's denominator is the whole patient
 
 Every structure scorer PregDos writes is attached to the full CT volume with a single bin

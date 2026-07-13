@@ -508,6 +508,27 @@ button:focus-visible,
   flex-wrap: wrap;
 }
 
+.download-panel {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+}
+
+.download-label {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.download-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 /* ----------------------------------------------------------
    Alerts & Badges
    ---------------------------------------------------------- */
@@ -915,6 +936,7 @@ button:focus-visible,
 @media print {
   .site-header,
   .actions,
+  .download-panel,
   .btn {
     display: none !important;
   }
