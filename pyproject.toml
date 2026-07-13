@@ -10,7 +10,7 @@ authors = [
 ]
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "pydicom>=2.3.1",
     "numpy",
@@ -19,6 +19,7 @@ dependencies = [
     "requests",
     "tqdm",
     "setuptools-scm",
+    "fpdf2>=2.8.7",
     # >=1.4.3: emits relative DicomDirectory/CloneRTDoseGridFrom (keeps studies relocatable,
     # pregdos #41), points DicomDirectory at the CT dir (nested-CT #52), sizes the World from
     # the CT + isocenter, and writes DicomOrigin so the patient is placed correctly.

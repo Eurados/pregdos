@@ -89,6 +89,14 @@ def test_increment_suffix_is_recorded(tmp_path):
     assert parse_scorer_csv(p).run_index == 1
 
 
+def test_collect_results_ignores_empty_base_file_when_incremented_csv_exists(tmp_path):
+    (tmp_path / "topas_field01_neutron_Fetus.csv").write_text("")
+    (tmp_path / "topas_field01_neutron_Fetus_1.csv").write_text(_MINIMAL)
+    found, warnings = results.collect_results(tmp_path)
+    assert warnings == []
+    assert [r.csv_name for r in found] == ["topas_field01_neutron_Fetus_1.csv"]
+
+
 def test_structure_name_ending_in_a_number_is_not_an_increment(tmp_path):
     """A structure legitimately named `PTV_2` must not be read as a re-run of `PTV`."""
     p = tmp_path / "topas_field01_gamma_PTV_2.csv"

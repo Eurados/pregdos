@@ -196,6 +196,7 @@
 
     <div class="actions">
       <a class="btn primary" href="{{ url_for('download_report', study=study, run_id=run_id) }}">Download CSV report</a>
+      <a class="btn" href="{{ url_for('download_pdf_report', study=study, run_id=run_id) }}">Download PDF report</a>
     </div>
   {% elif status in ('running', 'queued') %}
     <p>No results yet — the run is still going.</p>

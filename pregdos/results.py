@@ -89,6 +89,11 @@ _INCREMENT_RE = re.compile(r"^(?P<stem>.+?)_(?P<index>\d+)$")
 _FIELD_NUMBER_RE = re.compile(r"_field(?P<number>\d+)\.txt$")
 
 
+def _has_incremented_sibling(path: Path) -> bool:
+    sibling_re = re.compile(rf"^{re.escape(path.stem)}_\d+{re.escape(path.suffix)}$")
+    return any(sibling_re.match(sibling.name) for sibling in path.parent.iterdir())
+
+
 class ResultsError(Exception):
     """A scorer CSV could not be understood.  Callers flash this, they do not crash on it."""
 
@@ -434,6 +439,8 @@ def collect_results(run_dir: str | Path) -> Tuple[List[ScorerResult], List[str]]
     warnings: List[str] = []
 
     for csv_path in sorted(run_dir.glob("*.csv")):
+        if csv_path.stat().st_size == 0 and _has_incremented_sibling(csv_path):
+            continue
         try:
             results.append(parse_scorer_csv(csv_path))
         except ResultsError as e:

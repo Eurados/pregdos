@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import functools
 import importlib.metadata
+import json
 import os
 import re
 import shutil
@@ -181,11 +182,74 @@ def topas_warning() -> Optional[str]:
 
 
 def dicomexport_version() -> str:
-    """Version of the installed ``dicomexport`` package, or ``"unknown"``."""
+    """Canonical version of the installed ``dicomexport`` package, or ``"unknown"``."""
+    return canonical_package_version("dicomexport")
+
+
+def package_version(name: str) -> str:
+    """Installed Python package version, or ``"unknown"``."""
     try:
-        return importlib.metadata.version("dicomexport")
+        return importlib.metadata.version(name)
     except importlib.metadata.PackageNotFoundError:
         return UNKNOWN
+
+
+def _git_value(args: list[str], cwd: Path) -> str:
+    try:
+        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return UNKNOWN
+    if proc.returncode != 0:
+        return UNKNOWN
+    return proc.stdout.strip() or UNKNOWN
+
+
+def _git_state(repo_root: Path) -> str:
+    status = _git_value(["status", "--short"], repo_root)
+    if status == UNKNOWN:
+        return UNKNOWN
+    return "dirty" if status else "clean"
+
+
+def _dist_git_commit(name: str) -> str:
+    try:
+        dist = importlib.metadata.distribution(name)
+    except importlib.metadata.PackageNotFoundError:
+        return UNKNOWN
+    direct_url = dist.read_text("direct_url.json")
+    if not direct_url:
+        return UNKNOWN
+    try:
+        data = json.loads(direct_url)
+    except json.JSONDecodeError:
+        return UNKNOWN
+    commit = data.get("vcs_info", {}).get("commit_id")
+    return commit[:8] if commit else UNKNOWN
+
+
+def canonical_package_version(name: str, repo_root: Path | None = None) -> str:
+    """Package version with a git local-version suffix when available.
+
+    For editable/local checkouts, pass ``repo_root`` to read the current git commit and dirty
+    state. For VCS-installed packages, ``direct_url.json`` supplies the install commit.
+    """
+    version = package_version(name)
+    if "+" in version or version == UNKNOWN:
+        return version
+
+    git_state = UNKNOWN
+    if repo_root is not None:
+        commit = _git_value(["rev-parse", "--short=8", "HEAD"], repo_root)
+        git_state = _git_state(repo_root)
+    else:
+        commit = _dist_git_commit(name)
+    if commit == UNKNOWN:
+        return version
+
+    local = f"g{commit}"
+    if git_state == "dirty":
+        local += ".dirty"
+    return f"{version}+{local}"
 
 
 def dicomexport_warning() -> Optional[str]:

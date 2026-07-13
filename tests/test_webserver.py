@@ -981,22 +981,30 @@ def test_report_csv_download(client, tmp_path):
     assert resp.status_code == 200
     assert resp.mimetype == "text/csv"
     assert "attachment" in resp.headers["Content-Disposition"]
+    assert resp.headers["Cache-Control"] == "no-store"
     body = resp.data.decode()
     assert "AmBDose_BrainStem" in body and "AmbientDoseEquivalent" in body
-    assert "#50" in body                          # caveat travels with the data
+    assert "# PregDos Dose Report" in body
+    assert "# PregDos" in body and "# TOPAS" in body
+    assert "issue #50" in body
 
 
 def test_report_csv_includes_units_row_before_results(client, tmp_path):
     run_id, _ = _completed_run(tmp_path)
     rows = list(csv.reader(io.StringIO(client.get(f"/studies/alpha/{run_id}/report.csv").data.decode())))
 
-    header_index = next(i for i, row in enumerate(rows) if row and row[0] == "field")
-    assert rows[header_index + 1] == [
-        "units", "", "", "", "", "Gy or Sv",
-        "Gy or Sv", "Gy or Sv", "1", "", "",
-        "cm3", "g", "g/cm3", "",
+    header_index = next(i for i, row in enumerate(rows) if row and row[0] == "scorer")
+    assert rows[header_index] == [
+        "scorer", "structure", "quantity", "field", "field_name", "unit",
+        "dose", "dose_uncertainty", "simulated_histories", "scale_factor",
+        "mass_normalized", "volume_normalized", "structure_volume_cm3", "structure_mass_g",
+        "structure_average_density_g_cm3", "status",
     ]
-    assert rows[header_index + 2][2] == "AmBDose_BrainStem"
+    assert rows[header_index + 1] == [
+        "units", "", "", "", "", "Gy or Sv", "Gy or Sv", "Gy or Sv", "1", "1",
+        "", "", "cm3", "g", "g/cm3", "",
+    ]
+    assert rows[header_index + 2][0] == "AmBDose_BrainStem"
 
 
 def test_report_csv_includes_fraction_count_and_course_scaled_dose(client, tmp_path):
@@ -1006,7 +1014,7 @@ def test_report_csv_includes_fraction_count_and_course_scaled_dose(client, tmp_p
     body = client.get(f"/studies/alpha/{run_id}/report.csv").data.decode()
 
     expected = 1.049973996636311e-11 * 953656.0980490245 * 5
-    assert "Planned fractions: 5" in body
+    assert "# Fractions,5" in body
     assert repr(expected) in body
 
 
@@ -1024,6 +1032,50 @@ def test_report_csv_marks_nan_rows_unusable(client, tmp_path):
     page = client.get(f"/studies/alpha/{run_id}").data.decode()
     assert "unusable" in page
     assert "-nan" not in page and "nan," not in page
+
+
+def test_report_pdf_download(client, tmp_path):
+    run_id, _ = _completed_run(tmp_path)
+    resp = client.get(f"/studies/alpha/{run_id}/report.pdf")
+    assert resp.status_code == 200
+    assert resp.mimetype == "application/pdf"
+    assert "attachment" in resp.headers["Content-Disposition"]
+    assert resp.headers["Cache-Control"] == "no-store"
+    assert resp.data.startswith(b"%PDF-")
+    assert b"/Title (PregDos Dose Report)" in resp.data
+
+
+def test_canonical_package_version_uses_direct_url_vcs_commit(monkeypatch):
+    from pregdos import versions
+
+    class FakeDistribution:
+        def read_text(self, name):
+            assert name == "direct_url.json"
+            return json.dumps({
+                "url": "https://github.com/nbassler/dicomexport",
+                "vcs_info": {
+                    "commit_id": "84860f304ad1eab006364911d16095e3cf18542f",
+                    "vcs": "git",
+                },
+            })
+
+    monkeypatch.setattr(versions, "package_version", lambda name: "1.4.4")
+    monkeypatch.setattr(versions.importlib.metadata, "distribution", lambda name: FakeDistribution())
+
+    assert versions.canonical_package_version("dicomexport") == "1.4.4+g84860f30"
+
+
+def test_report_pdf_uncertainty_uses_readable_si_prefix():
+    from pregdos import report_pdf
+
+    assert report_pdf._format_uncertainty(0.006, "Gy", "Gy", "0.006") == "± 6 mGy"
+    assert report_pdf._format_uncertainty(5e-7, "Sv", "µSv", "0.5") == "± 0.5 µSv"
+
+
+def test_report_pdf_missing_run_redirects(client, tmp_path):
+    _make_study(tmp_path, "alpha")
+    resp = client.get("/studies/alpha/run_20260101_000000/report.pdf", follow_redirects=True)
+    assert b"Run directory not found" in resp.data
 
 
 # --- grouping and per-scorer totals ---
