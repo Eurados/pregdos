@@ -28,6 +28,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Tuple
 
+import requests
+
 UNKNOWN = "unknown"
 
 # Minimum OpenTOPAS that reports a trustworthy scorer Sum and Standard_Deviation (#49).
@@ -48,6 +50,7 @@ _VERSION_RE = re.compile(r"(\d+)(?:\.(\d+))?(?:\.p?(\d+))?")
 # The versioned Geant4 directory sits next to the libG4*.so files, e.g.
 # /opt/geant4-install/lib/Geant4-11.3.2
 _GEANT4_DIR_RE = re.compile(r"^Geant4-(?P<version>[\d.]+)$")
+_PREGDOS_RELEASES_URL = "https://api.github.com/repos/Eurados/pregdos/releases/latest"
 
 
 def _explicit(env_name: str) -> Optional[str]:
@@ -250,6 +253,36 @@ def canonical_package_version(name: str, repo_root: Path | None = None) -> str:
     if git_state == "dirty":
         local += ".dirty"
     return f"{version}+{local}"
+
+
+@functools.lru_cache(maxsize=1)
+def latest_pregdos_release() -> str:
+    """Latest GitHub release tag for PregDos, or ``"unknown"``.
+
+    This is deliberately best-effort and short-timeout: the About page must not become slow or
+    fail just because GitHub or the network is unavailable.
+    """
+    try:
+        response = requests.get(
+            _PREGDOS_RELEASES_URL,
+            headers={"Accept": "application/vnd.github+json"},
+            timeout=1.5,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except (requests.RequestException, ValueError):
+        return UNKNOWN
+    tag = str(data.get("tag_name") or "").strip()
+    return tag or UNKNOWN
+
+
+def newer_pregdos_release(current: str, latest: str) -> bool:
+    """Whether ``latest`` names a newer PregDos release than ``current``."""
+    current_version = parse_version(current)
+    latest_version = parse_version(latest)
+    if current_version is None or latest_version is None:
+        return False
+    return latest_version > current_version
 
 
 def dicomexport_warning() -> Optional[str]:

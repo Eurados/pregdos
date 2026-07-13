@@ -546,6 +546,8 @@ def about():
     # itself), so the page reports what will actually run, not what was configured.
     env = versions.summary()
     env["pregdos"] = versions.canonical_package_version("pregdos", Path(__file__).resolve().parent.parent)
+    env["pregdos_latest"] = versions.latest_pregdos_release()
+    env["pregdos_update_available"] = versions.newer_pregdos_release(env["pregdos"], env["pregdos_latest"])
     env["dicomexport"] = versions.dicomexport_version()
     return render_template("about.html", versions=env)
 
