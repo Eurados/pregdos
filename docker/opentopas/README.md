@@ -2,9 +2,8 @@
 
 Standalone development/test image with Geant4 + OpenTOPAS compiled from source.
 
-PregDos requires OpenTOPAS 4.2.3 or newer. OpenTOPAS 4.0.0 and legacy TOPAS 3.9
-are unsupported because they can corrupt multithreaded scorer statistics
-(issue #49).
+PregDos requires OpenTOPAS 4.2.3 or newer. Older TOPAS/OpenTOPAS builds are
+unsupported because they can corrupt multithreaded scorer statistics (issue #49).
 
 | Dockerfile | OpenTOPAS | Geant4 | Qt |
 |---|---|---|---|

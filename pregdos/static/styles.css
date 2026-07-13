@@ -508,6 +508,51 @@ button:focus-visible,
   flex-wrap: wrap;
 }
 
+.download-panel {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+}
+
+.download-label {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.download-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.download-notes {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.download-notes li + li {
+  margin-top: 3px;
+}
+
+.hint-box {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(100, 115, 140, 0.22);
+  border-left: 3px solid rgba(44, 123, 229, 0.45);
+  border-radius: 8px;
+  background: rgba(44, 123, 229, 0.04);
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
 /* ----------------------------------------------------------
    Alerts & Badges
    ---------------------------------------------------------- */
@@ -915,6 +960,7 @@ button:focus-visible,
 @media print {
   .site-header,
   .actions,
+  .download-panel,
   .btn {
     display: none !important;
   }

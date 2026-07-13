@@ -17,9 +17,8 @@ docker build -t pregdos-base-opentopas-v4.2.3 -f docker/opentopas/4.2.3/Dockerfi
 This takes ~35 minutes (Geant4 compile + dataset download). Subsequent builds
 use the Docker layer cache unless `GEANT4_VERSION` changes.
 
-PregDos requires OpenTOPAS 4.2.3 or newer. OpenTOPAS 4.0.0 and legacy TOPAS 3.9
-are unsupported because they can corrupt multithreaded scorer statistics
-(issue #49).
+PregDos requires OpenTOPAS 4.2.3 or newer. Older TOPAS/OpenTOPAS builds are
+unsupported because they can corrupt multithreaded scorer statistics (issue #49).
 
 ## Step 2 — Build the combined pregdos image
 

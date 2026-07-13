@@ -8,10 +8,9 @@ Sources, in order of precedence:
    the Geant4 libraries TOPAS is linked against.
 
 The build-time sources come first because they are authoritative about *what was installed*,
-whereas the runtime answer can be wrong: **OpenTOPAS 4.0.0 reports its version as "3.9"**.
-That is not a legacy TOPAS 3.9 -- it is a 4.0.0 build that misreports, and it carries the
-multithreaded scorer bug that corrupts every dose (see issue #49).  4.2.3 reports "4.2.p3"
-honestly.
+whereas the runtime answer can be less authoritative than the build marker.  PregDos only
+supports OpenTOPAS 4.2.3 or newer because older builds can corrupt multithreaded scorer
+statistics (issue #49).
 
 Nothing here raises: a missing binary or a slow NFS mount yields ``"unknown"``, never a 500.
 """
@@ -20,12 +19,15 @@ from __future__ import annotations
 
 import functools
 import importlib.metadata
+import json
 import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional, Tuple
+
+import requests
 
 UNKNOWN = "unknown"
 
@@ -41,12 +43,13 @@ MINIMUM_DICOMEXPORT = (1, 4, 4)
 
 MARKER_DIR = Path("/etc/pregdos")
 
-# "4.2.p3" -> (4, 2, 3);  "3.9" -> (3, 9);  "11.3.2" -> (11, 3, 2)
+# "4.2.p3" -> (4, 2, 3);  "4.2" -> (4, 2);  "11.3.2" -> (11, 3, 2)
 _VERSION_RE = re.compile(r"(\d+)(?:\.(\d+))?(?:\.p?(\d+))?")
 
 # The versioned Geant4 directory sits next to the libG4*.so files, e.g.
 # /opt/geant4-install/lib/Geant4-11.3.2
 _GEANT4_DIR_RE = re.compile(r"^Geant4-(?P<version>[\d.]+)$")
+_PREGDOS_RELEASES_URL = "https://api.github.com/repos/Eurados/pregdos/releases/latest"
 
 
 def _explicit(env_name: str) -> Optional[str]:
@@ -166,13 +169,6 @@ def topas_warning() -> Optional[str]:
     if parsed is None:
         return f"Could not interpret the reported TOPAS version {reported!r}."
 
-    if parsed[:2] == (3, 9):
-        # OpenTOPAS 4.0.0 misreports itself as 3.9, so we cannot tell the two apart.
-        return ("This build reports version 3.9. Either it is legacy TOPAS 3.9, or it is "
-                "OpenTOPAS 4.0.0, which misreports its version. Both corrupt the scorer Sum "
-                f"under multithreading (issue #49). Upgrade to OpenTOPAS "
-                f"{'.'.join(map(str, MINIMUM_TOPAS))} or newer.")
-
     if parsed < MINIMUM_TOPAS:
         return (f"OpenTOPAS {reported} is older than "
                 f"{'.'.join(map(str, MINIMUM_TOPAS))}, whose multithreaded scorer merge "
@@ -181,11 +177,107 @@ def topas_warning() -> Optional[str]:
 
 
 def dicomexport_version() -> str:
-    """Version of the installed ``dicomexport`` package, or ``"unknown"``."""
+    """Canonical version of the installed ``dicomexport`` package, or ``"unknown"``."""
+    return canonical_package_version("dicomexport")
+
+
+def package_version(name: str) -> str:
+    """Installed Python package version, or ``"unknown"``."""
     try:
-        return importlib.metadata.version("dicomexport")
+        return importlib.metadata.version(name)
     except importlib.metadata.PackageNotFoundError:
         return UNKNOWN
+
+
+def _git_value(args: list[str], cwd: Path) -> str:
+    try:
+        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return UNKNOWN
+    if proc.returncode != 0:
+        return UNKNOWN
+    return proc.stdout.strip() or UNKNOWN
+
+
+def _git_state(repo_root: Path) -> str:
+    status = _git_value(["status", "--short"], repo_root)
+    if status == UNKNOWN:
+        return UNKNOWN
+    return "dirty" if status else "clean"
+
+
+def _dist_git_commit(name: str) -> str:
+    try:
+        dist = importlib.metadata.distribution(name)
+    except importlib.metadata.PackageNotFoundError:
+        return UNKNOWN
+    try:
+        direct_url = dist.read_text("direct_url.json")
+    except OSError:
+        return UNKNOWN
+    if not direct_url:
+        return UNKNOWN
+    try:
+        data = json.loads(direct_url)
+    except json.JSONDecodeError:
+        return UNKNOWN
+    commit = data.get("vcs_info", {}).get("commit_id")
+    return commit[:8] if commit else UNKNOWN
+
+
+def canonical_package_version(name: str, repo_root: Path | None = None) -> str:
+    """Package version with a git local-version suffix when available.
+
+    For editable/local checkouts, pass ``repo_root`` to read the current git commit and dirty
+    state. For VCS-installed packages, ``direct_url.json`` supplies the install commit.
+    """
+    version = package_version(name)
+    if "+" in version or version == UNKNOWN:
+        return version
+
+    git_state = UNKNOWN
+    if repo_root is not None:
+        commit = _git_value(["rev-parse", "--short=8", "HEAD"], repo_root)
+        git_state = _git_state(repo_root)
+    else:
+        commit = _dist_git_commit(name)
+    if commit == UNKNOWN:
+        return version
+
+    local = f"g{commit}"
+    if git_state == "dirty":
+        local += ".dirty"
+    return f"{version}+{local}"
+
+
+@functools.lru_cache(maxsize=1)
+def latest_pregdos_release() -> str:
+    """Latest GitHub release tag for PregDos, or ``"unknown"``.
+
+    This is deliberately best-effort and short-timeout: the About page must not become slow or
+    fail just because GitHub or the network is unavailable.
+    """
+    try:
+        response = requests.get(
+            _PREGDOS_RELEASES_URL,
+            headers={"Accept": "application/vnd.github+json"},
+            timeout=1.5,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except (requests.RequestException, ValueError):
+        return UNKNOWN
+    tag = str(data.get("tag_name") or "").strip()
+    return tag or UNKNOWN
+
+
+def newer_pregdos_release(current: str, latest: str) -> bool:
+    """Whether ``latest`` names a newer PregDos release than ``current``."""
+    current_version = parse_version(current)
+    latest_version = parse_version(latest)
+    if current_version is None or latest_version is None:
+        return False
+    return latest_version > current_version
 
 
 def dicomexport_warning() -> Optional[str]:

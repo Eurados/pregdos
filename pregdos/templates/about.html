@@ -15,7 +15,14 @@
         <tbody>
             <tr>
                 <td>PregDos</td>
-                <td>{{ versions.pregdos }}</td>
+                <td>
+                    {{ versions.pregdos }}
+                    {% if versions.pregdos_update_available %}
+                        <span class="badge warning">update available</span>
+                    {% elif versions.pregdos != 'unknown' and versions.pregdos_latest != 'unknown' %}
+                        <span class="badge success">latest</span>
+                    {% endif %}
+                </td>
             </tr>
             <tr>
                 <td>dicomexport</td>
@@ -76,6 +83,14 @@
         <strong>⚠ {{ versions.g4_data_dir_problem }}</strong>
         If this path looks wrong, the webserver may have been started from a shell with a
         stale environment &mdash; restart it.
+      </div>
+    {% endif %}
+    {% if versions.pregdos_update_available %}
+      <div class="alert" style="margin-top: 16px;">
+        A newer PregDos release is available:
+        <a href="https://github.com/Eurados/pregdos/releases/latest" target="_blank" rel="noopener noreferrer">
+          {{ versions.pregdos_latest }}
+        </a>.
       </div>
     {% endif %}
 

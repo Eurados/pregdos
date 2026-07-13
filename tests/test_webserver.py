@@ -47,6 +47,14 @@ def test_upload_page_loads(client):
     response = client.get("/")
     assert response.status_code == 200
     assert b"form" in response.data.lower()
+    assert b'href="/favicon.ico"' in response.data
+
+
+def test_favicon_loads(client):
+    response = client.get("/favicon.ico")
+    assert response.status_code == 200
+    assert response.mimetype == "image/svg+xml"
+    assert response.data.startswith(b"<svg")
 
 
 # --- POST /upload validation ---
@@ -372,7 +380,7 @@ def test_submit_refused_on_broken_toolchain(client, tmp_path, monkeypatch):
     """#49 pre-flight guard: an unsupported OpenTOPAS (or missing G4 data) must stop the
     submission before any hours-long field is launched."""
     monkeypatch.setattr("pregdos.webserver.versions.submit_blocker",
-                        lambda: "OpenTOPAS 4.0.0 corrupts the scorer Sum (issue #49).")
+                        lambda: "OpenTOPAS 4.1.p0 corrupts the scorer Sum (issue #49).")
     _make_study(tmp_path)
     run_id, run_dir = studies.create_run(tmp_path, "mystudy")
     (run_dir / "topas_field01.txt").write_text("# topas input")
@@ -745,9 +753,8 @@ def test_run_detail_shows_scaled_scorer_results(client, tmp_path):
     # 1.049973996636311e-11 Sv * 953656.09 = 1.0013e-05, shown SI-prefixed (~10.01 µSv)
     disp = results.humanize_dose(1.049973996636311e-11 * 953656.0980490245, None, "Sv")
     assert disp["value"] in body and disp["unit"] in body
-    assert "under validation" in body         # the #50 caveat is surfaced
+    assert "under validation" not in body
     assert "Planned fractions unavailable" in body
-    assert "generated TOPAS plan scale" in body
     assert "spotWeight × fractions" not in body
 
 
@@ -790,7 +797,7 @@ def test_run_detail_converts_structure_energy_deposit_to_gy(client, tmp_path):
     expected = 10.0 * 953656.0980490245 * 1.602176634e-13 / 0.002
     assert "DoseProtonPrimary_CTV" in body
     assert "DoseToMedium" in body
-    assert "mass-normalized" in body
+    assert "mass-normalized" not in body
     disp = results.humanize_dose(expected, None, "Gy")
     assert disp["value"] in body and disp["unit"] in body
 
@@ -814,7 +821,7 @@ def test_run_detail_corrects_structure_ambient_dose_equivalent_by_volume(client,
     # → ~400.5 µSv, shown SI-prefixed.
     disp = results.humanize_dose(1.049973996636311e-11 * 953656.0980490245 * 40.0, None, "Sv")
     assert disp["value"] in body and disp["unit"] in body
-    assert "volume-normalized" in body
+    assert "volume-normalized" not in body
 
 
 def test_run_detail_corrects_structure_dose_to_water_by_volume(client, tmp_path):
@@ -847,7 +854,7 @@ def test_run_detail_corrects_structure_dose_to_water_by_volume(client, tmp_path)
     expected = 1.0e-9 * 953656.0980490245 * 50.0
     assert "DoseWater_CTV" in body
     assert "DoseToWater" in body
-    assert "volume-normalized" in body
+    assert "volume-normalized" not in body
     disp = results.humanize_dose(expected, None, "Gy")
     assert disp["value"] in body and disp["unit"] in body
 
@@ -981,22 +988,30 @@ def test_report_csv_download(client, tmp_path):
     assert resp.status_code == 200
     assert resp.mimetype == "text/csv"
     assert "attachment" in resp.headers["Content-Disposition"]
+    assert resp.headers["Cache-Control"] == "no-store"
     body = resp.data.decode()
     assert "AmBDose_BrainStem" in body and "AmbientDoseEquivalent" in body
-    assert "#50" in body                          # caveat travels with the data
+    assert "# PregDos Dose Report" in body
+    assert "# PregDos" in body and "# TOPAS" in body
+    assert "issue #50" in body
 
 
 def test_report_csv_includes_units_row_before_results(client, tmp_path):
     run_id, _ = _completed_run(tmp_path)
     rows = list(csv.reader(io.StringIO(client.get(f"/studies/alpha/{run_id}/report.csv").data.decode())))
 
-    header_index = next(i for i, row in enumerate(rows) if row and row[0] == "field")
-    assert rows[header_index + 1] == [
-        "units", "", "", "", "", "Gy or Sv",
-        "Gy or Sv", "Gy or Sv", "1", "", "",
-        "cm3", "g", "g/cm3", "",
+    header_index = next(i for i, row in enumerate(rows) if row and row[0] == "scorer")
+    assert rows[header_index] == [
+        "scorer", "structure", "quantity", "field", "field_name", "unit",
+        "dose", "dose_uncertainty", "simulated_histories", "scale_factor",
+        "mass_normalized", "volume_normalized", "structure_volume_cm3", "structure_mass_g",
+        "structure_average_density_g_cm3", "status",
     ]
-    assert rows[header_index + 2][2] == "AmBDose_BrainStem"
+    assert rows[header_index + 1] == [
+        "units", "", "", "", "", "Gy or Sv", "Gy or Sv", "Gy or Sv", "1", "1",
+        "", "", "cm3", "g", "g/cm3", "",
+    ]
+    assert rows[header_index + 2][0] == "AmBDose_BrainStem"
 
 
 def test_report_csv_includes_fraction_count_and_course_scaled_dose(client, tmp_path):
@@ -1006,7 +1021,7 @@ def test_report_csv_includes_fraction_count_and_course_scaled_dose(client, tmp_p
     body = client.get(f"/studies/alpha/{run_id}/report.csv").data.decode()
 
     expected = 1.049973996636311e-11 * 953656.0980490245 * 5
-    assert "Planned fractions: 5" in body
+    assert "# Fractions,5" in body
     assert repr(expected) in body
 
 
@@ -1024,6 +1039,64 @@ def test_report_csv_marks_nan_rows_unusable(client, tmp_path):
     page = client.get(f"/studies/alpha/{run_id}").data.decode()
     assert "unusable" in page
     assert "-nan" not in page and "nan," not in page
+
+
+def test_report_pdf_download(client, tmp_path):
+    run_id, _ = _completed_run(tmp_path)
+    resp = client.get(f"/studies/alpha/{run_id}/report.pdf")
+    assert resp.status_code == 200
+    assert resp.mimetype == "application/pdf"
+    assert "attachment" in resp.headers["Content-Disposition"]
+    assert resp.headers["Cache-Control"] == "no-store"
+    assert resp.data.startswith(b"%PDF-")
+    assert b"/Title (PregDos Dose Report)" in resp.data
+
+
+def test_canonical_package_version_uses_direct_url_vcs_commit(monkeypatch):
+    from pregdos import versions
+
+    class FakeDistribution:
+        def read_text(self, name):
+            assert name == "direct_url.json"
+            return json.dumps({
+                "url": "https://github.com/nbassler/dicomexport",
+                "vcs_info": {
+                    "commit_id": "84860f304ad1eab006364911d16095e3cf18542f",
+                    "vcs": "git",
+                },
+            })
+
+    monkeypatch.setattr(versions, "package_version", lambda name: "1.4.4")
+    monkeypatch.setattr(versions.importlib.metadata, "distribution", lambda name: FakeDistribution())
+
+    assert versions.canonical_package_version("dicomexport") == "1.4.4+g84860f30"
+
+
+def test_canonical_package_version_survives_unreadable_direct_url(monkeypatch):
+    from pregdos import versions
+
+    class FakeDistribution:
+        def read_text(self, name):
+            assert name == "direct_url.json"
+            raise OSError("metadata unavailable")
+
+    monkeypatch.setattr(versions, "package_version", lambda name: "1.4.4")
+    monkeypatch.setattr(versions.importlib.metadata, "distribution", lambda name: FakeDistribution())
+
+    assert versions.canonical_package_version("dicomexport") == "1.4.4"
+
+
+def test_report_pdf_uncertainty_uses_readable_si_prefix():
+    from pregdos import report_pdf
+
+    assert report_pdf._format_uncertainty(0.006, "Gy", "Gy", "0.006") == "± 6 mGy"
+    assert report_pdf._format_uncertainty(5e-7, "Sv", "µSv", "0.5") == "± 0.5 µSv"
+
+
+def test_report_pdf_missing_run_redirects(client, tmp_path):
+    _make_study(tmp_path, "alpha")
+    resp = client.get("/studies/alpha/run_20260101_000000/report.pdf", follow_redirects=True)
+    assert b"Run directory not found" in resp.data
 
 
 # --- grouping and per-scorer totals ---
@@ -1244,7 +1317,13 @@ def test_rtdose_bundle_reports_why_it_could_not_be_built(client, tmp_path, mocke
 
 def test_run_page_offers_the_export_only_when_a_cube_exists(client, tmp_path):
     run_id, run_dir = _completed_run(tmp_path)
-    assert b"Download dose for TPS" not in client.get(f"/studies/alpha/{run_id}").data
+    body = client.get(f"/studies/alpha/{run_id}").data
+    assert f"/studies/alpha/{run_id}/rtdose".encode() not in body
+    assert b"Download dose for TPS" not in body
 
     (run_dir / "topas_field1.dcm").write_bytes(b"cube")
-    assert b"Download dose for TPS" in client.get(f"/studies/alpha/{run_id}").data
+    body = client.get(f"/studies/alpha/{run_id}").data
+    assert f"/studies/alpha/{run_id}/rtdose".encode() in body
+    assert b"RTDOSE" in body
+    assert b"RTDOSE for TPS" not in body
+    assert b"Download dose for TPS" not in body

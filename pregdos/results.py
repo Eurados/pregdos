@@ -89,6 +89,11 @@ _INCREMENT_RE = re.compile(r"^(?P<stem>.+?)_(?P<index>\d+)$")
 _FIELD_NUMBER_RE = re.compile(r"_field(?P<number>\d+)\.txt$")
 
 
+def _has_incremented_sibling(path: Path) -> bool:
+    sibling_re = re.compile(rf"^{re.escape(path.stem)}_\d+{re.escape(path.suffix)}$")
+    return any(sibling_re.match(sibling.name) for sibling in path.parent.iterdir())
+
+
 class ResultsError(Exception):
     """A scorer CSV could not be understood.  Callers flash this, they do not crash on it."""
 
@@ -434,6 +439,8 @@ def collect_results(run_dir: str | Path) -> Tuple[List[ScorerResult], List[str]]
     warnings: List[str] = []
 
     for csv_path in sorted(run_dir.glob("*.csv")):
+        if csv_path.stat().st_size == 0 and _has_incremented_sibling(csv_path):
+            continue
         try:
             results.append(parse_scorer_csv(csv_path))
         except ResultsError as e:
@@ -495,3 +502,20 @@ def humanize_dose(value: Optional[float], sd: Optional[float], unit: str) -> Dic
         display["sd"] = f"{sd / factor:.3g}"
         display["pct"] = f"{100 * sd / value:.3g}" if value else None
     return display
+
+
+def one_significant_digit(value: Optional[str]) -> Optional[str]:
+    """Round a formatted numeric string to one significant digit for compact display."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        return value
+    if number == 0 or not math.isfinite(number):
+        return value
+    magnitude = math.floor(math.log10(abs(number)))
+    if magnitude >= 0:
+        return f"{round(number, -magnitude):.0f}"
+    decimals = -magnitude
+    return f"{round(number, decimals):.{decimals}f}"

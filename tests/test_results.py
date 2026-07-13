@@ -89,6 +89,14 @@ def test_increment_suffix_is_recorded(tmp_path):
     assert parse_scorer_csv(p).run_index == 1
 
 
+def test_collect_results_ignores_empty_base_file_when_incremented_csv_exists(tmp_path):
+    (tmp_path / "topas_field01_neutron_Fetus.csv").write_text("")
+    (tmp_path / "topas_field01_neutron_Fetus_1.csv").write_text(_MINIMAL)
+    found, warnings = results.collect_results(tmp_path)
+    assert warnings == []
+    assert [r.csv_name for r in found] == ["topas_field01_neutron_Fetus_1.csv"]
+
+
 def test_structure_name_ending_in_a_number_is_not_an_increment(tmp_path):
     """A structure legitimately named `PTV_2` must not be read as a re-run of `PTV`."""
     p = tmp_path / "topas_field01_gamma_PTV_2.csv"
@@ -208,7 +216,7 @@ def test_nan_sum_is_flagged_as_a_version_problem(tmp_path):
     and it must never be rendered as one."""
     p = tmp_path / "old.csv"
     p.write_text(
-        "# TOPAS Version: 3.9\n"
+        "# TOPAS Version: 4.1.p0\n"
         "# Results for scorer: AmBDose_Fetus\n"
         "# AmbientDoseEquivalent ( Sv ) : Sum   Standard_Deviation   \n"
         "-nan, 4.148248342996396e-15\n"
@@ -397,3 +405,9 @@ def test_humanize_dose_handles_missing_value_and_uncertainty():
 def test_humanize_dose_zero_value_takes_prefix_from_uncertainty():
     d = results.humanize_dose(0.0, 0.00024, "Sv")
     assert d["value"] == "0" and d["unit"] == "µSv"  # 0.00024 Sv = 240 µSv sets the scale
+
+
+def test_one_significant_digit_formats_uncertainty_for_display():
+    assert results.one_significant_digit("0.24") == "0.2"
+    assert results.one_significant_digit("16") == "20"
+    assert results.one_significant_digit(None) is None

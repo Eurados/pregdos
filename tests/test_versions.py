@@ -10,7 +10,7 @@ from pregdos import versions
 
 def _clear_caches():
     # A test may have monkeypatched these with a plain function, which has no cache.
-    for fn in (versions.topas_version, versions.geant4_version):
+    for fn in (versions.topas_version, versions.geant4_version, versions.latest_pregdos_release):
         if hasattr(fn, "cache_clear"):
             fn.cache_clear()
 
@@ -21,6 +21,11 @@ def _clear(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     _clear_caches()
     monkeypatch.setattr(versions, "MARKER_DIR", versions.Path("/nonexistent"))
+    monkeypatch.setattr(
+        versions.requests,
+        "get",
+        lambda *args, **kwargs: (_ for _ in ()).throw(versions.requests.RequestException("offline")),
+    )
     yield
     _clear_caches()
 
@@ -29,7 +34,7 @@ def _clear(monkeypatch):
 
 @pytest.mark.parametrize("text,expected", [
     ("4.2.p3", (4, 2, 3)),      # OpenTOPAS patch releases use a `p` prefix
-    ("3.9", (3, 9)),
+    ("4.2", (4, 2)),
     ("11.3.2", (11, 3, 2)),
     ("Version 4.2.p3", (4, 2, 3)),
 ])
@@ -40,6 +45,39 @@ def test_parse_version(text, expected):
 def test_parse_version_rejects_junk():
     assert versions.parse_version("") is None
     assert versions.parse_version("no digits here") is None
+
+
+def test_latest_pregdos_release_reads_github_tag(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"tag_name": "v0.5.1"}
+
+    versions.latest_pregdos_release.cache_clear()
+    monkeypatch.setattr(versions.requests, "get", lambda *args, **kwargs: FakeResponse())
+
+    assert versions.latest_pregdos_release() == "v0.5.1"
+    versions.latest_pregdos_release.cache_clear()
+
+
+def test_latest_pregdos_release_degrades_on_network_error(monkeypatch):
+    versions.latest_pregdos_release.cache_clear()
+
+    def boom(*args, **kwargs):
+        raise versions.requests.RequestException("offline")
+
+    monkeypatch.setattr(versions.requests, "get", boom)
+
+    assert versions.latest_pregdos_release() == versions.UNKNOWN
+    versions.latest_pregdos_release.cache_clear()
+
+
+def test_newer_pregdos_release_compares_tags_to_installed_versions():
+    assert versions.newer_pregdos_release("0.5.0+gabc", "v0.5.1")
+    assert not versions.newer_pregdos_release("0.5.1.post0+gabc", "v0.5.1")
+    assert not versions.newer_pregdos_release("dev", "v0.5.1")
 
 
 # --- topas_version ---
@@ -107,13 +145,6 @@ def test_supported_version_has_no_warning(monkeypatch):
     assert versions.topas_warning() is None
 
 
-def test_version_3_9_is_flagged_as_ambiguous(monkeypatch):
-    """OpenTOPAS 4.0.0 reports itself as 3.9, so a "3.9" build cannot be trusted either way."""
-    _with_version(monkeypatch, "3.9")
-    warning = versions.topas_warning()
-    assert "4.0.0" in warning and "misreports" in warning and "#49" in warning
-
-
 def test_older_opentopas_is_flagged(monkeypatch):
     _with_version(monkeypatch, "4.1.p0")
     assert "#49" in versions.topas_warning()
@@ -161,7 +192,7 @@ def test_submit_blocker_none_for_supported_topas(monkeypatch):
 
 
 def test_submit_blocker_blocks_unsupported_topas(monkeypatch):
-    _with_version(monkeypatch, "3.9")
+    _with_version(monkeypatch, "4.1.p0")
     assert "#49" in versions.submit_blocker()
 
 
@@ -184,16 +215,30 @@ def test_about_page_reports_versions(monkeypatch):
     from pregdos.webserver import app
     _with_version(monkeypatch, "4.2.p3")
     monkeypatch.setattr(versions, "geant4_version", lambda: "11.3.2")
+    monkeypatch.setattr(versions, "latest_pregdos_release", lambda: "v0.5.0")
     app.config["TESTING"] = True
     with app.test_client() as c:
         body = c.get("/about").data.decode()
     assert "4.2.p3" in body and "11.3.2" in body
     assert "unsupported" not in body
+    assert "latest" in body
+
+
+def test_about_page_reports_newer_pregdos_release(monkeypatch):
+    from pregdos.webserver import app
+    _with_version(monkeypatch, "4.2.p3")
+    monkeypatch.setattr(versions, "canonical_package_version", lambda name, repo_root=None: "0.5.0")
+    monkeypatch.setattr(versions, "latest_pregdos_release", lambda: "v0.5.1")
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        body = c.get("/about").data.decode()
+    assert "update available" in body
+    assert "v0.5.1" in body
 
 
 def test_about_page_warns_about_unsupported_topas(monkeypatch):
     from pregdos.webserver import app
-    _with_version(monkeypatch, "3.9")
+    _with_version(monkeypatch, "4.1.p0")
     monkeypatch.setattr(versions, "geant4_version", lambda: "11.1.3")
     app.config["TESTING"] = True
     with app.test_client() as c:
