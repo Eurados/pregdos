@@ -405,3 +405,9 @@ def test_humanize_dose_handles_missing_value_and_uncertainty():
 def test_humanize_dose_zero_value_takes_prefix_from_uncertainty():
     d = results.humanize_dose(0.0, 0.00024, "Sv")
     assert d["value"] == "0" and d["unit"] == "µSv"  # 0.00024 Sv = 240 µSv sets the scale
+
+
+def test_one_significant_digit_formats_uncertainty_for_display():
+    assert results.one_significant_digit("0.24") == "0.2"
+    assert results.one_significant_digit("16") == "20"
+    assert results.one_significant_digit(None) is None

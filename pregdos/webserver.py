@@ -42,6 +42,7 @@ app.secret_key = os.environ.get("PREGDOS_SECRET_KEY") or secrets.token_urlsafe(3
 
 # Templates render doses with a shared SI prefix (e.g. "3.8 mSv") via this helper.
 app.jinja_env.globals["fmt_dose"] = results.humanize_dose
+app.jinja_env.globals["fmt_uncertainty"] = results.one_significant_digit
 
 
 class UploadRejected(Exception):
@@ -218,6 +219,15 @@ def inject_layout_context():
 @app.route("/")
 def index():
     return render_template("dashboard.html")
+
+
+@app.route("/favicon.ico")
+def favicon():
+    svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<rect width="64" height="64" rx="12" fill="#2c7be5"/>
+<text x="32" y="41" text-anchor="middle" font-family="Arial, sans-serif" font-size="30" font-weight="700" fill="#fff">P</text>
+</svg>"""
+    return Response(svg, mimetype="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.route("/upload", methods=["GET", "POST"])

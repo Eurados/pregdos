@@ -110,17 +110,10 @@
                   <td colspan="3" class="hint">multi-bin grid — download the CSV</td>
                 {% else %}
                   {% set d = fmt_dose(r.sum, r.sd, r.unit) %}
-                  <td>
-                    {{ d.value }}
-                    {% if r.structure_mass_normalized %}
-                      <span class="hint">(mass-normalized)</span>
-                    {% elif r.structure_volume_normalized %}
-                      <span class="hint">(volume-normalized)</span>
-                    {% endif %}
-                  </td>
+                  <td>{{ d.value }}</td>
                   <td>
                     {% if d.sd is not none %}
-                      ± {{ d.sd }}{% if d.pct %} <span class="hint">({{ d.pct }}%)</span>{% endif %}
+                      ± {{ fmt_uncertainty(d.sd) }}
                     {% else %}&mdash;{% endif %}
                   </td>
                   <td>{{ d.unit }}</td>
@@ -137,7 +130,7 @@
                 <td><strong>{{ dt.value }}</strong></td>
                 <td>
                   {% if dt.sd is not none %}
-                    ± {{ dt.sd }}{% if dt.pct %} <span class="hint">({{ dt.pct }}%)</span>{% endif %}
+                    ± {{ fmt_uncertainty(dt.sd) }}
                   {% else %}&mdash;{% endif %}
                 </td>
                 <td>{{ dt.unit }}</td>
@@ -148,36 +141,12 @@
       </table>
     </div>
 
-    <p class="hint">
+    <div class="hint-box">
       <code>DoseToWater</code> is reported as physical absorbed dose in <strong>Gy</strong>;
       PregDos does not apply proton RBE to this quantity. Clinical Eclipse proton RTDOSE
       values are commonly stored as Gy(RBE), so compare those separately from physical
       <code>DoseToWater</code>.
-    </p>
-    <p class="hint">
-      {% if plan_fractions %}
-        Doses are scaled from the simulated histories to the planned treatment course
-        (<code>PARTICLE_SCALING × REQUESTED_HISTORIES / Σ spotWeight × fractions</code>).
-      {% else %}
-        Doses are scaled from the simulated histories to the generated TOPAS plan scale
-        (<code>PARTICLE_SCALING × REQUESTED_HISTORIES / Σ spotWeight</code>).
-      {% endif %}
-      The uncertainty is the 1σ Monte-Carlo statistical error, <code>√N · SD / Sum</code>
-      (N = simulated histories), scaled by the same factor — the plain TOPAS
-      <code>Standard_Deviation</code> is the per-history spread and is √N too small as an
-      error on the reported dose.
-    </p>
-    <p class="hint">
-      Single-bin structure rows are normalized with the TOPAS RTSTRUCT mask pre-pass, which gives
-      the structure mass and volume from the selected CT HU-density table.
-      <strong>Energy</strong> rows (<code>EnergyDeposit</code>) are converted to Gy by
-      <code>energy / structure mass</code> (mass-normalized).
-      <strong>Intensive dose and fluence</strong> rows (<code>DoseToWater</code>, H*(10)) are
-      divided by the whole patient box by TOPAS, so PregDos rescales them from that scorer-bin
-      volume to the structure volume — <code>× V<sub>patient</sub> / V<sub>structure</sub></code>
-      (volume-normalized).
-      Absolute doses remain under validation until issue #50 is closed.
-    </p>
+    </div>
 
     <div class="download-panel">
       <span class="download-label">Downloads</span>
@@ -187,20 +156,17 @@
         {% if can_export_dose %}
           <a class="btn"
              href="{{ url_for('download_rtdose_bundle', study=study, run_id=run_id) }}"
-             title="RTPLAN + summed PLAN dose, ready to import into a TPS">RTDOSE</a>
+             title="DICOM dose export for TPS import">RTDOSE</a>
         {% endif %}
       </div>
     </div>
-    {% if can_export_dose %}
-      <p class="hint">
-        The RTDOSE bundle holds the plan's RTPLAN and the summed <strong>PLAN</strong> dose (the
-        RTPLAN is included because a TPS refuses a dose whose plan it cannot find). Per-field
-        <strong>BEAM</strong> doses are written alongside it and listed under Files &mdash; import
-        them <em>separately</em>, as a TPS drops field doses when a plan dose is in the same batch.
-        Values are <strong>Gy(RBE)</strong> (physical &times; 1.1, whole course) so they overlay the
-        clinical plan directly &mdash; unlike the physical doses reported above.
-      </p>
-    {% endif %}
+    <ul class="download-notes">
+      <li><strong>CSV</strong>: raw numeric results, provenance, histories, and normalization audit fields.</li>
+      <li><strong>PDF</strong>: formatted dose report for review and archiving.</li>
+      {% if can_export_dose %}
+        <li><strong>RTDOSE</strong>: DICOM dose export for TPS import, in Gy(RBE) for the whole course.</li>
+      {% endif %}
+    </ul>
   {% elif status in ('running', 'queued') %}
     <p>No results yet — the run is still going.</p>
   {% else %}

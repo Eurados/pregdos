@@ -47,6 +47,14 @@ def test_upload_page_loads(client):
     response = client.get("/")
     assert response.status_code == 200
     assert b"form" in response.data.lower()
+    assert b'href="/favicon.ico"' in response.data
+
+
+def test_favicon_loads(client):
+    response = client.get("/favicon.ico")
+    assert response.status_code == 200
+    assert response.mimetype == "image/svg+xml"
+    assert response.data.startswith(b"<svg")
 
 
 # --- POST /upload validation ---
@@ -745,9 +753,8 @@ def test_run_detail_shows_scaled_scorer_results(client, tmp_path):
     # 1.049973996636311e-11 Sv * 953656.09 = 1.0013e-05, shown SI-prefixed (~10.01 µSv)
     disp = results.humanize_dose(1.049973996636311e-11 * 953656.0980490245, None, "Sv")
     assert disp["value"] in body and disp["unit"] in body
-    assert "under validation" in body         # the #50 caveat is surfaced
+    assert "under validation" not in body
     assert "Planned fractions unavailable" in body
-    assert "generated TOPAS plan scale" in body
     assert "spotWeight × fractions" not in body
 
 
@@ -790,7 +797,7 @@ def test_run_detail_converts_structure_energy_deposit_to_gy(client, tmp_path):
     expected = 10.0 * 953656.0980490245 * 1.602176634e-13 / 0.002
     assert "DoseProtonPrimary_CTV" in body
     assert "DoseToMedium" in body
-    assert "mass-normalized" in body
+    assert "mass-normalized" not in body
     disp = results.humanize_dose(expected, None, "Gy")
     assert disp["value"] in body and disp["unit"] in body
 
@@ -814,7 +821,7 @@ def test_run_detail_corrects_structure_ambient_dose_equivalent_by_volume(client,
     # → ~400.5 µSv, shown SI-prefixed.
     disp = results.humanize_dose(1.049973996636311e-11 * 953656.0980490245 * 40.0, None, "Sv")
     assert disp["value"] in body and disp["unit"] in body
-    assert "volume-normalized" in body
+    assert "volume-normalized" not in body
 
 
 def test_run_detail_corrects_structure_dose_to_water_by_volume(client, tmp_path):
@@ -847,7 +854,7 @@ def test_run_detail_corrects_structure_dose_to_water_by_volume(client, tmp_path)
     expected = 1.0e-9 * 953656.0980490245 * 50.0
     assert "DoseWater_CTV" in body
     assert "DoseToWater" in body
-    assert "volume-normalized" in body
+    assert "volume-normalized" not in body
     disp = results.humanize_dose(expected, None, "Gy")
     assert disp["value"] in body and disp["unit"] in body
 

@@ -502,3 +502,20 @@ def humanize_dose(value: Optional[float], sd: Optional[float], unit: str) -> Dic
         display["sd"] = f"{sd / factor:.3g}"
         display["pct"] = f"{100 * sd / value:.3g}" if value else None
     return display
+
+
+def one_significant_digit(value: Optional[str]) -> Optional[str]:
+    """Round a formatted numeric string to one significant digit for compact display."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        return value
+    if number == 0 or not math.isfinite(number):
+        return value
+    magnitude = math.floor(math.log10(abs(number)))
+    if magnitude >= 0:
+        return f"{round(number, -magnitude):.0f}"
+    decimals = -magnitude
+    return f"{round(number, decimals):.{decimals}f}"
