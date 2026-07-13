@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import importlib.resources
-import math
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -40,17 +39,7 @@ def _format_count(value: int | None) -> str:
 def _format_one_sig(value: str | None) -> str:
     if not value:
         return ""
-    try:
-        number = float(value)
-    except ValueError:
-        return value
-    if number == 0 or not math.isfinite(number):
-        return value
-    magnitude = math.floor(math.log10(abs(number)))
-    if magnitude >= 0:
-        return f"{round(number, -magnitude):.0f}"
-    decimals = -magnitude
-    return f"{round(number, decimals):.{decimals}f}"
+    return results.one_significant_digit(value) or ""
 
 
 def _format_uncertainty(sd: float | None, unit: str, shared_unit: str, shared_sd: str | None) -> str:
@@ -340,10 +329,8 @@ def build_report_pdf(
         pdf.paragraph("Reported values are scaled to total course dose using the planned fraction count.")
     else:
         pdf.paragraph("Planned fractions were unavailable; reported values use the generated TOPAS plan scale.")
-    pdf.paragraph(
-        "DoseToWater is physical absorbed dose in Gy. PregDos does not apply proton RBE. "
-        "The uncertainty is the 1-sigma Monte-Carlo statistical error, scaled by the same factor as the dose."
-    )
+    pdf.paragraph("DoseToWater is physical absorbed dose in Gy. PregDos does not apply proton RBE.")
+    pdf.paragraph("The uncertainty is the 1-sigma Monte-Carlo statistical error.")
     pdf.funding_footer()
 
     return bytes(pdf.output())

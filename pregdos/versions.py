@@ -211,7 +211,10 @@ def _dist_git_commit(name: str) -> str:
         dist = importlib.metadata.distribution(name)
     except importlib.metadata.PackageNotFoundError:
         return UNKNOWN
-    direct_url = dist.read_text("direct_url.json")
+    try:
+        direct_url = dist.read_text("direct_url.json")
+    except OSError:
+        return UNKNOWN
     if not direct_url:
         return UNKNOWN
     try:

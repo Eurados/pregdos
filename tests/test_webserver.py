@@ -1072,6 +1072,20 @@ def test_canonical_package_version_uses_direct_url_vcs_commit(monkeypatch):
     assert versions.canonical_package_version("dicomexport") == "1.4.4+g84860f30"
 
 
+def test_canonical_package_version_survives_unreadable_direct_url(monkeypatch):
+    from pregdos import versions
+
+    class FakeDistribution:
+        def read_text(self, name):
+            assert name == "direct_url.json"
+            raise OSError("metadata unavailable")
+
+    monkeypatch.setattr(versions, "package_version", lambda name: "1.4.4")
+    monkeypatch.setattr(versions.importlib.metadata, "distribution", lambda name: FakeDistribution())
+
+    assert versions.canonical_package_version("dicomexport") == "1.4.4"
+
+
 def test_report_pdf_uncertainty_uses_readable_si_prefix():
     from pregdos import report_pdf
 
