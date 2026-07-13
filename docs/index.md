@@ -48,6 +48,7 @@ See [Developer Guide](developer_guide.md) and [CLI Usage](usage_cli.md) for deta
 - [Developer Guide](developer_guide.md)
 - [Beam Model Format](beam_model_format.md)
 - [Phantom Data](phantom_data.md)
+- [Scorer Normalization](normalization.md)
 - [API Reference](api_reference.md)
 
 ---
