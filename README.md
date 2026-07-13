@@ -8,7 +8,13 @@ A tool for calculating dose to a fetus in proton therapy.
 Converts DICOM RT plans to [OpenTOPAS](https://github.com/OpenTOPAS/OpenTOPAS)
 Monte Carlo input files and submits them as SLURM jobs.
 
-<img width="980" height="579" alt="image" src="https://github.com/user-attachments/assets/85813578-c4b5-4cd8-948b-ba12d501a3e0" />
+<img width="1122" height="679" alt="image" src="https://github.com/user-attachments/assets/22f3f24e-62b6-43ca-b341-69f2e1588dc0" />
+
+<img width="1091" height="729" alt="image" src="https://github.com/user-attachments/assets/f4741bcf-0546-46a6-8c53-3038208adc1b" />
+
+<img width="1109" height="637" alt="image" src="https://github.com/user-attachments/assets/4d014c03-303c-4415-831d-56ff1eee3963" />
+
+<img width="1178" height="896" alt="image" src="https://github.com/user-attachments/assets/95258f2a-c256-4a44-898f-943a10be5a34" />
 
 
 > Still under development — not ready for use.
