@@ -19,7 +19,7 @@
                     {{ versions.pregdos }}
                     {% if versions.pregdos_update_available %}
                         <span class="badge warning">update available</span>
-                    {% elif versions.pregdos_latest != 'unknown' %}
+                    {% elif versions.pregdos != 'unknown' and versions.pregdos_latest != 'unknown' %}
                         <span class="badge success">latest</span>
                     {% endif %}
                 </td>
