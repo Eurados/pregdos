@@ -91,12 +91,9 @@ class ReportPDF(FPDF):
         return value
 
     def header(self):
+        # The run id is redundant here -- it is in the Run table and repeated in the footer.
         self.set_font(self._font_family, "B", 13)
         self.cell(0, 7, self._safe(self.title), border=0, new_x="LMARGIN", new_y="NEXT")
-        self.set_font(self._font_family, "", 7)
-        self.set_text_color(90, 90, 90)
-        self.cell(0, 4, self._safe(f"Run {self.run_id}"), border=0, new_x="LMARGIN", new_y="NEXT")
-        self.set_text_color(0, 0, 0)
         self.ln(2)
 
     def footer(self):
@@ -162,6 +159,15 @@ class ReportPDF(FPDF):
     def paragraph(self, text: str):
         self.set_font(self._font_family, "", 8)
         self.multi_cell(0, 4.5, self._safe(text), new_x="LMARGIN", new_y="NEXT")
+
+    def bullet(self, text: str, *, markdown: bool = False):
+        """A dash-bulleted line, hanging-indented.  ``markdown`` enables inline ``**bold**``."""
+        self.set_font(self._font_family, "", 8)
+        self.set_x(self.l_margin + 4)
+        self.multi_cell(
+            0, 4.5, self._safe("- " + text),
+            new_x="LMARGIN", new_y="NEXT", markdown=markdown,
+        )
 
     def kv_table(self, items: list[tuple[str, Any]], cols: int = 2):
         label_w = 32
@@ -294,13 +300,13 @@ def build_report_pdf(
     generated_at: str,
     provenance: dict[str, str],
 ) -> bytes:
-    pdf = ReportPDF("PregDos Dose Report", run_id)
+    pdf = ReportPDF("PregDos Report", run_id)
     pdf.add_page()
 
     pdf.heading("Run")
     pdf.kv_table([
         ("Study", study),
-        ("Run", run_id),
+        ("Run ID", run_id),
         ("Generated", generated_at),
         ("Fractions", plan_fractions if plan_fractions else "unavailable"),
     ])
@@ -325,12 +331,17 @@ def build_report_pdf(
         pdf.paragraph("No scorer output found in this run.")
 
     pdf.heading("Notes")
+    pdf.bullet("PregDos is under active development and validation is ongoing; results should "
+               "be checked independently.")
     if plan_fractions:
-        pdf.paragraph("Reported values are scaled to total course dose using the planned fraction count.")
+        pdf.bullet("Reported values are scaled to total course dose using the planned fraction count.")
     else:
-        pdf.paragraph("Planned fractions were unavailable; reported values use the generated TOPAS plan scale.")
-    pdf.paragraph("DoseToWater is physical absorbed dose in Gy. PregDos does not apply proton RBE.")
-    pdf.paragraph("The uncertainty is the 1-sigma Monte-Carlo statistical error.")
+        pdf.bullet("Planned fractions were unavailable; reported values use the generated TOPAS plan scale.")
+    pdf.bullet("The uncertainty is the 1-sigma Monte-Carlo statistical error.")
+    has_dose_to_water = any(group.get("quantity") == "DoseToWater" for group in groups)
+    if has_dose_to_water:
+        pdf.bullet("DoseToWater is **physical** absorbed dose in Gy; the proton RBE of 1.1 is "
+                   "**not** applied to these values.", markdown=True)
     pdf.funding_footer()
 
     return bytes(pdf.output())

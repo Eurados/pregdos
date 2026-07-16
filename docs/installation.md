@@ -62,7 +62,7 @@ Set these before running `pregdos-web`:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `UPLOAD_FOLDER` | system temp directory, `pregdos_uploads` | Root directory for uploaded studies and generated runs. |
+| `PREGDOS_WORK_DIR` | `/var/tmp/pregdos` | Root directory for uploaded studies and generated runs. Keep it on **persistent disk** — never `/tmp`, which is usually a RAM-backed tmpfs that is wiped on reboot and steals memory from the TOPAS workers. `/var/tmp` persists across reboots and its contents are auto-reaped after ~30 days (see the retention drop-in below). |
 | `TOPAS_BIN` | `topas` | TOPAS executable used by local runs and version checks. |
 | `PREGDOS_EXECUTOR` | `auto` | `auto`, `local`, or `slurm`. `auto` uses SLURM when `sbatch` exists, otherwise local execution. |
 | `PREGDOS_SECRET_KEY` | random per process | Flask session secret. Set a stable value for persistent deployments. |
@@ -71,7 +71,7 @@ Set these before running `pregdos-web`:
 Example local setup:
 
 ```bash
-export UPLOAD_FOLDER="$PWD/.pregdos_uploads"
+export PREGDOS_WORK_DIR="$PWD/.pregdos_uploads"
 export TOPAS_BIN=/opt/OpenTOPAS/bin/topas
 export PREGDOS_EXECUTOR=local
 export PREGDOS_SECRET_KEY="$(python - <<'PY'
@@ -102,9 +102,46 @@ To persist uploaded studies and generated runs:
 mkdir -p "$PWD/pregdos_uploads"
 docker run --rm -it --hostname localhost -p 5000:5000 \
   -v "$PWD/pregdos_uploads:/home/slurm/pregdos_uploads" \
-  -e UPLOAD_FOLDER=/home/slurm/pregdos_uploads \
+  -e PREGDOS_WORK_DIR=/home/slurm/pregdos_uploads \
   ghcr.io/eurados/pregdos:latest-topas4.2.3
 ```
+
+### Shared / multi-user deployment
+
+PregDos runs as a single server process that many staff reach over the intranet; every user
+shares one studies root. For such a deployment, point `PREGDOS_WORK_DIR` at a large,
+persistent, non-tmpfs location owned by the account that runs the server, for example:
+
+```bash
+sudo install -d -o "$USER" -g "$USER" -m 700 /srv/pregdos   # or /var/lib/pregdos
+export PREGDOS_WORK_DIR=/srv/pregdos
+```
+
+No dedicated `pregdos` system user is required — reuse the account that launches the server.
+PregDos creates the directory `0700` when it makes it itself; pre-create it with your own
+permissions (e.g. group-shared `0770`) if several accounts must share the tree, and PregDos
+will leave those permissions untouched.
+
+### Run retention
+
+Runs are transient — results must be downloaded off the server (reports, or the **Full run
+(ZIP)** archive on a run's page). The default `/var/tmp/pregdos` is already auto-reaped by
+the distro's `systemd-tmpfiles` policy (~30 days on Debian). To make the policy explicit, or
+when `PREGDOS_WORK_DIR` points elsewhere, install a `systemd-tmpfiles` drop-in. Write it
+directly (this does not depend on the source tree, so it works for a `pip` install too;
+change the path if you set `PREGDOS_WORK_DIR`, and the `30d` age for a different retention):
+
+```bash
+# Type Path             Mode UID GID Age
+echo 'e /var/tmp/pregdos - - - 30d' | sudo tee /etc/tmpfiles.d/pregdos.conf
+sudo systemd-tmpfiles --clean
+```
+
+A fuller, commented version of this file lives at `packaging/tmpfiles.d/pregdos.conf` in the
+PregDos source tree.
+
+The web UI tells users how many days a run is kept; keep that in sync with
+`RUN_RETENTION_DAYS` in `pregdos/webserver.py` and the drop-in's age field.
 
 ## Build The Docker Image From Source
 

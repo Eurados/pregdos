@@ -21,7 +21,7 @@ class FakeSbatchResult:
 @pytest.fixture
 def client(tmp_path):
     app.config["TESTING"] = True
-    app.config["UPLOAD_FOLDER"] = str(tmp_path)
+    app.config["WORK_DIR"] = str(tmp_path)
     with app.test_client() as c:
         yield c
 
@@ -1049,7 +1049,7 @@ def test_report_pdf_download(client, tmp_path):
     assert "attachment" in resp.headers["Content-Disposition"]
     assert resp.headers["Cache-Control"] == "no-store"
     assert resp.data.startswith(b"%PDF-")
-    assert b"/Title (PregDos Dose Report)" in resp.data
+    assert b"/Title (PregDos Report)" in resp.data
 
 
 def test_canonical_package_version_uses_direct_url_vcs_commit(monkeypatch):
@@ -1097,6 +1097,74 @@ def test_report_pdf_missing_run_redirects(client, tmp_path):
     _make_study(tmp_path, "alpha")
     resp = client.get("/studies/alpha/run_20260101_000000/report.pdf", follow_redirects=True)
     assert b"Run directory not found" in resp.data
+
+
+def _pdf_bullets(monkeypatch, quantity):
+    """Build a report and capture the (text, markdown) of every Notes bullet."""
+    from pregdos import report_pdf
+
+    calls = []
+    original = report_pdf.ReportPDF.bullet
+
+    def spy(self, text, *, markdown=False):
+        calls.append((text, markdown))
+        return original(self, text, markdown=markdown)
+
+    monkeypatch.setattr(report_pdf.ReportPDF, "bullet", spy)
+    groups = [{
+        "scorer": "S", "structure": "CTV", "quantity": quantity, "unit": "Gy",
+        "rows": [{"field": 1, "field_name": "", "quantity": quantity, "unit": "Gy",
+                  "sum": 1.0, "sd": 0.1, "problem": None, "simulated_histories": 1000}],
+        "total_sum": 1.0, "total_sd": 0.1, "n_fields": 1,
+    }]
+    report_pdf.build_report_pdf(
+        study="s", run_id="run_x", groups=groups, warnings=[], plan_fractions=30,
+        generated_at="now",
+        provenance={"pregdos": "0.5", "topas": "4", "dicomexport": "1", "geant4": "11"},
+    )
+    return calls
+
+
+def test_pdf_dose_to_water_note_only_when_scorer_present(monkeypatch):
+    with_dtw = _pdf_bullets(monkeypatch, "DoseToWater")
+    dtw_notes = [(t, md) for t, md in with_dtw if "DoseToWater is" in t]
+    assert len(dtw_notes) == 1
+    text, markdown = dtw_notes[0]
+    assert markdown is True
+    assert "**physical**" in text  # rendered bold in the PDF
+
+
+def test_pdf_dose_to_water_note_absent_without_scorer(monkeypatch):
+    without = _pdf_bullets(monkeypatch, "AmbientDoseEquivalent")
+    assert not any("DoseToWater is" in t for t, _ in without)
+
+
+def _csv_body_for_quantity(client, tmp_path, monkeypatch, quantity):
+    """Render the CSV report for a run whose only scorer has the given quantity."""
+    from pregdos import webserver
+
+    _make_study(tmp_path, "alpha")
+    run_id, _ = studies.create_run(tmp_path, "alpha")
+    row = {
+        "scorer": "S", "structure": "CTV", "quantity": quantity, "unit": "Gy",
+        "field": 1, "field_name": "", "sum": 1.0, "sd": 0.1, "problem": None,
+        "scale": 1.0, "simulated_histories": 1000, "raw_sum": 1.0,
+        "structure_mass_normalized": False, "structure_volume_normalized": False,
+        "structure_volume_cm3": None, "structure_mass_g": None,
+        "structure_average_density_g_cm3": None,
+    }
+    monkeypatch.setattr(webserver, "_result_rows", lambda run_dir, study: ([row], [], 30))
+    return client.get(f"/studies/alpha/{run_id}/report.csv").data.decode()
+
+
+def test_csv_dose_to_water_note_only_when_scorer_present(client, tmp_path, monkeypatch):
+    body = _csv_body_for_quantity(client, tmp_path, monkeypatch, "DoseToWater")
+    assert "the proton RBE of 1.1" in body
+
+
+def test_csv_dose_to_water_note_absent_without_scorer(client, tmp_path, monkeypatch):
+    body = _csv_body_for_quantity(client, tmp_path, monkeypatch, "AmbientDoseEquivalent")
+    assert "the proton RBE of 1.1" not in body
 
 
 # --- grouping and per-scorer totals ---
@@ -1327,3 +1395,48 @@ def test_run_page_offers_the_export_only_when_a_cube_exists(client, tmp_path):
     assert b"RTDOSE" in body
     assert b"RTDOSE for TPS" not in body
     assert b"Download dose for TPS" not in body
+
+
+# --- studies-root resolution (issue #71) ---
+
+def test_work_dir_prefers_pregdos_work_dir(monkeypatch):
+    from pregdos import webserver
+
+    monkeypatch.setenv("PREGDOS_WORK_DIR", "/data/pregdos")
+    assert webserver._resolve_work_dir() == "/data/pregdos"
+
+
+def test_work_dir_default_is_persistent_var_tmp(monkeypatch):
+    """Default is /var/tmp (persistent, auto-reaped) -- never the RAM-backed /tmp (issue #71)."""
+    from pregdos import webserver
+
+    monkeypatch.delenv("PREGDOS_WORK_DIR", raising=False)
+    resolved = webserver._resolve_work_dir()
+    assert resolved == "/var/tmp/pregdos"
+    assert not resolved.startswith("/tmp/")
+
+
+# --- full-run archive ---
+
+def test_full_run_archive_zips_every_file(client, tmp_path):
+    """The archive holds every file in the run, nested under a <run_id>/ folder."""
+    run_id, run_dir = _completed_run(tmp_path, "alpha")
+    (run_dir / "sub").mkdir()
+    (run_dir / "sub" / "nested.txt").write_text("deep")
+
+    resp = client.get(f"/studies/alpha/{run_id}/archive")
+    assert resp.status_code == 200
+    assert resp.mimetype == "application/zip"
+    assert f"alpha__{run_id}.zip" in resp.headers["Content-Disposition"]
+    assert resp.headers["Cache-Control"] == "no-store"  # patient DICOM must not be cached
+
+    with zipfile.ZipFile(io.BytesIO(resp.data)) as zf:
+        names = set(zf.namelist())
+        assert f"{run_id}/run.json" in names
+        assert f"{run_id}/sub/nested.txt" in names
+        assert zf.read(f"{run_id}/sub/nested.txt") == b"deep"
+
+
+def test_full_run_archive_missing_run_redirects(client, tmp_path):
+    resp = client.get("/studies/alpha/nope/archive", follow_redirects=False)
+    assert resp.status_code == 302

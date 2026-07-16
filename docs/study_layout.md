@@ -1,7 +1,8 @@
 # Study Directory Layout
 
 PregDos stores each uploaded study under a studies root. The studies root is controlled by
-`UPLOAD_FOLDER`; if unset, PregDos uses a directory under the system temp directory.
+`PREGDOS_WORK_DIR`; if unset, PregDos uses `/var/tmp/pregdos` — persistent across reboots,
+and auto-reaped after ~30 days so stale runs do not pile up.
 
 ## Layout
 

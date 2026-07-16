@@ -292,7 +292,7 @@ def test_funding_strip_is_on_every_page(monkeypatch, tmp_path, path):
     """The acknowledgement lives in base.html's footer, so it cannot be forgotten on a
     page added later."""
     app = _with_logos(monkeypatch, tmp_path)
-    app.config["UPLOAD_FOLDER"] = str(tmp_path / "studies")
+    app.config["WORK_DIR"] = str(tmp_path / "studies")
     with app.test_client() as c:
         body = c.get(path).data.decode()
     assert "funding-logos compact" in body
@@ -338,7 +338,7 @@ def _active_nav_items(html):
 def test_exactly_one_nav_item_is_active(monkeypatch, tmp_path, path, expected):
     from pregdos.webserver import app
     app.config["TESTING"] = True
-    app.config["UPLOAD_FOLDER"] = str(tmp_path / "studies")
+    app.config["WORK_DIR"] = str(tmp_path / "studies")
     with app.test_client() as c:
         html = c.get(path).data.decode()
     assert _active_nav_items(html) == [expected]

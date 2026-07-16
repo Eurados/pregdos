@@ -69,10 +69,24 @@ class StudyError(ValueError):
 def ensure_root(root: str | os.PathLike) -> str | None:
     """Create the studies root if needed.  Return an error string, or None on success."""
     path = Path(root)
+    # The studies root holds patient DICOM, so lock it to the owner (0700) -- but only when
+    # we create it, so an admin who provisioned a shared dir with deliberate group perms
+    # (e.g. /srv/pregdos, 0770) keeps their choice (issue #71).
+    # Detect creation atomically (mkdir is the claim): a plain exists() check could race with
+    # another process and let the chmod below clobber an admin-provisioned dir's permissions.
+    newly_created = False
     try:
-        path.mkdir(parents=True, exist_ok=True)
+        path.mkdir(parents=True, exist_ok=False)
+        newly_created = True
+    except FileExistsError:
+        pass
     except OSError as e:
         return f"Cannot create studies folder {str(path)!r}: {e}"
+    if newly_created:
+        try:
+            path.chmod(0o700)
+        except OSError:
+            pass  # best-effort; some filesystems ignore mode bits
     if not path.is_dir():
         return f"Studies folder path {str(path)!r} exists but is not a directory."
     if not os.access(path, os.W_OK | os.X_OK):
