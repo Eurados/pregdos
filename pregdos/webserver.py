@@ -567,7 +567,12 @@ def about():
     env["pregdos_latest"] = versions.latest_pregdos_release()
     env["pregdos_update_available"] = versions.newer_pregdos_release(env["pregdos"], env["pregdos_latest"])
     env["dicomexport"] = versions.dicomexport_version()
-    return render_template("about.html", versions=env)
+    return render_template(
+        "about.html",
+        versions=env,
+        work_dir=studies_root(),
+        run_retention_days=RUN_RETENTION_DAYS,
+    )
 
 
 # Funding acknowledgement logos, shown on the About page when present.  Absent files are
@@ -937,11 +942,14 @@ def download_report(study, run_id):
     writer.writerow(["# Geant4", provenance.get("geant4", "")])
     for warning in warnings:
         writer.writerow(["# Warning", warning])
+    writer.writerow(["# Note", "PregDos is under active development and validation is ongoing; "
+                     "results should be checked independently."])
     if plan_fractions:
         writer.writerow(["# Note", "Reported values are scaled to total course dose using the planned fraction count."])
     else:
         writer.writerow(["# Note", "Planned fractions were unavailable; reported values use the generated TOPAS plan scale."])
-    writer.writerow(["# Note", "DoseToWater is physical absorbed dose in Gy. PregDos does not apply proton RBE."])
+    writer.writerow(["# Note", "DoseToWater is physical absorbed dose in Gy; the proton RBE of 1.1 "
+                     "is not applied to these values (unlike the RTDOSE export)."])
     writer.writerow(["# Note", "Structure EnergyDeposit rows are mass-normalized; structure DoseToWater and "
                      "fluence rows are volume-normalized from the patient-box scorer volume to the structure volume "
                      "(issue #50)."])

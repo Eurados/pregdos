@@ -30,11 +30,6 @@
       <a class="btn primary" href="{{ url_for('upload_files') }}">New simulation</a>
     </div>
   </section>
-{% else %}
-  <p class="hint retention-notice">
-    ⚠ Runs are temporary and are automatically deleted after {{ run_retention_days }} days.
-    Download the reports or the full run archive of anything you need to keep.
-  </p>
 {% endif %}
 
 {% for tile in tiles %}
@@ -87,6 +82,10 @@
 {% endfor %}
 
 {% if tiles %}
+  <p class="hint retention-notice">
+    ⚠ Runs are temporary and are automatically deleted after {{ run_retention_days }} days.
+    Download the reports or the full run archive of anything you need to keep.
+  </p>
   <section class="card">
     <div class="actions">
       <a class="btn btn-secondary" href="{{ url_for('upload_files') }}">New simulation</a>

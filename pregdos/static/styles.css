@@ -170,6 +170,11 @@ main {
   padding: 20px;
   border: 1px solid rgba(12, 20, 33, 0.06);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+  margin-bottom: 24px;
+}
+
+.card:last-child {
+  margin-bottom: 0;
 }
 
 /* ----------------------------------------------------------
@@ -210,6 +215,21 @@ main {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.path-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0;
+}
+
+.path-row code {
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(12, 20, 33, 0.05);
+  word-break: break-all;
 }
 
 .section-head h2 {
@@ -931,6 +951,9 @@ button:focus-visible,
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* Spaced by the grid gap, not margins -- and a stray bottom margin would make the last
+     card (which escapes the .card:last-child reset differently) taller than its siblings. */
+  margin-bottom: 0;
 }
 
 .dashboard-card h2 {

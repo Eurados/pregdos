@@ -137,4 +137,37 @@
 
     {# The logos live in the persistent footer; this panel keeps the full attribution text. #}
 </section>
+
+{# Server-side path -- of interest only to admins/developers, not to end users. #}
+<section class="card server-info">
+    <p class="hint" style="margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.04em;">Server</p>
+    <p class="hint" style="margin: 0 0 8px;">
+        Working directory on this host &mdash; runs live under
+        <code>&lt;dir&gt;/&lt;study&gt;/&lt;run&nbsp;id&gt;</code>, and are auto-removed after
+        {{ run_retention_days }} days:
+    </p>
+    <p class="path-row">
+        <code id="work-dir">{{ work_dir }}</code>
+        <button type="button" class="btn btn-secondary" data-copy-target="work-dir">Copy</button>
+    </p>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Copy the server working-directory path; a small convenience for admins.
+  document.querySelectorAll('button[data-copy-target]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var text = document.getElementById(btn.dataset.copyTarget).textContent.trim();
+      var done = function () {
+        var original = btn.textContent;
+        btn.textContent = 'Copied';
+        setTimeout(function () { btn.textContent = original; }, 1200);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(function () {});
+      }
+    });
+  });
+</script>
 {% endblock %}

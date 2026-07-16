@@ -142,12 +142,20 @@
     </div>
 
     <div class="hint-box">
-      <code>DoseToWater</code> is reported as physical absorbed dose in <strong>Gy</strong>;
+      <code>DoseToWater</code> is reported as <strong>physical</strong> absorbed dose in Gy;
       PregDos does not apply proton RBE to this quantity. Clinical Eclipse proton RTDOSE
       values are commonly stored as Gy(RBE), so compare those separately from physical
       <code>DoseToWater</code>.
     </div>
 
+    <p class="hint retention-notice">
+      ⚠ PregDos is under active development and validation is ongoing; results should be
+      checked independently.
+    </p>
+    <p class="hint retention-notice">
+      ⚠ Runs are temporary and are automatically deleted after {{ run_retention_days }} days.
+      Download anything you need to keep.
+    </p>
     <div class="download-panel">
       <span class="download-label">Downloads</span>
       <div class="download-actions">
@@ -160,10 +168,6 @@
         {% endif %}
       </div>
     </div>
-    <p class="hint retention-notice">
-      ⚠ Runs are temporary and are automatically deleted after {{ run_retention_days }} days.
-      Download anything you need to keep.
-    </p>
     <ul class="download-notes">
       <li><strong>CSV</strong>: raw numeric results, provenance, histories, and normalization audit fields.</li>
       <li><strong>PDF</strong>: formatted dose report for review and archiving.</li>
@@ -184,7 +188,7 @@
     {% if files %}
       <a class="btn primary"
          href="{{ url_for('download_full_run', study=study, run_id=run_id) }}"
-         title="Download every file in this run as a ZIP, for archival">⬇ Full run (ZIP)</a>
+         title="Download every file in this run as a ZIP, for archival">⬇ Download All</a>
     {% endif %}
   </div>
   {% if files %}
