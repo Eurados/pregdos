@@ -7,6 +7,7 @@ from flask import (
     redirect,
     flash,
     url_for,
+    stream_with_context,
 )
 import importlib.metadata
 import importlib.resources
@@ -24,7 +25,6 @@ from pathlib import Path
 import subprocess
 import sys
 import shutil
-import tempfile
 
 from . import dicom_intake, executor, report_pdf, results, rtdose, structure_metrics, studies, versions
 from .models import ConversionParameters, ConversionResult
@@ -32,17 +32,35 @@ from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
 
 
-# The studies root: one directory per uploaded study.  Still called UPLOAD_FOLDER for
-# backwards compatibility with existing deployments and the Docker entrypoint.
-UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER") or os.path.join(tempfile.gettempdir(), "pregdos_uploads")
+# How long a run is expected to survive on the server before the OS janitor reaps it.  This
+# is only a *notice* to users -- the actual deletion is done by systemd-tmpfiles, either the
+# distro's default `/var/tmp` policy or the drop-in shipped in packaging/tmpfiles.d/.  Keep
+# this value in sync with that drop-in's age field.
+RUN_RETENTION_DAYS = 30
+
+# The default studies root: one directory per uploaded study, plus the runs generated from
+# them.  `/var/tmp` (not `/tmp`!) is deliberate: it is persistent disk that survives reboot,
+# and systemd-tmpfiles reaps its contents after ~30 days -- exactly the auto-cleanup we want,
+# since results must be downloaded off the server anyway and stale runs should not pile up.
+# `/tmp` would be wrong: it is usually a RAM-backed tmpfs, wiped on every reboot and stealing
+# memory from the TOPAS workers (issue #71).
+_DEFAULT_WORK_DIR = os.path.join("/var/tmp", "pregdos")
+
+
+def _resolve_work_dir() -> str:
+    """The studies root: ``PREGDOS_WORK_DIR`` if set, else ``/var/tmp/pregdos``."""
+    return os.environ.get("PREGDOS_WORK_DIR") or _DEFAULT_WORK_DIR
+
 
 app = Flask(__name__)
-app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+app.config["WORK_DIR"] = _resolve_work_dir()
 app.secret_key = os.environ.get("PREGDOS_SECRET_KEY") or secrets.token_urlsafe(32)
 
 # Templates render doses with a shared SI prefix (e.g. "3.8 mSv") via this helper.
 app.jinja_env.globals["fmt_dose"] = results.humanize_dose
 app.jinja_env.globals["fmt_uncertainty"] = results.one_significant_digit
+# So the UI can warn that runs are transient and must be downloaded before they are reaped.
+app.jinja_env.globals["run_retention_days"] = RUN_RETENTION_DAYS
 
 
 class UploadRejected(Exception):
@@ -55,7 +73,7 @@ class UploadRejected(Exception):
 
 def studies_root() -> str:
     """The configured studies root.  Read through app.config so tests can override it."""
-    return app.config["UPLOAD_FOLDER"]
+    return app.config["WORK_DIR"]
 
 
 def ensure_studies_root() -> str | None:
@@ -1171,6 +1189,82 @@ def download_job_file(study, run_id, filename):
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
     return send_from_directory(str(run_dir), secure_filename(filename), as_attachment=True)
+
+
+class _ZipStream:
+    """A non-seekable sink for :class:`zipfile.ZipFile`, so the archive can be streamed.
+
+    A run directory can hold gigabytes of dose cubes and MCPL files; buffering the whole ZIP
+    in memory or staging it on disk would be wasteful and could exhaust RAM.  Because this
+    object exposes ``write``/``tell`` but no ``seek``, ``ZipFile`` falls back to streaming
+    mode (data descriptors) and we drain each chunk to the client as it is produced.
+    """
+
+    def __init__(self):
+        self._buf = bytearray()
+        self._pos = 0
+
+    def write(self, data):
+        self._buf += data
+        self._pos += len(data)
+        return len(data)
+
+    def tell(self):
+        return self._pos
+
+    def flush(self):
+        pass
+
+    def drain(self) -> bytes:
+        chunk = bytes(self._buf)
+        self._buf.clear()
+        return chunk
+
+
+@app.route("/studies/<study>/<run_id>/archive")
+def download_full_run(study, run_id):
+    """Stream the entire run directory as a ZIP, for archival before the run is reaped.
+
+    Runs live on transient storage (see ``RUN_RETENTION_DAYS``); this lets a user pull every
+    file -- TOPAS inputs, logs, dose cubes, scorer CSVs -- in one download.  The ZIP is built
+    and streamed chunk by chunk so a multi-gigabyte run does not have to fit in memory or be
+    staged on disk first.
+    """
+    run_dir = _resolve_run(study, run_id)
+    if run_dir is None:
+        flash("Run directory not found.")
+        return redirect(url_for("list_studies"))
+
+    files = sorted(p for p in run_dir.rglob("*") if p.is_file())
+    if not files:
+        flash("This run has no files to archive yet.")
+        return redirect(url_for("run_detail", study=study, run_id=run_id))
+
+    def generate():
+        stream = _ZipStream()
+        with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as zf:
+            for path in files:
+                # Nest everything under a `<run_id>/` folder so the archive unpacks tidily.
+                arcname = f"{run_id}/{path.relative_to(run_dir).as_posix()}"
+                with zf.open(arcname, "w") as dest, open(path, "rb") as src:
+                    while True:
+                        block = src.read(1 << 20)
+                        if not block:
+                            break
+                        dest.write(block)
+                        if chunk := stream.drain():
+                            yield chunk
+                if chunk := stream.drain():
+                    yield chunk
+        if chunk := stream.drain():
+            yield chunk
+
+    download_name = f"{secure_filename(study)}__{secure_filename(run_id)}.zip"
+    return Response(
+        stream_with_context(generate()),
+        mimetype="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+    )
 
 
 @app.route("/studies/<study>/<run_id>/rtdose")

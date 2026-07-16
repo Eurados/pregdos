@@ -160,6 +160,10 @@
         {% endif %}
       </div>
     </div>
+    <p class="hint retention-notice">
+      ⚠ Runs are temporary and are automatically deleted after {{ run_retention_days }} days.
+      Download anything you need to keep.
+    </p>
     <ul class="download-notes">
       <li><strong>CSV</strong>: raw numeric results, provenance, histories, and normalization audit fields.</li>
       <li><strong>PDF</strong>: formatted dose report for review and archiving.</li>
@@ -175,7 +179,14 @@
 </section>
 
 <section class="card">
-  <h2>Files</h2>
+  <div class="section-head">
+    <h2>Files</h2>
+    {% if files %}
+      <a class="btn primary"
+         href="{{ url_for('download_full_run', study=study, run_id=run_id) }}"
+         title="Download every file in this run as a ZIP, for archival">⬇ Full run (ZIP)</a>
+    {% endif %}
+  </div>
   {% if files %}
     <table class="run-table">
       <thead><tr><th>File</th><th>Size</th><th></th></tr></thead>

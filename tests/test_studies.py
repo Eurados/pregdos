@@ -176,3 +176,23 @@ def test_find_rtstruct_searches_recursively(tmp_path):
     nested.mkdir()
     (nested / "RS.1.dcm").write_bytes(b"")
     assert studies.find_rtstruct(tmp_path, "s").name == "RS.1.dcm"
+
+
+def test_ensure_root_locks_a_newly_created_root_to_the_owner(tmp_path):
+    """The studies root holds patient DICOM, so a root we create ourselves is 0700 (#71)."""
+    import stat
+
+    root = tmp_path / "pregdos"
+    assert studies.ensure_root(root) is None
+    assert stat.S_IMODE((root).stat().st_mode) == 0o700
+
+
+def test_ensure_root_preserves_an_existing_roots_permissions(tmp_path):
+    """An admin-provisioned shared dir (e.g. group-shared 0770) keeps its permissions."""
+    import stat
+
+    root = tmp_path / "shared"
+    root.mkdir(mode=0o770)
+    root.chmod(0o770)  # umask-proof the intent
+    assert studies.ensure_root(root) is None
+    assert stat.S_IMODE(root.stat().st_mode) == 0o770

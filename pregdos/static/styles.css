@@ -195,6 +195,27 @@ main {
   font-size: 0.9rem;
 }
 
+.retention-notice {
+  color: var(--text, inherit);
+  background: var(--warning-bg, #fff7e6);
+  border: 1px solid var(--warning-border, #f0c36d);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 12px 0;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.section-head h2 {
+  margin: 0;
+}
+
 
 
 input[type="file"],

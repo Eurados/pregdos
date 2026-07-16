@@ -21,7 +21,7 @@ class FakeSbatchResult:
 @pytest.fixture
 def client(tmp_path):
     app.config["TESTING"] = True
-    app.config["UPLOAD_FOLDER"] = str(tmp_path)
+    app.config["WORK_DIR"] = str(tmp_path)
     with app.test_client() as c:
         yield c
 
@@ -1327,3 +1327,47 @@ def test_run_page_offers_the_export_only_when_a_cube_exists(client, tmp_path):
     assert b"RTDOSE" in body
     assert b"RTDOSE for TPS" not in body
     assert b"Download dose for TPS" not in body
+
+
+# --- studies-root resolution (issue #71) ---
+
+def test_work_dir_prefers_pregdos_work_dir(monkeypatch):
+    from pregdos import webserver
+
+    monkeypatch.setenv("PREGDOS_WORK_DIR", "/data/pregdos")
+    assert webserver._resolve_work_dir() == "/data/pregdos"
+
+
+def test_work_dir_default_is_persistent_var_tmp(monkeypatch):
+    """Default is /var/tmp (persistent, auto-reaped) -- never the RAM-backed /tmp (issue #71)."""
+    from pregdos import webserver
+
+    monkeypatch.delenv("PREGDOS_WORK_DIR", raising=False)
+    resolved = webserver._resolve_work_dir()
+    assert resolved == "/var/tmp/pregdos"
+    assert not resolved.startswith("/tmp/")
+
+
+# --- full-run archive ---
+
+def test_full_run_archive_zips_every_file(client, tmp_path):
+    """The archive holds every file in the run, nested under a <run_id>/ folder."""
+    run_id, run_dir = _completed_run(tmp_path, "alpha")
+    (run_dir / "sub").mkdir()
+    (run_dir / "sub" / "nested.txt").write_text("deep")
+
+    resp = client.get(f"/studies/alpha/{run_id}/archive")
+    assert resp.status_code == 200
+    assert resp.mimetype == "application/zip"
+    assert f"alpha__{run_id}.zip" in resp.headers["Content-Disposition"]
+
+    with zipfile.ZipFile(io.BytesIO(resp.data)) as zf:
+        names = set(zf.namelist())
+        assert f"{run_id}/run.json" in names
+        assert f"{run_id}/sub/nested.txt" in names
+        assert zf.read(f"{run_id}/sub/nested.txt") == b"deep"
+
+
+def test_full_run_archive_missing_run_redirects(client, tmp_path):
+    resp = client.get("/studies/alpha/nope/archive", follow_redirects=False)
+    assert resp.status_code == 302
