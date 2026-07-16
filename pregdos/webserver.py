@@ -939,7 +939,9 @@ def download_report(study, run_id):
     writer.writerow(["# PregDos", provenance.get("pregdos", "")])
     writer.writerow(["# TOPAS", provenance.get("topas", "")])
     writer.writerow(["# dicomexport", provenance.get("dicomexport", "")])
-    writer.writerow(["# Geant4", provenance.get("geant4", "")])
+    # Prefix the Geant4 version with "v" so spreadsheets do not coerce e.g. "11.3" into a date.
+    geant4 = provenance.get("geant4", "")
+    writer.writerow(["# Geant4", f"v{geant4}" if geant4 else ""])
     for warning in warnings:
         writer.writerow(["# Warning", warning])
     writer.writerow(["# Note", "PregDos is under active development and validation is ongoing; "

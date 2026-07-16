@@ -72,6 +72,8 @@ def ensure_root(root: str | os.PathLike) -> str | None:
     # The studies root holds patient DICOM, so lock it to the owner (0700) -- but only when
     # we create it, so an admin who provisioned a shared dir with deliberate group perms
     # (e.g. /srv/pregdos, 0770) keeps their choice (issue #71).
+    # Detect creation atomically (mkdir is the claim): a plain exists() check could race with
+    # another process and let the chmod below clobber an admin-provisioned dir's permissions.
     newly_created = False
     try:
         path.mkdir(parents=True, exist_ok=False)
