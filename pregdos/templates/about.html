@@ -138,7 +138,10 @@
     {# The logos live in the persistent footer; this panel keeps the full attribution text. #}
 </section>
 
-{# Server-side path -- of interest only to admins/developers, not to end users. #}
+{# Server-side working directory. Shown to every visitor (the app has no auth layer), which
+   is acceptable here: it discloses only a filesystem path (e.g. /var/tmp/pregdos), never
+   patient data, and PregDos is meant to run on a trusted, staff-only host. Mainly of use to
+   admins/developers. If ever deployed somewhere less trusted, gate this behind a flag. #}
 <section class="card server-info">
     <p class="hint" style="margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.04em;">Server</p>
     <p class="hint" style="margin: 0 0 8px;">

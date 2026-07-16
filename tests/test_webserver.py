@@ -1139,6 +1139,34 @@ def test_pdf_dose_to_water_note_absent_without_scorer(monkeypatch):
     assert not any("DoseToWater is" in t for t, _ in without)
 
 
+def _csv_body_for_quantity(client, tmp_path, monkeypatch, quantity):
+    """Render the CSV report for a run whose only scorer has the given quantity."""
+    from pregdos import webserver
+
+    _make_study(tmp_path, "alpha")
+    run_id, _ = studies.create_run(tmp_path, "alpha")
+    row = {
+        "scorer": "S", "structure": "CTV", "quantity": quantity, "unit": "Gy",
+        "field": 1, "field_name": "", "sum": 1.0, "sd": 0.1, "problem": None,
+        "scale": 1.0, "simulated_histories": 1000, "raw_sum": 1.0,
+        "structure_mass_normalized": False, "structure_volume_normalized": False,
+        "structure_volume_cm3": None, "structure_mass_g": None,
+        "structure_average_density_g_cm3": None,
+    }
+    monkeypatch.setattr(webserver, "_result_rows", lambda run_dir, study: ([row], [], 30))
+    return client.get(f"/studies/alpha/{run_id}/report.csv").data.decode()
+
+
+def test_csv_dose_to_water_note_only_when_scorer_present(client, tmp_path, monkeypatch):
+    body = _csv_body_for_quantity(client, tmp_path, monkeypatch, "DoseToWater")
+    assert "the proton RBE of 1.1" in body
+
+
+def test_csv_dose_to_water_note_absent_without_scorer(client, tmp_path, monkeypatch):
+    body = _csv_body_for_quantity(client, tmp_path, monkeypatch, "AmbientDoseEquivalent")
+    assert "the proton RBE of 1.1" not in body
+
+
 # --- grouping and per-scorer totals ---
 
 def _row(
@@ -1400,6 +1428,7 @@ def test_full_run_archive_zips_every_file(client, tmp_path):
     assert resp.status_code == 200
     assert resp.mimetype == "application/zip"
     assert f"alpha__{run_id}.zip" in resp.headers["Content-Disposition"]
+    assert resp.headers["Cache-Control"] == "no-store"  # patient DICOM must not be cached
 
     with zipfile.ZipFile(io.BytesIO(resp.data)) as zf:
         names = set(zf.namelist())

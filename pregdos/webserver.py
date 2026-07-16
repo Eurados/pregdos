@@ -950,8 +950,9 @@ def download_report(study, run_id):
         writer.writerow(["# Note", "Reported values are scaled to total course dose using the planned fraction count."])
     else:
         writer.writerow(["# Note", "Planned fractions were unavailable; reported values use the generated TOPAS plan scale."])
-    writer.writerow(["# Note", "DoseToWater is physical absorbed dose in Gy; the proton RBE of 1.1 "
-                     "is not applied to these values (unlike the RTDOSE export)."])
+    if any(r.get("quantity") == "DoseToWater" for r in rows):
+        writer.writerow(["# Note", "DoseToWater is physical absorbed dose in Gy; the proton RBE of 1.1 "
+                         "is not applied to these values (unlike the RTDOSE export)."])
     writer.writerow(["# Note", "Structure EnergyDeposit rows are mass-normalized; structure DoseToWater and "
                      "fluence rows are volume-normalized from the patient-box scorer volume to the structure volume "
                      "(issue #50)."])
@@ -1215,7 +1216,7 @@ class _ZipStream:
         self._pos = 0
 
     def write(self, data):
-        self._buf += data
+        self._buf.extend(data)
         self._pos += len(data)
         return len(data)
 
@@ -1273,7 +1274,13 @@ def download_full_run(study, run_id):
     return Response(
         stream_with_context(generate()),
         mimetype="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{download_name}"',
+            # Patient DICOM -- match the CSV/PDF endpoints and keep it out of shared caches.
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
     )
 
 

@@ -127,13 +127,18 @@ will leave those permissions untouched.
 Runs are transient — results must be downloaded off the server (reports, or the **Full run
 (ZIP)** archive on a run's page). The default `/var/tmp/pregdos` is already auto-reaped by
 the distro's `systemd-tmpfiles` policy (~30 days on Debian). To make the policy explicit, or
-when `PREGDOS_WORK_DIR` points elsewhere, install the drop-in:
+when `PREGDOS_WORK_DIR` points elsewhere, install a `systemd-tmpfiles` drop-in. Write it
+directly (this does not depend on the source tree, so it works for a `pip` install too;
+change the path if you set `PREGDOS_WORK_DIR`, and the `30d` age for a different retention):
 
 ```bash
-sudo cp packaging/tmpfiles.d/pregdos.conf /etc/tmpfiles.d/pregdos.conf
-# edit the path/age inside if you changed PREGDOS_WORK_DIR or want a different retention
+# Type Path             Mode UID GID Age
+echo 'e /var/tmp/pregdos - - - 30d' | sudo tee /etc/tmpfiles.d/pregdos.conf
 sudo systemd-tmpfiles --clean
 ```
+
+A fuller, commented version of this file lives at `packaging/tmpfiles.d/pregdos.conf` in the
+PregDos source tree.
 
 The web UI tells users how many days a run is kept; keep that in sync with
 `RUN_RETENTION_DAYS` in `pregdos/webserver.py` and the drop-in's age field.
