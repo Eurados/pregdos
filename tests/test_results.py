@@ -107,7 +107,7 @@ def test_structure_name_ending_in_a_number_is_not_an_increment(tmp_path):
 # --- field number and beam name ---
 
 def test_field_number_comes_from_the_parameter_file():
-    """dicomexport names its output by DICOM BeamNumber, so the filename maps onto the plan."""
+    """dicomexport names its output by the field's 1-based ordinal position in the plan."""
     assert parse_scorer_csv(NEUTRON).field_number == 1
 
 
@@ -156,21 +156,25 @@ def _rtplan(tmp_path, beams, sequence="IonBeamSequence", fractions=None):
 
 
 def test_beam_names_from_ion_plan(tmp_path):
-    """Proton plans are RT Ion Plan and use IonBeamSequence."""
+    """Proton plans are RT Ion Plan and use IonBeamSequence; names key by ordinal position."""
     path = _rtplan(tmp_path, [(1, "Field 1"), (2, "RPO"), (3, "LAO")])
     assert results.beam_names(path) == {1: "Field 1", 2: "RPO", 3: "LAO"}
 
 
 def test_beam_names_from_photon_plan(tmp_path):
+    """A single photon beam is the first (ordinal 1) field, whatever its BeamNumber."""
     path = _rtplan(tmp_path, [(7, "AP")], sequence="BeamSequence")
-    assert results.beam_names(path) == {7: "AP"}
+    assert results.beam_names(path) == {1: "AP"}
 
 
-def test_beam_numbers_need_not_match_plan_order(tmp_path):
-    """The whole point of the lookup: beam 2 may be listed first, or numbered arbitrarily."""
-    path = _rtplan(tmp_path, [(5, "Posterior"), (2, "Anterior")])
-    names = results.beam_names(path)
-    assert names[5] == "Posterior" and names[2] == "Anterior"
+def test_beam_names_key_by_plan_order_not_beam_number(tmp_path):
+    """Names follow the field's ordinal position, not its DICOM BeamNumber (issue #69).
+
+    dicomexport numbers `_field<NN>` by position (i + 1), so with the real study's shape --
+    BeamNumbers 2, 4, 5, 6 -- the names must land on ordinals 1..4, not on 2/4/5/6.
+    """
+    path = _rtplan(tmp_path, [(2, "A"), (4, "B"), (5, "C"), (6, "D")])
+    assert results.beam_names(path) == {1: "A", 2: "B", 3: "C", 4: "D"}
 
 
 def test_beam_names_missing_plan_is_empty(tmp_path):

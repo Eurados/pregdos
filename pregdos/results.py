@@ -83,9 +83,10 @@ _STANDARD_DEVIATION = "Standard_Deviation"
 # index, so `topas_field01_neutron_Fetus_1.csv` is the same scorer, run again.
 _INCREMENT_RE = re.compile(r"^(?P<stem>.+?)_(?P<index>\d+)$")
 
-# dicomexport names its output `<base>_field<NN>.txt`, where NN is the DICOM **BeamNumber**
-# -- not the beam's position in the plan.  So the number in the filename maps straight onto
-# the RTPLAN, and the two can never drift apart.
+# dicomexport names its output `<base>_field<NN>.txt`, where NN is the field's **1-based
+# ordinal position** in the plan (`i + 1` over the beam sequence) -- NOT the DICOM
+# BeamNumber, which can be anything (e.g. 2, 4, 5, 6).  `beam_names()` is keyed the same way
+# so the number in the filename lines up with the name, and the two never drift apart.
 _FIELD_NUMBER_RE = re.compile(r"_field(?P<number>\d+)\.txt$")
 
 
@@ -153,7 +154,9 @@ class ScorerResult:
 
     @property
     def field_number(self) -> Optional[int]:
-        """DICOM BeamNumber of the field that produced this scorer, from the TOPAS input name."""
+        """1-based ordinal position of the field that produced this scorer, from the TOPAS
+        input name (dicomexport's `_field<NN>`).  This is the plan-order index, not the DICOM
+        BeamNumber."""
         if (m := _FIELD_NUMBER_RE.search(self.parameter_file)):
             return int(m.group("number"))
         return None
@@ -366,15 +369,21 @@ def parse_scorer_csv(path: str | Path) -> ScorerResult:
 
 
 def beam_names(rtplan_path: Optional[str | Path]) -> Dict[int, str]:
-    """Map DICOM ``BeamNumber`` to ``BeamName`` from an RTPLAN.
+    """Map a field's **1-based ordinal position** in the plan to its ``BeamName``.
 
     Clinicians identify a field by its name ("RPO", "Field 2"), not by the order it happens
-    to appear in the plan -- and the two need not agree.  dicomexport encodes the BeamNumber
-    in the TOPAS filename, so the lookup is exact.
+    to appear in the plan.  dicomexport numbers its ``_field<NN>`` outputs by the field's
+    ordinal position in the beam sequence (``i + 1``), *not* by the DICOM ``BeamNumber`` --
+    which can be arbitrary (e.g. 2, 4, 5, 6).  We key the names the same way so the filename
+    ordinal lines up with the name; keying by ``BeamNumber`` would misalign every field whose
+    number is not exactly its position (issue #69).  This matches ``rtdose``, which already
+    indexes the plan's beams by ``beams[field_number - 1]``.
 
     Proton plans are *RT Ion Plan* and use ``IonBeamSequence``; photon plans use
-    ``BeamSequence``.  Returns an empty mapping when the plan is missing or unreadable, so a
-    results page still renders with bare field numbers.
+    ``BeamSequence`` -- the two are mutually exclusive, and dicomexport only ever reads
+    ``IonBeamSequence``, so we take a single sequence (ion preferred) rather than merging
+    both (which would let ordinals collide).  Returns an empty mapping when the plan is
+    missing or unreadable, so a results page still renders with bare field numbers.
     """
     if rtplan_path is None:
         return {}
@@ -385,13 +394,12 @@ def beam_names(rtplan_path: Optional[str | Path]) -> Dict[int, str]:
     except Exception:  # noqa: BLE001 - a bad RTPLAN must not break the results page
         return {}
 
+    seq = getattr(ds, "IonBeamSequence", None) or getattr(ds, "BeamSequence", None) or []
     names: Dict[int, str] = {}
-    for attr in ("IonBeamSequence", "BeamSequence"):
-        for beam in getattr(ds, attr, []) or []:
-            number = getattr(beam, "BeamNumber", None)
-            name = getattr(beam, "BeamName", None) or getattr(beam, "BeamDescription", None)
-            if number is not None and name:
-                names[int(number)] = str(name).strip()
+    for idx, beam in enumerate(seq, start=1):
+        name = getattr(beam, "BeamName", None) or getattr(beam, "BeamDescription", None)
+        if name:
+            names[idx] = str(name).strip()
     return names
 
 
