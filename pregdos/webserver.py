@@ -1113,7 +1113,10 @@ def cancel_run(study, run_id):
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
     status = _run_status(run_dir)
-    if status in (executor.RUNNING, executor.QUEUED):
+    # A run with a live worker is cancellable whatever its aggregate status says.  When a
+    # field failed, the run used to report "failed" while the shell carried on with the
+    # remaining fields, and the UI then refused to stop it (issue #80).
+    if status in (executor.RUNNING, executor.QUEUED) or executor.worker_alive(run_dir):
         executor.cancel_run(run_dir)
         flash(f"Cancelled run {run_id}.")
     else:
