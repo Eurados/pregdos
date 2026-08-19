@@ -736,6 +736,7 @@ def run_detail(study, run_id):
             "histories_total": p.histories_total,
             "runs_started": p.runs_started,
             "total_runs": p.total_runs,
+            "failure": p.failure,
         }
         for p in field_progress
     ]
@@ -1228,6 +1229,13 @@ class _ZipStream:
 
     def flush(self):
         pass
+
+    def close(self):
+        """Part of the sink protocol ``ZipFile`` expects; there is nothing to release.
+
+        ``ZipFile`` never calls this -- it was handed a file object, so it leaves closing to
+        the caller -- but the method has to exist for the object to *be* a writable sink.
+        """
 
     def drain(self) -> bytes:
         chunk = bytes(self._buf)

@@ -423,6 +423,7 @@ def _wait_for_state(pid, wanted, timeout=5.0):
     """Poll /proc until the process reaches `wanted` (e.g. "Z" for zombie)."""
     import time
     from pathlib import Path as _Path
+    state = None
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -543,3 +544,42 @@ def test_worker_alive_is_false_for_a_run_that_never_started(tmp_path):
         "fields": [{"topas_file": "topas_field01.txt", "ident": ""}],
     }))
     assert executor.worker_alive(tmp_path) is False
+
+
+# --- issue #82: a signal death must not read like a bad input ---
+
+@pytest.mark.parametrize("code,expected", [
+    ("1", "TOPAS exited with code 1"),
+    ("99", "TOPAS exited with code 99"),
+    ("134", "killed by SIGABRT"),
+    ("137", "killed by SIGKILL"),
+    ("139", "killed by SIGSEGV"),
+])
+def test_field_failure_decodes_the_exit_code(tmp_path, code, expected):
+    (tmp_path / "topas_field01.exit_code").write_text(code + "\n")
+    assert executor.field_failure(tmp_path, "topas_field01.txt").startswith(expected)
+
+
+def test_field_failure_explains_the_two_out_of_memory_deaths(tmp_path):
+    """SIGKILL and SIGSEGV both mean "too big for this machine", which the bare code hides."""
+    for code in ("137", "139"):
+        (tmp_path / "topas_field01.exit_code").write_text(code + "\n")
+        assert "memory" in executor.field_failure(tmp_path, "topas_field01.txt")
+
+
+def test_field_failure_is_none_for_success_and_for_an_unfinished_field(tmp_path):
+    assert executor.field_failure(tmp_path, "topas_field01.txt") is None   # no sentinel yet
+    (tmp_path / "topas_field01.exit_code").write_text("0\n")
+    assert executor.field_failure(tmp_path, "topas_field01.txt") is None
+
+
+def test_field_progress_carries_the_failure_reason(tmp_path):
+    (tmp_path / "topas_field01.exit_code").write_text("139\n")
+    progress = executor.field_progress(tmp_path, "topas_field01.txt")
+    assert progress.status == executor.FAILED
+    assert "SIGSEGV" in progress.failure
+
+
+def test_field_progress_has_no_failure_reason_while_running(tmp_path):
+    progress = executor.field_progress(tmp_path, "topas_field01.txt")
+    assert progress.status == executor.RUNNING and progress.failure is None

@@ -2,6 +2,7 @@ import zipfile
 
 import numpy as np
 import pydicom
+import pydicom.uid  # pydicom re-exports this at runtime, but only an explicit import declares it
 from pydicom.dataset import Dataset, FileMetaDataset
 from pydicom.uid import ImplicitVRLittleEndian, RTDoseStorage, generate_uid
 

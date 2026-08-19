@@ -88,7 +88,9 @@ def test_compute_metrics_writes_the_json_and_keeps_the_masks(tmp_path, monkeypat
     payload = structure_metrics.compute_metrics(tmp_path)
 
     assert payload["structures"]["CTV"]["voxel_count"] == 3
-    assert structure_metrics.load_metrics(tmp_path)["structures"]["CTV"]["voxel_count"] == 3
+    reloaded = structure_metrics.load_metrics(tmp_path)
+    assert reloaded is not None
+    assert reloaded["structures"]["CTV"]["voxel_count"] == 3
     assert (tmp_path / "structure_mask_CTV.bin").exists()
 
 
@@ -118,6 +120,7 @@ def test_ensure_metrics_recomputes_an_incomplete_cache_while_masks_remain(tmp_pa
     metrics, warnings = structure_metrics.ensure_metrics(tmp_path)
 
     assert warnings == []
+    assert metrics is not None
     assert metrics["structures"]["CTV"]["voxel_count"] == 3
 
 
@@ -220,7 +223,9 @@ def test_ensure_metrics_serialises_computation(monkeypatch, tmp_path):
     release.set()
     first.join(timeout=5)
     assert second_done.wait(timeout=5)
-    assert sorted(structure_metrics.load_metrics(run_dir)["structures"]) == ["A_PTV1", "Ovary160"]
+    written = structure_metrics.load_metrics(run_dir)
+    assert written is not None
+    assert sorted(written["structures"]) == ["A_PTV1", "Ovary160"]
 
 
 def test_concurrent_ensure_metrics_does_not_lose_a_structure(tmp_path, monkeypatch):
@@ -247,8 +252,10 @@ def test_concurrent_ensure_metrics_does_not_lose_a_structure(tmp_path, monkeypat
 
         for metrics, warnings in results:
             assert warnings == [], f"round {round_no}: {warnings}"
+            assert metrics is not None
             assert sorted(metrics["structures"]) == ["A_PTV1", "Ovary160"]
         on_disk = structure_metrics.load_metrics(run_dir)
+        assert on_disk is not None
         assert sorted(on_disk["structures"]) == ["A_PTV1", "Ovary160"], f"round {round_no}"
 
 

@@ -482,6 +482,39 @@ def field_status(run_dir: str | os.PathLike, topas_file: str) -> str:
     return COMPLETED if code == 0 else FAILED
 
 
+# Killed-by-signal exit codes that a shell reports as 128 + N.  Only the two we actually see
+# get an explanation; the rest are named but left to speak for themselves.
+_SIGNAL_HINTS = {
+    signal.SIGKILL: "the machine most likely ran out of memory",
+    signal.SIGSEGV: "usually out of memory too, when the kernel cannot back an allocation",
+}
+
+
+def field_failure(run_dir: str | os.PathLike, topas_file: str) -> Optional[str]:
+    """Why a field failed, decoded from its exit code, or None if it did not.
+
+    A bare "failed" cannot distinguish TOPAS rejecting the input (exit 1) from the kernel
+    killing it (137/139), yet those need opposite responses from the user -- fix the plan
+    versus run something smaller.  A shell reports a signal death as 128 + N, so anything
+    above 128 names a signal rather than a decision TOPAS made (issue #82).
+    """
+    sentinel = Path(run_dir) / exit_code_name(topas_file)
+    try:
+        code = int(sentinel.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    if code == 0:
+        return None
+    if code > 128:
+        try:
+            sig = signal.Signals(code - 128)
+        except ValueError:
+            return f"killed by signal {code - 128}"
+        hint = _SIGNAL_HINTS.get(sig)
+        return f"killed by {sig.name}" + (f" — {hint}" if hint else "")
+    return f"TOPAS exited with code {code}"
+
+
 def run_status(run_dir: str | os.PathLike) -> str:
     """Aggregate status of a whole run.
 
@@ -537,6 +570,8 @@ class FieldProgress:
     histories_total: int
     runs_started: int
     total_runs: int
+    failure: Optional[str] = None
+    """Decoded reason a failed field failed; None while running or on success."""
 
     @property
     def fraction(self) -> float:
@@ -590,6 +625,7 @@ def field_progress(run_dir: str | os.PathLike, topas_file: str) -> FieldProgress
         topas_file=topas_file, status=status,
         histories_done=histories_done, histories_total=histories_total,
         runs_started=len(started), total_runs=total_runs,
+        failure=field_failure(run_dir, topas_file) if status == FAILED else None,
     )
 
 
