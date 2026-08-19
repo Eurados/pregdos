@@ -1491,3 +1491,44 @@ def test_pages_do_not_fetch_a_webfont_from_a_third_party(client, tmp_path):
         body = client.get(path).data.decode()
         assert "fonts.googleapis.com" not in body
         assert "fonts.gstatic.com" not in body
+
+
+def test_studies_fragment_returns_the_list_only(client, tmp_path):
+    run_id, _ = _completed_run(tmp_path)
+
+    resp = client.get("/studies/fragment")
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert sorted(body) == ["active", "html"]
+    assert "study-tile" in body["html"] and run_id in body["html"]
+    assert "<html" not in body["html"]          # a fragment, not a page
+
+
+def test_studies_fragment_active_flag_follows_the_queue(client, tmp_path):
+    """`active` is what tells the client whether to keep polling."""
+    run_id, run_dir = _completed_run(tmp_path)
+    assert client.get("/studies/fragment").get_json()["active"] is False
+
+    (run_dir / "topas_field01.exit_code").unlink()        # back to running
+    assert client.get("/studies/fragment").get_json()["active"] is True
+
+
+def test_studies_page_polls_the_fragment_instead_of_reloading(client, tmp_path):
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field01.exit_code").unlink()        # running, so it auto-refreshes
+
+    body = client.get("/studies").data.decode()
+
+    assert "/studies/fragment" in body
+    assert 'id="studies-list"' in body
+    # The old behaviour, gone.  Matched on the call rather than the bare name, because the
+    # replacement's comment explains what it replaced.
+    assert "setTimeout(function () { location.reload(); }, 5000)" not in body
+    assert "fetch(url" in body                           # polls instead
+
+
+def test_studies_fragment_with_no_studies_is_still_valid(client, tmp_path):
+    body = client.get("/studies/fragment").get_json()
+    assert body["active"] is False
+    assert "No studies yet" in body["html"]

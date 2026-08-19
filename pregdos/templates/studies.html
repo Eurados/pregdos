@@ -3,102 +3,44 @@
 {% block heading %}Tasks{% endblock %}
 {% block subtitle %}One tile per study, newest first{% endblock %}
 
-{% macro status_badge(status, percent=none) %}
-  {% if status == 'completed' %}<span class="badge success">completed</span>
-  {% elif status == 'failed' %}<span class="badge danger">failed</span>
-  {% elif status == 'canceled' %}<span class="badge danger">canceled</span>
-  {% elif status == 'running' %}
-	    <span class="badge warning">running</span>
-	    {% if percent is not none %}
-	      <span class="progress-pie" title="{{ percent }}% of all fields complete">
-	        <svg viewBox="0 0 20 20" aria-hidden="true">
-	          <circle class="progress-pie-bg" cx="10" cy="10" r="8" pathLength="100"></circle>
-	          <circle class="progress-pie-fg" cx="10" cy="10" r="8" pathLength="100"
-	                  stroke-dasharray="{{ percent }} 100"></circle>
-	        </svg>
-	      </span>
-	    {% endif %}
-  {% elif status == 'queued' %}<span class="badge info">queued</span>
-  {% else %}<span class="badge">{{ status }}</span>{% endif %}
-{% endmacro %}
-
 {% block content %}
-{% if not tiles %}
-  <section class="card">
-    <p>No studies yet.</p>
-    <div class="actions">
-      <a class="btn primary" href="{{ url_for('upload_files') }}">New simulation</a>
-    </div>
-  </section>
-{% endif %}
-
-{% for tile in tiles %}
-  <section class="card study-tile">
-    <div class="study-tile-head">
-      <h2><code>{{ tile.name }}</code></h2>
-      <form method="POST" action="{{ url_for('delete_study', study=tile.name) }}"
-            onsubmit="return confirm('Delete study &quot;{{ tile.name }}&quot;?\n\nThis permanently removes the uploaded DICOM, every conversion and all results.{% if tile.active %}\n\nA run is still in progress and will be cancelled.{% endif %}\n\nThis cannot be undone.');">
-        <button type="submit" class="btn btn-danger" title="Delete this study">🗑 Delete</button>
-      </form>
-    </div>
-
-    {% if tile.runs %}
-      <table class="run-table">
-        <thead><tr><th>Run</th><th>Status</th><th>Est. Finish</th><th>Files</th><th></th></tr></thead>
-        <tbody>
-          {% for run in tile.runs %}
-            <tr>
-              <td>
-                <code>{{ run.run_id }}</code>
-                {% if run.histories %}
-                  <span class="hint" title="Requested primary histories">· {{ '{:,}'.format(run.histories) }}</span>
-                {% endif %}
-              </td>
-              <td>{{ status_badge(run.status, run.percent) }}</td>
-              <td>
-                {% if run.status == 'running' and run.eta %}
-                  <span class="eta-box" title="Estimated completion (local time)">
-                    <span class="eta-time">{{ run.eta.time }}</span>
-                    <span class="eta-date">{{ run.eta.date }}</span>
-                  </span>
-                {% elif run.eta %}
-                  <span class="eta-box" title="Finished (local time)">
-                    <span class="eta-time">{{ run.eta.time }}</span>
-                    <span class="eta-date">{{ run.eta.date }}</span>
-                  </span>
-                {% else %}<span class="hint">—</span>{% endif %}
-              </td>
-              <td>{{ run.file_count }}</td>
-              <td><a class="btn btn-secondary"
-                     href="{{ url_for('run_detail', study=tile.name, run_id=run.run_id) }}">View</a></td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    {% else %}
-      <p class="hint">Uploaded, but not converted yet.</p>
-    {% endif %}
-  </section>
-{% endfor %}
-
-{% if tiles %}
-  <p class="hint retention-notice">
-    ⚠ Runs are temporary and are automatically deleted after {{ run_retention_days }} days.
-    Download the reports or the full run archive of anything you need to keep.
-  </p>
-  <section class="card">
-    <div class="actions">
-      <a class="btn btn-secondary" href="{{ url_for('upload_files') }}">New simulation</a>
-    </div>
-  </section>
-{% endif %}
+<div id="studies-list">
+  {% include "_studies_list.html" %}
+</div>
 {% endblock %}
 
 {% block scripts %}
 {% if auto_refresh %}
 <script>
-  // A run is in flight; refresh so the progress pies and statuses keep up.
-  setTimeout(function () { location.reload(); }, 5000);
+  // Refresh the list in place.  A full `location.reload()` tore the document down every 5 s:
+  // the page visibly flashed and the scroll position jumped back to the top (issue #79).
+  (function () {
+    const url = {{ url_for('studies_fragment') | tojson }};
+    const list = document.getElementById('studies-list');
+    const period = 5000;
+
+    async function tick() {
+      let data;
+      try {
+        const resp = await fetch(url, {headers: {'Accept': 'application/json'}});
+        if (!resp.ok) throw new Error(resp.status);
+        data = await resp.json();
+      } catch (e) {
+        // A blip should not stop the page updating for the rest of the run; try again.
+        setTimeout(tick, period);
+        return;
+      }
+      list.innerHTML = data.html;
+      // Nothing on this page lives outside the fragment, so a finished queue just means
+      // there is no longer anything to poll for.
+      if (!data.active) {
+        return;
+      }
+      setTimeout(tick, period);
+    }
+
+    setTimeout(tick, period);
+  })();
 </script>
 {% endif %}
 {% endblock %}
