@@ -350,7 +350,28 @@ def compute_metrics(run_dir: str | Path) -> dict:
         }
 
     (run_dir / METRICS_FILE).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    _discard_masks(run_dir)
     return payload
+
+
+def _discard_masks(run_dir: Path) -> None:
+    """Delete the pre-pass masks now that their numbers are in ``structure_metrics.json``.
+
+    TOPAS writes one mask per structure as ``double`` per CT voxel -- 8 bytes to carry one
+    bit.  On a 512x512x658 CT that is 1.4 GB *per structure*, and nothing reads it again:
+    the field runs re-derive structure membership themselves (their inputs never mention
+    these files), and :func:`compute_metrics` has just consumed the only copy anyone needs.
+
+    Deleting them here rather than at the end of the run keeps the peak footprint down while
+    the fields are still to come.  A rerun regenerates them: :func:`webserver._clear_run_outputs`
+    removes ``structure_metrics.json`` alongside any masks, so the pre-pass runs again.
+
+    Called only after the JSON is safely written -- if the computation raised, the masks stay
+    put for inspection.
+    """
+    for _, safe in _prepass_structures(run_dir):
+        for suffix in (".bin", ".binheader"):
+            (run_dir / f"structure_mask_{safe}{suffix}").unlink(missing_ok=True)
 
 
 def load_metrics(run_dir: str | Path) -> dict | None:

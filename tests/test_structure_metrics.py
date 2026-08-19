@@ -47,6 +47,104 @@ def test_prepass_structures_keeps_mask_file_with_its_scorer(tmp_path):
     ]
 
 
+def _prepass_with_masks(tmp_path, structures=("CTV", "fetus")):
+    """A run directory as it looks the moment the pre-pass exits: inputs plus masks."""
+    lines = []
+    for name in structures:
+        lines += [
+            f's:Sc/PregDosMask_{name}/Quantity = "StepCount"',
+            f'sv:Sc/PregDosMask_{name}/OnlyIncludeIfInRTStructure = 1 "{name}"',
+            f's:Sc/PregDosMask_{name}/OutputFile = "structure_mask_{name}"',
+        ]
+    (tmp_path / "structure_mask_prepass.txt").write_text("\n".join(lines) + "\n")
+    for name in structures:
+        (tmp_path / f"structure_mask_{name}.bin").write_bytes(b"\x00" * 64)
+        (tmp_path / f"structure_mask_{name}.binheader").write_text("header\n")
+
+
+def test_discard_masks_removes_every_prepass_mask(tmp_path):
+    """The masks cost 8 bytes per CT voxel and nothing reads them after the metrics."""
+    _prepass_with_masks(tmp_path)
+
+    structure_metrics._discard_masks(tmp_path)
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["structure_mask_prepass.txt"]
+
+
+def test_discard_masks_leaves_everything_else_alone(tmp_path):
+    _prepass_with_masks(tmp_path, structures=("CTV",))
+    (tmp_path / "topas_field01.txt").write_text("# field")
+    (tmp_path / "structure_metrics.json").write_text("{}")
+
+    structure_metrics._discard_masks(tmp_path)
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "structure_mask_prepass.txt",
+        "structure_metrics.json",
+        "topas_field01.txt",
+    ]
+
+
+def test_discard_masks_tolerates_a_mask_that_is_already_gone(tmp_path):
+    """A rerun may have cleared them first; that is not an error."""
+    _prepass_with_masks(tmp_path, structures=("CTV",))
+    (tmp_path / "structure_mask_CTV.bin").unlink()
+
+    structure_metrics._discard_masks(tmp_path)   # must not raise
+
+    assert not (tmp_path / "structure_mask_CTV.binheader").exists()
+
+
+def test_compute_metrics_writes_the_json_then_drops_the_masks(tmp_path, monkeypatch):
+    """End to end: the numbers survive in the JSON, the gigabytes do not."""
+    import numpy as np
+
+    _prepass_with_masks(tmp_path, structures=("CTV",))
+    prepass = tmp_path / "structure_mask_prepass.txt"
+    prepass.write_text(
+        "includeFile = ../spr.txt\n"
+        's:Ge/Patient/DicomDirectory = "../dicom"\n' + prepass.read_text()
+    )
+    # One CT voxel outside the structure (-1) and three inside.
+    (tmp_path / "structure_mask_CTV.bin").write_bytes(
+        np.array([-1.0, 0.0, 0.0, 0.0], dtype="<f8").tobytes())
+
+    ct = structure_metrics.CTData(
+        hu=np.zeros((1, 2, 2)), voxel_volume_cm3=1.0, dicom_directory=tmp_path)
+    monkeypatch.setattr(structure_metrics, "_load_ct", lambda _d: ct)
+    monkeypatch.setattr(structure_metrics, "_density_from_hu", lambda hu, _t: np.ones_like(hu))
+
+    payload = structure_metrics.compute_metrics(tmp_path)
+
+    assert payload["structures"]["CTV"]["voxel_count"] == 3
+    assert structure_metrics.load_metrics(tmp_path)["structures"]["CTV"]["voxel_count"] == 3
+    assert not list(tmp_path.glob("structure_mask_CTV.bin*"))
+
+
+def test_compute_metrics_keeps_the_masks_when_it_fails(tmp_path, monkeypatch):
+    """A mask that does not match the CT is a bug worth inspecting -- do not delete it."""
+    import numpy as np
+
+    _prepass_with_masks(tmp_path, structures=("CTV",))
+    prepass = tmp_path / "structure_mask_prepass.txt"
+    prepass.write_text(
+        "includeFile = ../spr.txt\n"
+        's:Ge/Patient/DicomDirectory = "../dicom"\n' + prepass.read_text()
+    )
+    (tmp_path / "structure_mask_CTV.bin").write_bytes(
+        np.array([0.0, 0.0], dtype="<f8").tobytes())      # 2 bins, CT has 4
+
+    ct = structure_metrics.CTData(
+        hu=np.zeros((1, 2, 2)), voxel_volume_cm3=1.0, dicom_directory=tmp_path)
+    monkeypatch.setattr(structure_metrics, "_load_ct", lambda _d: ct)
+    monkeypatch.setattr(structure_metrics, "_density_from_hu", lambda hu, _t: np.ones_like(hu))
+
+    with pytest.raises(structure_metrics.StructureMetricsError):
+        structure_metrics.compute_metrics(tmp_path)
+
+    assert (tmp_path / "structure_mask_CTV.bin").exists()
+
+
 def test_energy_deposit_to_gy_uses_structure_mass():
     metrics = {"structures": {"CTV": {"mass_g": 2.0}}}
 
