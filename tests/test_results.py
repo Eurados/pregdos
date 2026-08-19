@@ -97,6 +97,32 @@ def test_collect_results_ignores_empty_base_file_when_incremented_csv_exists(tmp
     assert [r.csv_name for r in found] == ["topas_field01_neutron_Fetus_1.csv"]
 
 
+def test_collect_results_is_quiet_about_a_field_that_has_not_finished(tmp_path):
+    """Issue #67: TOPAS creates each scorer's CSV up front and fills it at the end.
+
+    While a field is still running its CSV is zero bytes, and parsing it used to raise "no
+    quantity/column header found" -- a banner on top of the task page for the whole run.
+    """
+    (tmp_path / "topas_field01_gamma_Fetus.csv").write_text(_MINIMAL)   # field 1 is done
+    (tmp_path / "topas_field02_gamma_Fetus.csv").write_text("")         # field 2 still going
+    (tmp_path / "topas_field02_neutron_Fetus.csv").write_text("")
+
+    found, warnings = results.collect_results(tmp_path)
+
+    assert warnings == []
+    assert [r.csv_name for r in found] == ["topas_field01_gamma_Fetus.csv"]
+
+
+def test_collect_results_still_reports_a_csv_with_real_but_unreadable_content(tmp_path):
+    """Only *emptiness* is excused -- a file with bytes in it that make no sense is a fault."""
+    (tmp_path / "topas_field01_gamma_Fetus.csv").write_text("not a scorer csv\n")
+
+    found, warnings = results.collect_results(tmp_path)
+
+    assert found == []
+    assert len(warnings) == 1 and "topas_field01_gamma_Fetus.csv" in warnings[0]
+
+
 def test_structure_name_ending_in_a_number_is_not_an_increment(tmp_path):
     """A structure legitimately named `PTV_2` must not be read as a re-run of `PTV`."""
     p = tmp_path / "topas_field01_gamma_PTV_2.csv"
