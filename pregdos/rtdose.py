@@ -267,7 +267,11 @@ def postprocess(run_dir: str | Path) -> List[Path]:
     template = pydicom.dcmread(template_path)
 
     fractions = results.planned_fractions(plan_path) or 1
-    beams = [b.BeamNumber for b in getattr(plan, "IonBeamSequence", getattr(plan, "BeamSequence", []))]
+    beams = {
+        int(b.BeamNumber): b.BeamNumber
+        for b in getattr(plan, "IonBeamSequence", getattr(plan, "BeamSequence", []))
+        if hasattr(b, "BeamNumber")
+    }
 
     series_uid = generate_uid()
     written: List[Path] = []
@@ -287,7 +291,7 @@ def postprocess(run_dir: str | Path) -> List[Path]:
             )
 
         total = dose.copy() if total is None else total + dose
-        beam_number = beams[field_number - 1] if 0 < field_number <= len(beams) else None
+        beam_number = beams.get(field_number)
         ds = _derive(template, series_uid, "BEAM", f"PregDos TOPAS field {field_number}",
                      plan, beam_number=beam_number)
         _encode(ds, dose)

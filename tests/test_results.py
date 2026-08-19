@@ -107,7 +107,7 @@ def test_structure_name_ending_in_a_number_is_not_an_increment(tmp_path):
 # --- field number and beam name ---
 
 def test_field_number_comes_from_the_parameter_file():
-    """dicomexport names its output by the field's 1-based ordinal position in the plan."""
+    """dicomexport >= 1.5.0 names its output by DICOM BeamNumber."""
     assert parse_scorer_csv(NEUTRON).field_number == 1
 
 
@@ -117,7 +117,7 @@ def test_field_number_is_none_without_a_parameter_file(tmp_path):
     assert parse_scorer_csv(p).field_number is None
 
 
-def _rtplan(tmp_path, beams, sequence="IonBeamSequence", fractions=None):
+def _rtplan(tmp_path, beams, sequence="IonBeamSequence", fractions=None, referenced_beams=None):
     """Write a minimal but well-formed RTPLAN carrying BeamNumber -> BeamName.
 
     The file gets a real File Meta header, as any clinical RTPLAN would -- a headerless
@@ -148,6 +148,15 @@ def _rtplan(tmp_path, beams, sequence="IonBeamSequence", fractions=None):
         group = Dataset()
         group.FractionGroupNumber = 1
         group.NumberOfFractionsPlanned = fractions
+        if referenced_beams is not None:
+            refs = []
+            for number, meterset in referenced_beams:
+                ref = Dataset()
+                ref.ReferencedBeamNumber = number
+                if meterset is not None:
+                    ref.BeamMeterset = meterset
+                refs.append(ref)
+            group.ReferencedBeamSequence = refs
         ds.FractionGroupSequence = [group]
 
     path = tmp_path / "RN.plan.dcm"
@@ -156,25 +165,32 @@ def _rtplan(tmp_path, beams, sequence="IonBeamSequence", fractions=None):
 
 
 def test_beam_names_from_ion_plan(tmp_path):
-    """Proton plans are RT Ion Plan and use IonBeamSequence; names key by ordinal position."""
+    """Proton plans are RT Ion Plan and use IonBeamSequence; names key by BeamNumber."""
     path = _rtplan(tmp_path, [(1, "Field 1"), (2, "RPO"), (3, "LAO")])
     assert results.beam_names(path) == {1: "Field 1", 2: "RPO", 3: "LAO"}
 
 
 def test_beam_names_from_photon_plan(tmp_path):
-    """A single photon beam is the first (ordinal 1) field, whatever its BeamNumber."""
+    """Photon plans use BeamSequence and also key names by BeamNumber."""
     path = _rtplan(tmp_path, [(7, "AP")], sequence="BeamSequence")
-    assert results.beam_names(path) == {1: "AP"}
+    assert results.beam_names(path) == {7: "AP"}
 
 
-def test_beam_names_key_by_plan_order_not_beam_number(tmp_path):
-    """Names follow the field's ordinal position, not its DICOM BeamNumber (issue #69).
-
-    dicomexport numbers `_field<NN>` by position (i + 1), so with the real study's shape --
-    BeamNumbers 2, 4, 5, 6 -- the names must land on ordinals 1..4, not on 2/4/5/6.
-    """
+def test_beam_names_key_by_beam_number_not_plan_order(tmp_path):
+    """Names follow DICOM BeamNumber, matching dicomexport >= 1.5.0 (issue #78)."""
     path = _rtplan(tmp_path, [(2, "A"), (4, "B"), (5, "C"), (6, "D")])
-    assert results.beam_names(path) == {1: "A", 2: "B", 3: "C", 4: "D"}
+    assert results.beam_names(path) == {2: "A", 4: "B", 5: "C", 6: "D"}
+
+
+def test_beam_names_skip_beams_without_meterset(tmp_path):
+    """Setup beams may be in IonBeamSequence but absent from dicomexport output."""
+    path = _rtplan(
+        tmp_path,
+        [(4, "SETUP_0"), (5, "SETUP_0_radB"), (1, "Pole 1"), (2, "Pole 2"), (3, "Pole 3")],
+        fractions=30,
+        referenced_beams=[(4, None), (5, None), (1, 100.0), (2, 100.0), (3, 100.0)],
+    )
+    assert results.beam_names(path) == {1: "Pole 1", 2: "Pole 2", 3: "Pole 3"}
 
 
 def test_beam_names_missing_plan_is_empty(tmp_path):

@@ -138,3 +138,54 @@ def test_ensure_dose_export_reports_failure_instead_of_raising(tmp_path, mocker)
     paths, warnings = rtdose.ensure_dose_export(tmp_path)
 
     assert paths == [] and warnings == ["no clinical RTDOSE"]
+
+
+def _plan_with_beams(path, beams):
+    sop_class = pydicom.uid.RTIonPlanStorage
+    ds = Dataset()
+    ds.file_meta = FileMetaDataset()
+    ds.file_meta.MediaStorageSOPClassUID = sop_class
+    ds.file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    ds.file_meta.TransferSyntaxUID = ImplicitVRLittleEndian
+    ds.SOPClassUID = sop_class
+    ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID
+    ds.Modality = "RTPLAN"
+    ds.IonBeamSequence = []
+    for number in beams:
+        beam = Dataset()
+        beam.BeamNumber = number
+        ds.IonBeamSequence.append(beam)
+    group = Dataset()
+    group.FractionGroupNumber = 1
+    group.NumberOfFractionsPlanned = 1
+    ds.FractionGroupSequence = [group]
+    ds.save_as(path, enforce_file_format=True)
+    return ds
+
+
+def test_postprocess_stamps_beam_number_not_ordinal_position(tmp_path):
+    study = tmp_path / "study"
+    dicom = study / "dicom"
+    run = study / "run001"
+    dicom.mkdir(parents=True)
+    run.mkdir()
+
+    plan = _plan_with_beams(dicom / "RN.plan.dcm", [4, 5, 3])
+    template = _template()
+    ref_plan = Dataset()
+    ref_plan.ReferencedSOPClassUID = plan.SOPClassUID
+    ref_plan.ReferencedSOPInstanceUID = plan.SOPInstanceUID
+    template.ReferencedRTPlanSequence = [ref_plan]
+    template.save_as(dicom / "RD.dcm", enforce_file_format=True)
+
+    cube = _template()
+    cube.DoseGridScaling = "1"
+    cube.PixelData = np.ones((1, 2, 2), dtype="<u4").tobytes()
+    cube.save_as(run / "topas_field3.dcm", enforce_file_format=True)
+    (run / "topas_field03.txt").write_text("# PARTICLE_SCALING: 1\n# REQUESTED_HISTORIES: 1\n")
+
+    rtdose.postprocess(run)
+
+    out = pydicom.dcmread(run / "rtdose_field03.dcm", stop_before_pixels=True)
+    ref = out.ReferencedRTPlanSequence[0].ReferencedFractionGroupSequence[0].ReferencedBeamSequence[0]
+    assert ref.ReferencedBeamNumber == 3

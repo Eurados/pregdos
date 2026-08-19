@@ -23,7 +23,8 @@ dependencies = [
     # >=1.4.3: emits relative DicomDirectory/CloneRTDoseGridFrom (keeps studies relocatable,
     # pregdos #41), points DicomDirectory at the CT dir (nested-CT #52), sizes the World from
     # the CT + isocenter, and writes DicomOrigin so the patient is placed correctly.
-    "dicomexport @ git+https://github.com/nbassler/dicomexport@v1.4.4",
+    # >=1.5.0: names field outputs by DICOM BeamNumber and skips beams without BeamMeterset.
+    "dicomexport @ git+https://github.com/nbassler/dicomexport@v1.5.0",
 ]
 dynamic = ["version"]
 

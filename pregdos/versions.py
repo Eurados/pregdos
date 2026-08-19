@@ -34,12 +34,11 @@ UNKNOWN = "unknown"
 # Minimum OpenTOPAS that reports a trustworthy scorer Sum and Standard_Deviation (#49).
 MINIMUM_TOPAS = (4, 2, 3)
 
-# Minimum dicomexport that aims the beam at the right side of the patient.  Up to and including
-# 1.4.3 the ``--nozzle-side`` default put the source on the far side of the isocenter, mirroring
-# every field by 180 deg: the dose landed ~9 cm off, so a target read milligray instead of gray
-# while still looking plausible (dicomexport #66).  Nothing downstream can detect that, which is
-# why it is checked here rather than trusted to the install.
-MINIMUM_DICOMEXPORT = (1, 4, 4)
+# Minimum dicomexport whose field-numbering contract PregDos mirrors. Up to and including
+# 1.4.3 the ``--nozzle-side`` default mirrored every field by 180 deg (dicomexport #66).
+# 1.5.0 also numbers output fields by DICOM BeamNumber and skips setup beams with no meterset
+# (dicomexport #75), which PregDos relies on for field labels and RTDOSE attribution.
+MINIMUM_DICOMEXPORT = (1, 5, 0)
 
 MARKER_DIR = Path("/etc/pregdos")
 
@@ -288,9 +287,9 @@ def dicomexport_warning() -> Optional[str]:
     if parsed is None:
         return f"dicomexport version cannot be determined. PregDos requires {minimum} or newer."
     if parsed < MINIMUM_DICOMEXPORT:
-        return (f"dicomexport {reported} is older than {minimum}, which mirrors every proton "
-                "field 180 deg about the isocenter: the dose lands on the wrong side of the "
-                "patient (dicomexport #66).")
+        return (f"dicomexport {reported} is older than {minimum}. PregDos requires the "
+                "dicomexport #75 BeamNumber field output contract; older versions may also "
+                "mirror every proton field 180 deg about the isocenter (dicomexport #66).")
     return None
 
 
@@ -318,8 +317,8 @@ def submit_blocker() -> Optional[str]:
       in (the stale-environment failure from issue #52's neighbourhood).
     * TOPAS reports a version we can read and it is below the #49 minimum -- every scorer Sum
       would come out NaN.
-    * dicomexport is below the #66 minimum (or unreadable) -- every field would be mirrored
-      about the isocenter, putting the dose on the wrong side of the patient.
+    * dicomexport is below the supported minimum (or unreadable) -- fields may be numbered
+      under the wrong contract or mirrored about the isocenter.
 
     An **unknown** TOPAS version does *not* block: under the SLURM backend the binary runs on
     a compute node, not on the webserver host, so the host's ``topas --version`` (or its

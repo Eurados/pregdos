@@ -815,9 +815,9 @@ def _result_rows(run_dir: Path, study: str):
     metrics, metric_warnings = structure_metrics.ensure_metrics(run_dir)
     warnings.extend(metric_warnings)
 
-    # Field names come from the study's RTPLAN, keyed by the field's ordinal position in the
-    # plan (the same `_field<NN>` numbering dicomexport writes) -- so show the name a
-    # clinician would recognise next to each field, not just an index.
+    # Field names come from the study's RTPLAN, keyed by the DICOM BeamNumber that
+    # dicomexport writes into `_field<NN>` -- so show the name a clinician would recognise
+    # next to each field, not just an index.
     plan_fractions = None
     try:
         rtplan = studies.find_rtplan(studies_root(), study)

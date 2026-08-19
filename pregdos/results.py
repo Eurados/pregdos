@@ -83,10 +83,9 @@ _STANDARD_DEVIATION = "Standard_Deviation"
 # index, so `topas_field01_neutron_Fetus_1.csv` is the same scorer, run again.
 _INCREMENT_RE = re.compile(r"^(?P<stem>.+?)_(?P<index>\d+)$")
 
-# dicomexport names its output `<base>_field<NN>.txt`, where NN is the field's **1-based
-# ordinal position** in the plan (`i + 1` over the beam sequence) -- NOT the DICOM
-# BeamNumber, which can be anything (e.g. 2, 4, 5, 6).  `beam_names()` is keyed the same way
-# so the number in the filename lines up with the name, and the two never drift apart.
+# dicomexport >= 1.5.0 names its output `<base>_field<NN>.txt`, where NN is the DICOM
+# BeamNumber. `beam_names()` is keyed the same way so the number in the filename lines up
+# with the clinical beam name, and the two never drift apart.
 _FIELD_NUMBER_RE = re.compile(r"_field(?P<number>\d+)\.txt$")
 
 
@@ -154,9 +153,8 @@ class ScorerResult:
 
     @property
     def field_number(self) -> Optional[int]:
-        """1-based ordinal position of the field that produced this scorer, from the TOPAS
-        input name (dicomexport's `_field<NN>`).  This is the plan-order index, not the DICOM
-        BeamNumber."""
+        """DICOM ``BeamNumber`` of the field that produced this scorer, from dicomexport's
+        ``_field<NN>`` TOPAS input name."""
         if (m := _FIELD_NUMBER_RE.search(self.parameter_file)):
             return int(m.group("number"))
         return None
@@ -368,16 +366,39 @@ def parse_scorer_csv(path: str | Path) -> ScorerResult:
     )
 
 
-def beam_names(rtplan_path: Optional[str | Path]) -> Dict[int, str]:
-    """Map a field's **1-based ordinal position** in the plan to its ``BeamName``.
+def _delivering_beam_numbers(ds) -> Optional[set[int]]:
+    """BeamNumbers referenced by the first fraction group with a BeamMeterset.
 
-    Clinicians identify a field by its name ("RPO", "Field 2"), not by the order it happens
-    to appear in the plan.  dicomexport numbers its ``_field<NN>`` outputs by the field's
-    ordinal position in the beam sequence (``i + 1``), *not* by the DICOM ``BeamNumber`` --
-    which can be arbitrary (e.g. 2, 4, 5, 6).  We key the names the same way so the filename
-    ordinal lines up with the name; keying by ``BeamNumber`` would misalign every field whose
-    number is not exactly its position (issue #69).  This matches ``rtdose``, which already
-    indexes the plan's beams by ``beams[field_number - 1]``.
+    dicomexport skips beams that have no meterset in ``ReferencedBeamSequence``. These are
+    typically setup beams, and including them would make PregDos show names for fields that
+    dicomexport never wrote. None means the plan has no usable fraction-group beam list, so
+    callers should fall back to all beams.
+    """
+    groups = getattr(ds, "FractionGroupSequence", None)
+    if not groups:
+        return None
+    refs = getattr(groups[0], "ReferencedBeamSequence", None)
+    if refs is None:
+        return None
+
+    numbers: set[int] = set()
+    for ref in refs:
+        if not hasattr(ref, "BeamMeterset"):
+            continue
+        number = getattr(ref, "ReferencedBeamNumber", None)
+        if number is not None:
+            numbers.add(int(number))
+    return numbers
+
+
+def beam_names(rtplan_path: Optional[str | Path]) -> Dict[int, str]:
+    """Map delivered DICOM ``BeamNumber`` to ``BeamName``.
+
+    Clinicians identify a field by its name ("RPO", "Field 2"), not just by a number.
+    dicomexport >= 1.5.0 numbers its ``_field<NN>`` outputs by DICOM ``BeamNumber`` and
+    skips beams that the first fraction group gives no ``BeamMeterset``. PregDos mirrors that
+    selection so setup beams do not appear in the results map and per-field names line up with
+    the generated TOPAS inputs.
 
     Proton plans are *RT Ion Plan* and use ``IonBeamSequence``; photon plans use
     ``BeamSequence`` -- the two are mutually exclusive, and dicomexport only ever reads
@@ -395,11 +416,18 @@ def beam_names(rtplan_path: Optional[str | Path]) -> Dict[int, str]:
         return {}
 
     seq = getattr(ds, "IonBeamSequence", None) or getattr(ds, "BeamSequence", None) or []
+    delivering = _delivering_beam_numbers(ds)
     names: Dict[int, str] = {}
-    for idx, beam in enumerate(seq, start=1):
+    for beam in seq:
+        number = getattr(beam, "BeamNumber", None)
+        if number is None:
+            continue
+        number = int(number)
+        if delivering is not None and number not in delivering:
+            continue
         name = getattr(beam, "BeamName", None) or getattr(beam, "BeamDescription", None)
         if name:
-            names[idx] = str(name).strip()
+            names[number] = str(name).strip()
     return names
 
 
