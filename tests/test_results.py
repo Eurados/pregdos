@@ -97,6 +97,32 @@ def test_collect_results_ignores_empty_base_file_when_incremented_csv_exists(tmp
     assert [r.csv_name for r in found] == ["topas_field01_neutron_Fetus_1.csv"]
 
 
+def test_collect_results_is_quiet_about_a_field_that_has_not_finished(tmp_path):
+    """Issue #67: TOPAS creates each scorer's CSV up front and fills it at the end.
+
+    While a field is still running its CSV is zero bytes, and parsing it used to raise "no
+    quantity/column header found" -- a banner on top of the task page for the whole run.
+    """
+    (tmp_path / "topas_field01_gamma_Fetus.csv").write_text(_MINIMAL)   # field 1 is done
+    (tmp_path / "topas_field02_gamma_Fetus.csv").write_text("")         # field 2 still going
+    (tmp_path / "topas_field02_neutron_Fetus.csv").write_text("")
+
+    found, warnings = results.collect_results(tmp_path)
+
+    assert warnings == []
+    assert [r.csv_name for r in found] == ["topas_field01_gamma_Fetus.csv"]
+
+
+def test_collect_results_still_reports_a_csv_with_real_but_unreadable_content(tmp_path):
+    """Only *emptiness* is excused -- a file with bytes in it that make no sense is a fault."""
+    (tmp_path / "topas_field01_gamma_Fetus.csv").write_text("not a scorer csv\n")
+
+    found, warnings = results.collect_results(tmp_path)
+
+    assert found == []
+    assert len(warnings) == 1 and "topas_field01_gamma_Fetus.csv" in warnings[0]
+
+
 def test_structure_name_ending_in_a_number_is_not_an_increment(tmp_path):
     """A structure legitimately named `PTV_2` must not be read as a re-run of `PTV`."""
     p = tmp_path / "topas_field01_gamma_PTV_2.csv"
@@ -107,7 +133,7 @@ def test_structure_name_ending_in_a_number_is_not_an_increment(tmp_path):
 # --- field number and beam name ---
 
 def test_field_number_comes_from_the_parameter_file():
-    """dicomexport names its output by the field's 1-based ordinal position in the plan."""
+    """dicomexport >= 1.5.0 names its output by DICOM BeamNumber."""
     assert parse_scorer_csv(NEUTRON).field_number == 1
 
 
@@ -117,7 +143,7 @@ def test_field_number_is_none_without_a_parameter_file(tmp_path):
     assert parse_scorer_csv(p).field_number is None
 
 
-def _rtplan(tmp_path, beams, sequence="IonBeamSequence", fractions=None):
+def _rtplan(tmp_path, beams, sequence="IonBeamSequence", fractions=None, referenced_beams=None):
     """Write a minimal but well-formed RTPLAN carrying BeamNumber -> BeamName.
 
     The file gets a real File Meta header, as any clinical RTPLAN would -- a headerless
@@ -148,6 +174,15 @@ def _rtplan(tmp_path, beams, sequence="IonBeamSequence", fractions=None):
         group = Dataset()
         group.FractionGroupNumber = 1
         group.NumberOfFractionsPlanned = fractions
+        if referenced_beams is not None:
+            refs = []
+            for number, meterset in referenced_beams:
+                ref = Dataset()
+                ref.ReferencedBeamNumber = number
+                if meterset is not None:
+                    ref.BeamMeterset = meterset
+                refs.append(ref)
+            group.ReferencedBeamSequence = refs
         ds.FractionGroupSequence = [group]
 
     path = tmp_path / "RN.plan.dcm"
@@ -156,25 +191,56 @@ def _rtplan(tmp_path, beams, sequence="IonBeamSequence", fractions=None):
 
 
 def test_beam_names_from_ion_plan(tmp_path):
-    """Proton plans are RT Ion Plan and use IonBeamSequence; names key by ordinal position."""
+    """Proton plans are RT Ion Plan and use IonBeamSequence; names key by BeamNumber."""
     path = _rtplan(tmp_path, [(1, "Field 1"), (2, "RPO"), (3, "LAO")])
     assert results.beam_names(path) == {1: "Field 1", 2: "RPO", 3: "LAO"}
 
 
 def test_beam_names_from_photon_plan(tmp_path):
-    """A single photon beam is the first (ordinal 1) field, whatever its BeamNumber."""
+    """Photon plans use BeamSequence and also key names by BeamNumber."""
     path = _rtplan(tmp_path, [(7, "AP")], sequence="BeamSequence")
-    assert results.beam_names(path) == {1: "AP"}
+    assert results.beam_names(path) == {7: "AP"}
 
 
-def test_beam_names_key_by_plan_order_not_beam_number(tmp_path):
-    """Names follow the field's ordinal position, not its DICOM BeamNumber (issue #69).
-
-    dicomexport numbers `_field<NN>` by position (i + 1), so with the real study's shape --
-    BeamNumbers 2, 4, 5, 6 -- the names must land on ordinals 1..4, not on 2/4/5/6.
-    """
+def test_beam_names_key_by_beam_number_not_plan_order(tmp_path):
+    """Names follow DICOM BeamNumber, matching dicomexport >= 1.5.0 (issue #78)."""
     path = _rtplan(tmp_path, [(2, "A"), (4, "B"), (5, "C"), (6, "D")])
-    assert results.beam_names(path) == {1: "A", 2: "B", 3: "C", 4: "D"}
+    assert results.beam_names(path) == {2: "A", 4: "B", 5: "C", 6: "D"}
+
+
+def test_beam_names_skip_beams_without_meterset(tmp_path):
+    """Setup beams may be in IonBeamSequence but absent from dicomexport output."""
+    path = _rtplan(
+        tmp_path,
+        [(4, "SETUP_0"), (5, "SETUP_0_radB"), (1, "Pole 1"), (2, "Pole 2"), (3, "Pole 3")],
+        fractions=30,
+        referenced_beams=[(4, None), (5, None), (1, 100.0), (2, 100.0), (3, 100.0)],
+    )
+    assert results.beam_names(path) == {1: "Pole 1", 2: "Pole 2", 3: "Pole 3"}
+
+
+def test_beam_names_keep_all_beams_when_the_referenced_list_is_empty(tmp_path):
+    """An empty ReferencedBeamSequence is no beam list at all, not a list selecting nothing.
+
+    Filtering on it would blank every name; falling back keeps the map keyed by BeamNumber,
+    which is still correct because callers only look up fields dicomexport wrote.
+    """
+    path = _rtplan(
+        tmp_path, [(1, "Pole 1"), (2, "Pole 2")], fractions=30, referenced_beams=[],
+    )
+    assert results.beam_names(path) == {1: "Pole 1", 2: "Pole 2"}
+
+
+def test_beam_names_keep_all_beams_when_no_referenced_beam_has_a_meterset(tmp_path):
+    """Likewise a list where nothing carries BeamMeterset -- selecting nothing is not a
+    reason to show no names."""
+    path = _rtplan(
+        tmp_path,
+        [(1, "Pole 1"), (2, "Pole 2")],
+        fractions=30,
+        referenced_beams=[(1, None), (2, None)],
+    )
+    assert results.beam_names(path) == {1: "Pole 1", 2: "Pole 2"}
 
 
 def test_beam_names_missing_plan_is_empty(tmp_path):

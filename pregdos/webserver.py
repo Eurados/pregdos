@@ -736,6 +736,7 @@ def run_detail(study, run_id):
             "histories_total": p.histories_total,
             "runs_started": p.runs_started,
             "total_runs": p.total_runs,
+            "failure": p.failure,
         }
         for p in field_progress
     ]
@@ -815,9 +816,9 @@ def _result_rows(run_dir: Path, study: str):
     metrics, metric_warnings = structure_metrics.ensure_metrics(run_dir)
     warnings.extend(metric_warnings)
 
-    # Field names come from the study's RTPLAN, keyed by the field's ordinal position in the
-    # plan (the same `_field<NN>` numbering dicomexport writes) -- so show the name a
-    # clinician would recognise next to each field, not just an index.
+    # Field names come from the study's RTPLAN, keyed by the DICOM BeamNumber that
+    # dicomexport writes into `_field<NN>` -- so show the name a clinician would recognise
+    # next to each field, not just an index.
     plan_fractions = None
     try:
         rtplan = studies.find_rtplan(studies_root(), study)
@@ -1113,7 +1114,10 @@ def cancel_run(study, run_id):
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
     status = _run_status(run_dir)
-    if status in (executor.RUNNING, executor.QUEUED):
+    # A run with a live worker is cancellable whatever its aggregate status says.  When a
+    # field failed, the run used to report "failed" while the shell carried on with the
+    # remaining fields, and the UI then refused to stop it (issue #80).
+    if status in (executor.RUNNING, executor.QUEUED) or executor.worker_alive(run_dir):
         executor.cancel_run(run_dir)
         flash(f"Cancelled run {run_id}.")
     else:
@@ -1225,6 +1229,13 @@ class _ZipStream:
 
     def flush(self):
         pass
+
+    def close(self):
+        """Part of the sink protocol ``ZipFile`` expects; there is nothing to release.
+
+        ``ZipFile`` never calls this -- it was handed a file object, so it leaves closing to
+        the caller -- but the method has to exist for the object to *be* a writable sink.
+        """
 
     def drain(self) -> bytes:
         chunk = bytes(self._buf)

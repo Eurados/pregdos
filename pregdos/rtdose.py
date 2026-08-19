@@ -150,7 +150,7 @@ def _encode(ds: Dataset, dose_gy: np.ndarray) -> None:
 
 
 def _derive(template: Dataset, series_uid: str, summation: str, description: Optional[str],
-            plan: Dataset, beam_number: Optional[str] = None, preserve_identity: bool = False) -> Dataset:
+            plan: Dataset, beam_number: Optional[int] = None, preserve_identity: bool = False) -> Dataset:
     """Copy the clinical RTDOSE and re-identify it as *our* dose, keeping its plan reference.
 
     The ``ReferencedRTPlanSequence`` is inherited verbatim, so the dose points at exactly the
@@ -267,7 +267,16 @@ def postprocess(run_dir: str | Path) -> List[Path]:
     template = pydicom.dcmread(template_path)
 
     fractions = results.planned_fractions(plan_path) or 1
-    beams = [b.BeamNumber for b in getattr(plan, "IonBeamSequence", getattr(plan, "BeamSequence", []))]
+    # dicomexport >= 1.5.0 names each cube after the DICOM BeamNumber, so a field number is
+    # only usable as a beam reference if the plan really has a beam with that number.  An
+    # element that is present but empty reads back as None, which `hasattr` would wave through
+    # and `int()` would then choke on -- the same guard `results.beam_names` already applies.
+    plan_beams = getattr(plan, "IonBeamSequence", None) or getattr(plan, "BeamSequence", None) or []
+    beam_numbers = {
+        int(b.BeamNumber)
+        for b in plan_beams
+        if getattr(b, "BeamNumber", None) is not None
+    }
 
     series_uid = generate_uid()
     written: List[Path] = []
@@ -287,7 +296,7 @@ def postprocess(run_dir: str | Path) -> List[Path]:
             )
 
         total = dose.copy() if total is None else total + dose
-        beam_number = beams[field_number - 1] if 0 < field_number <= len(beams) else None
+        beam_number = field_number if field_number in beam_numbers else None
         ds = _derive(template, series_uid, "BEAM", f"PregDos TOPAS field {field_number}",
                      plan, beam_number=beam_number)
         _encode(ds, dose)

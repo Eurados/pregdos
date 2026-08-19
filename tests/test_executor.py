@@ -167,13 +167,13 @@ def test_scheduler_waits_for_a_canceled_worker_to_actually_die(tmp_path, monkeyp
 
     launch = mocker.patch("pregdos.executor._launch_local_worker")
 
-    # The canceled worker has not exited yet: probing its process group succeeds.
-    mocker.patch("pregdos.executor.os.killpg")
+    # The canceled worker has not exited yet.
+    mocker.patch("pregdos.executor._process_group_alive", return_value=True)
     assert executor.start_next_local_run(tmp_path) is None
     launch.assert_not_called()
 
     # It is gone now, so the queue may advance.
-    mocker.patch("pregdos.executor.os.killpg", side_effect=ProcessLookupError)
+    mocker.patch("pregdos.executor._process_group_alive", return_value=False)
     assert executor.start_next_local_run(tmp_path) == queued
     launch.assert_called_once()
 
@@ -415,3 +415,171 @@ def test_real_local_run_can_be_cancelled(run_dir, monkeypatch):
     # gone, or a zombie awaiting reaping -- either way it is no longer sleeping
     assert _proc_state(pid) in ("", "Z")
     assert not (run_dir / "30.exit_code").exists(), "cancelled run must not report success"
+
+
+# --- process-group liveness: a zombie is not a running job ---
+
+def _wait_for_state(pid, wanted, timeout=5.0):
+    """Poll /proc until the process reaches `wanted` (e.g. "Z" for zombie)."""
+    import time
+    from pathlib import Path as _Path
+    state = None
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            state = (_Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split())[0]
+        except (OSError, IndexError):
+            return None
+        if state == wanted:
+            return state
+        time.sleep(0.01)
+    return state
+
+
+def test_process_group_alive_is_false_for_a_zombie():
+    """The bug: cancelling left the wrapper shell defunct, and `killpg(pid, 0)` succeeds on a
+    zombie -- so the scheduler saw a dead run as running and never started anything again."""
+    import os
+    import subprocess
+
+    proc = subprocess.Popen(["sh", "-c", "exit 0"], start_new_session=True)
+    try:
+        assert _wait_for_state(proc.pid, "Z") == "Z"        # defunct, not yet reaped
+        os.killpg(proc.pid, 0)                              # what the old check relied on
+        assert executor._process_group_alive(str(proc.pid)) is False
+    finally:
+        proc.wait()                                         # reap, so the test leaks nothing
+
+
+def test_process_group_alive_is_true_for_a_running_worker():
+    import subprocess
+
+    proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    try:
+        assert executor._process_group_alive(str(proc.pid)) is True
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_process_group_alive_is_false_for_an_unusable_ident():
+    assert executor._process_group_alive("") is False
+    assert executor._process_group_alive("not-a-pid") is False
+    assert executor._process_group_alive("21474836") is False       # no such group
+
+
+# --- issue #80: a failed field must not make a live run look finished ---
+
+def test_run_status_stays_running_while_a_later_field_is_unfinished(tmp_path):
+    """The fields share one shell chained with `;`, so field01 crashing does not stop field02.
+
+    Reporting the run as failed here is what made it uncancellable and let the scheduler
+    start a second run alongside it.
+    """
+    (tmp_path / executor.RUN_METADATA).write_text(json.dumps({
+        "backend": "local", "submitted": "now",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": "1"},
+                   {"topas_file": "topas_field02.txt", "ident": "1"}],
+    }))
+    (tmp_path / "topas_field01.exit_code").write_text("139\n")     # SIGSEGV
+    # field02 has no sentinel yet: still going.
+
+    assert executor.field_status(tmp_path, "topas_field01.txt") == executor.FAILED
+    assert executor.run_status(tmp_path) == executor.RUNNING
+
+    (tmp_path / "topas_field02.exit_code").write_text("0\n")
+    assert executor.run_status(tmp_path) == executor.FAILED        # terminal only once done
+
+
+def test_scheduler_is_blocked_by_a_live_worker_whose_field_failed(tmp_path, mocker, monkeypatch):
+    """The observed bug: field01 died, the run read "failed", and the queue advanced anyway."""
+    monkeypatch.setenv("PREGDOS_EXECUTOR", "local")
+    study = tmp_path / "alpha"
+    busy = study / "run_20260819_133337"
+    waiting = study / "run_20260819_135539"
+    busy.mkdir(parents=True)
+    waiting.mkdir()
+
+    (busy / executor.RUN_METADATA).write_text(json.dumps({
+        "backend": "local", "submitted": "a",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": "4242"},
+                   {"topas_file": "topas_field02.txt", "ident": "4242"}],
+    }))
+    (busy / "topas_field01.exit_code").write_text("139\n")
+    (waiting / executor.RUN_METADATA).write_text(json.dumps({
+        "backend": "local", "submitted": "b",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": ""}],
+    }))
+
+    launch = mocker.patch("pregdos.executor._launch_local_worker")
+
+    mocker.patch("pregdos.executor._process_group_alive", return_value=True)
+    assert executor.start_next_local_run(tmp_path) is None
+    launch.assert_not_called()
+
+    mocker.patch("pregdos.executor._process_group_alive", return_value=False)
+    assert executor.start_next_local_run(tmp_path) == waiting
+
+
+def test_process_group_alive_ignores_a_pid_recycled_into_another_directory(tmp_path):
+    """A run directory outlives the pid in its metadata; an unrelated process that inherits
+    that pid must not be mistaken for our worker."""
+    import subprocess
+
+    other = tmp_path / "somewhere_else"
+    other.mkdir()
+    proc = subprocess.Popen(["sleep", "30"], cwd=str(other), start_new_session=True)
+    try:
+        assert executor._process_group_alive(str(proc.pid)) is True          # it is alive
+        assert executor._process_group_alive(str(proc.pid), tmp_path) is False  # but not ours
+        assert executor._process_group_alive(str(proc.pid), other) is True
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_worker_alive_is_false_for_a_run_that_never_started(tmp_path):
+    (tmp_path / executor.RUN_METADATA).write_text(json.dumps({
+        "backend": "local", "submitted": "now",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": ""}],
+    }))
+    assert executor.worker_alive(tmp_path) is False
+
+
+# --- issue #82: a signal death must not read like a bad input ---
+
+@pytest.mark.parametrize("code,expected", [
+    ("1", "TOPAS exited with code 1"),
+    ("99", "TOPAS exited with code 99"),
+    ("134", "killed by SIGABRT"),
+    ("137", "killed by SIGKILL"),
+    ("139", "killed by SIGSEGV"),
+])
+def test_field_failure_decodes_the_exit_code(tmp_path, code, expected):
+    (tmp_path / "topas_field01.exit_code").write_text(code + "\n")
+    assert executor.field_failure(tmp_path, "topas_field01.txt").startswith(expected)
+
+
+def test_field_failure_explains_the_two_out_of_memory_deaths(tmp_path):
+    """SIGKILL and SIGSEGV both mean "too big for this machine", which the bare code hides."""
+    for code in ("137", "139"):
+        (tmp_path / "topas_field01.exit_code").write_text(code + "\n")
+        assert "memory" in executor.field_failure(tmp_path, "topas_field01.txt")
+
+
+def test_field_failure_is_none_for_success_and_for_an_unfinished_field(tmp_path):
+    assert executor.field_failure(tmp_path, "topas_field01.txt") is None   # no sentinel yet
+    (tmp_path / "topas_field01.exit_code").write_text("0\n")
+    assert executor.field_failure(tmp_path, "topas_field01.txt") is None
+
+
+def test_field_progress_carries_the_failure_reason(tmp_path):
+    (tmp_path / "topas_field01.exit_code").write_text("139\n")
+    progress = executor.field_progress(tmp_path, "topas_field01.txt")
+    assert progress.status == executor.FAILED
+    assert "SIGSEGV" in progress.failure
+
+
+def test_field_progress_has_no_failure_reason_while_running(tmp_path):
+    progress = executor.field_progress(tmp_path, "topas_field01.txt")
+    assert progress.status == executor.RUNNING and progress.failure is None

@@ -44,6 +44,8 @@ from typing import List, Optional
 
 import fcntl
 
+from .textio import read_text_lenient
+
 # Backend identifiers, also written into run.json.
 SLURM = "slurm"
 LOCAL = "local"
@@ -297,6 +299,72 @@ def _launch_local_worker(run_dir: Path, studies_root: Path, info: RunInfo) -> No
     _write_run_metadata(run_dir, info)
 
 
+def _worker_alive(run_dir: Path, info: RunInfo) -> bool:
+    """Whether this run's detached worker shell is still on the CPU.
+
+    Asked of the *process*, never of the sentinel files: a field that crashed writes its
+    exit code and the shell moves on to the next field, so a run can be "failed" by status
+    and still be running (issue #80).
+    """
+    idents = {f.ident for f in info.fields if f.ident}
+    return any(_process_group_alive(ident, run_dir) for ident in idents)
+
+
+def worker_alive(run_dir: str | os.PathLike) -> bool:
+    """Whether a local worker is still executing ``run_dir``.  False for any other backend."""
+    run_dir = Path(run_dir)
+    info = read_run_metadata(run_dir)
+    if info is None or info.backend != LOCAL:
+        return False
+    return _worker_alive(run_dir, info)
+
+
+def _process_group_alive(ident: str, run_dir: Optional[Path] = None) -> bool:
+    """Whether any *live* process is left in the cancelled run's process group.
+
+    ``os.killpg(pgid, 0)`` is not enough on its own.  Cancelling kills the detached wrapper
+    shell, but the shell then sits in the process table as a zombie until its parent reaps
+    it -- and the parent is the web process, which only reaps opportunistically when it next
+    spawns something.  Signal 0 succeeds on a zombie, so the scheduler concluded the run was
+    still going and refused to start anything; the only thing that would have reaped the
+    zombie was the very launch this check was blocking.  One cancel then froze the queue for
+    the life of the server (a rerun just sat there marked "queued").
+
+    So look at the actual state of every process in the group and ignore the zombies.
+    """
+    try:
+        pgid = int(ident)
+    except (TypeError, ValueError):
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except OSError:                      # covers ProcessLookupError and PermissionError
+        return False
+
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            # "<pid> (<comm>) <state> <ppid> <pgrp> ...".  `comm` can itself contain spaces
+            # and brackets, so split after the last ')' rather than on whitespace.
+            fields = (entry / "stat").read_text().rpartition(")")[2].split()
+        except OSError:                  # the process exited while we were looking
+            continue
+        if len(fields) < 3 or fields[2] != str(pgid) or fields[0] == "Z":
+            continue
+        if run_dir is None:
+            return True
+        # Confirm it is really our worker.  Pids are recycled, and a run directory kept for
+        # the retention period can easily outlive the pid recorded in its metadata; without
+        # this an unrelated process inheriting that pid would block the queue for good.
+        try:
+            if (entry / "cwd").resolve() == run_dir.resolve():
+                return True
+        except OSError:                  # gone, or not ours to inspect
+            continue
+    return False
+
+
 def start_next_local_run(studies_root: str | os.PathLike) -> Optional[Path]:
     """Start the oldest queued local run if no local run is currently active.
 
@@ -315,17 +383,14 @@ def start_next_local_run(studies_root: str | os.PathLike) -> Optional[Path]:
                 info = read_run_metadata(run_dir)
                 if info is None or info.backend != LOCAL:
                     continue
-                status = run_status(run_dir)
-                if status == RUNNING:
-                    return None
-                if status == CANCELED and any(f.ident for f in info.fields):
-                    try:
-                        os.killpg(int(info.fields[0].ident), 0)
-                        return None
-                    except (ProcessLookupError, PermissionError, ValueError, OSError):
-                        pass
                 if _local_run_is_queued(run_dir, info):
                     queued.append((info.submitted, run_dir, info))
+                    continue
+                # Whatever the sentinels say, a run whose worker is still on the CPU holds the
+                # slot -- including a canceled one that has not finished dying, and one whose
+                # first field failed while the shell carries on with the rest.
+                if _worker_alive(run_dir, info):
+                    return None
 
             if not queued:
                 return None
@@ -417,11 +482,45 @@ def field_status(run_dir: str | os.PathLike, topas_file: str) -> str:
     return COMPLETED if code == 0 else FAILED
 
 
+# Killed-by-signal exit codes that a shell reports as 128 + N.  Only the two we actually see
+# get an explanation; the rest are named but left to speak for themselves.
+_SIGNAL_HINTS = {
+    signal.SIGKILL: "the machine most likely ran out of memory",
+    signal.SIGSEGV: "usually out of memory too, when the kernel cannot back an allocation",
+}
+
+
+def field_failure(run_dir: str | os.PathLike, topas_file: str) -> Optional[str]:
+    """Why a field failed, decoded from its exit code, or None if it did not.
+
+    A bare "failed" cannot distinguish TOPAS rejecting the input (exit 1) from the kernel
+    killing it (137/139), yet those need opposite responses from the user -- fix the plan
+    versus run something smaller.  A shell reports a signal death as 128 + N, so anything
+    above 128 names a signal rather than a decision TOPAS made (issue #82).
+    """
+    sentinel = Path(run_dir) / exit_code_name(topas_file)
+    try:
+        code = int(sentinel.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    if code == 0:
+        return None
+    if code > 128:
+        try:
+            sig = signal.Signals(code - 128)
+        except ValueError:
+            return f"killed by signal {code - 128}"
+        hint = _SIGNAL_HINTS.get(sig)
+        return f"killed by {sig.name}" + (f" — {hint}" if hint else "")
+    return f"TOPAS exited with code {code}"
+
+
 def run_status(run_dir: str | os.PathLike) -> str:
     """Aggregate status of a whole run.
 
-    A run has failed if any field failed, is still running while any field is unfinished,
-    and is completed only when every field exited cleanly.
+    A run is still running while any field is unfinished -- even if an earlier field already
+    failed.  It has failed once everything has finished and any field failed, and is completed
+    only when every field exited cleanly.
     """
     info = read_run_metadata(run_dir)
     if info is None or not info.fields:
@@ -434,10 +533,14 @@ def run_status(run_dir: str | os.PathLike) -> str:
     statuses = [field_status(run_dir, f.topas_file) for f in info.fields]
     if CANCELED in statuses:
         return CANCELED
-    if FAILED in statuses:
-        return FAILED
+    # RUNNING outranks FAILED: the fields share one shell chained with ``;``, so a field that
+    # crashes does not stop the rest.  Reporting the whole run as failed while it is still on
+    # the CPU made it uncancellable in the UI and told the scheduler the machine was free,
+    # which then started a second run alongside it (issue #80).
     if RUNNING in statuses:
         return RUNNING
+    if FAILED in statuses:
+        return FAILED
     return COMPLETED
 
 
@@ -467,6 +570,8 @@ class FieldProgress:
     histories_total: int
     runs_started: int
     total_runs: int
+    failure: Optional[str] = None
+    """Decoded reason a failed field failed; None while running or on success."""
 
     @property
     def fraction(self) -> float:
@@ -481,7 +586,7 @@ class FieldProgress:
 def _spot_weights(run_dir: Path, topas_file: str) -> List[int]:
     """Per-run history counts from the TOPAS input (weights[k] = histories in run k)."""
     try:
-        text = (run_dir / topas_file).read_text()
+        text = read_text_lenient(run_dir / topas_file)
     except OSError:
         return []
     m = _SPOT_WEIGHTS_RE.search(text)
@@ -495,7 +600,7 @@ def _runs_started(run_dir: Path, topas_file: str) -> set:
     is more honest than the max index -- and lets us sum the right spot weights.
     """
     try:
-        text = (run_dir / log_name(topas_file)).read_text()
+        text = read_text_lenient(run_dir / log_name(topas_file))
     except OSError:
         return set()
     return {int(m.group(1)) for m in _RUN_LINE_RE.finditer(text)}
@@ -520,6 +625,7 @@ def field_progress(run_dir: str | os.PathLike, topas_file: str) -> FieldProgress
         topas_file=topas_file, status=status,
         histories_done=histories_done, histories_total=histories_total,
         runs_started=len(started), total_runs=total_runs,
+        failure=field_failure(run_dir, topas_file) if status == FAILED else None,
     )
 
 
