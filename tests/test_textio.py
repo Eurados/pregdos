@@ -23,8 +23,10 @@ def test_read_text_lenient_survives_a_latin1_byte(tmp_path):
     path = tmp_path / "topas_field01.log"
     path.write_bytes(LATIN1_LOG)
 
-    with pytest.raises(UnicodeDecodeError):        # what the code used to do
-        path.read_text()
+    # What the code used to do.  Spelled with an explicit encoding rather than relying on
+    # `read_text()`'s locale default, so the test asserts the same thing on any machine.
+    with pytest.raises(UnicodeDecodeError):
+        path.read_text(encoding="utf-8")
 
     text = read_text_lenient(path)
     assert "Begin processing for Run: 1" in text   # the ASCII we actually parse survives

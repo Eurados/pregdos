@@ -6,9 +6,15 @@ do use it: a real RayStation export in this project carries the structure
 names into its log verbatim -- ``Found a structure named: ...`` -- so that byte lands in a
 file PregDos then reads on every page render.
 
-:meth:`pathlib.Path.read_text` decodes strict UTF-8 and raises ``UnicodeDecodeError`` on it.
-That took out the whole UI: both ``/studies`` and the run page call
+:meth:`pathlib.Path.read_text` with no ``encoding`` decodes using the *locale's* encoding --
+UTF-8 on this machine and on any modern Linux -- and raised ``UnicodeDecodeError`` on that
+byte.  That took out the whole UI: both ``/studies`` and the run page call
 :func:`executor.run_progress`, so one umlaut in one structure name made every page 500.
+
+Leaving the encoding implicit is the other half of the problem.  On a latin-1 locale the same
+read would not raise at all; it would silently return a differently mangled string, and the
+failure would move from a 500 to a wrong value on the page.  Naming the encoding here makes
+the behaviour the same everywhere.
 
 Everything PregDos looks for in these files is ASCII -- run numbers, spot weights, header
 comments, scorer values.  A byte that will not decode is therefore never anything we need,
