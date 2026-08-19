@@ -44,6 +44,87 @@ against the hotter single-point centroid.
 
 ---
 
+## How the mask pre-pass works
+
+Written by `write_prepass_input()` in `pregdos/structure_metrics.py`, run as
+`structure_mask_prepass.txt` before the fields, and read back by `compute_metrics()`.
+
+### The scorer
+
+One scorer per requested structure:
+
+```
+s:Sc/PregDosMask_Fetus/Quantity                        = "StepCount"
+s:Sc/PregDosMask_Fetus/Component                       = "Patient"
+b:Sc/PregDosMask_Fetus/SetBinToMinusOneIfNotInRTStructure = "True"
+sv:Sc/PregDosMask_Fetus/OnlyIncludeIfInRTStructure     = 1 "Fetus"
+s:Sc/PregDosMask_Fetus/OutputType                      = "binary"
+s:Sc/PregDosMask_Fetus/OutputFile                      = "structure_mask_Fetus"
+```
+
+`SetBinToMinusOneIfNotInRTStructure` is the parameter that makes this work. It stamps **−1**
+into every voxel outside the ROI, so the *sign* of a bin is its membership flag. Without it,
+"outside the structure" and "inside but scored zero" are indistinguishable and no mask can be
+recovered.
+
+Two details are load-bearing:
+
+- **`Component = "Patient"` with no `XBins`/`YBins`/`ZBins`.** The scorer inherits the full CT
+  grid, so the mask has exactly one bin per CT voxel. This is what lets the mask index the CT
+  HU array directly.
+- **`Quantity = "StepCount"`** is simply the cheapest quantity available. The values are never
+  used; only their sign is.
+
+### The source
+
+A throwaway beam that fires a single history:
+
+```
+s:So/PregDosMaskDummy/BeamParticle            = "gamma"
+d:So/PregDosMaskDummy/BeamEnergy              = 1 MeV
+i:So/PregDosMaskDummy/NumberOfHistoriesInRun  = 1
+d:Ge/PregDosMaskSourcePosition/TransZ         = -900 mm
+```
+
+The RTSTRUCT rasterization happens when TOPAS builds the geometry, not during transport. The
+single gamma exists only to make TOPAS reach the point where it writes scorer output. Almost
+all of the pre-pass wall time is loading the CT.
+
+### Reading the mask
+
+The binary file is one little-endian `float64` per CT voxel, so membership is a sign test:
+
+```python
+mask_raw = np.fromfile(mask_path, dtype="<f8")
+mask = mask_raw.reshape(ct.hu.shape) >= 0
+```
+
+A size mismatch against `ct.hu.size` raises rather than scoring around it — a mask that does
+not match the CT means the two disagree about the grid, which is precisely the failure the
+invariant below warns about.
+
+The masks are **not** deleted after `structure_metrics.json` is written. They cost only disk
+and the run directory is reaped on the retention schedule; keeping them means an incomplete
+metrics computation can be retried instead of becoming permanent.
+
+### Why the pre-pass grid cannot drift from the run's
+
+`write_prepass_input()` does not synthesize a geometry. It copies the relevant parameters
+verbatim out of one of the run's own generated field inputs:
+
+`includeFile`, the whole `Ge/Patient/*` block (`DicomDirectory`, `DicomOriginX/Y/Z`,
+`DicomModalityTags`, `CloneRTDoseGridFrom`, `TransX/Y/Z`, `RotX/Y/Z`, `Parent`, `Type`,
+`IgnoreInconsistentFrameOfReferenceUID`), `Rt/Plan/IsoCenterX/Y/Z`, and the `Ge/World/*`
+block. The authoritative list is `parameters` at the top of `write_prepass_input()`.
+
+So the pre-pass rasterizes the structure through the same DICOM, the same geometry and the
+same HU-to-material table the production fields use. That is what turns the invariant at the
+end of this document from an assumption into something the code enforces: the mask defining
+the denominator and the `OnlyIncludeIfInRTStructure` filter defining the numerator are
+produced by the same voxelization, so they cannot disagree at the boundary voxels.
+
+---
+
 ## The root cause: TOPAS's denominator is the whole patient
 
 Every structure scorer PregDos writes is attached to the full CT volume with a single bin
@@ -175,4 +256,5 @@ cropped export, a different grid for the pre-pass than for the run — then $V_\
 longer matches TOPAS's denominator and *every volume-normalized number is silently wrong* by the
 ratio of the two definitions. Nothing in the current pipeline does this, but it is the
 assumption to check first if `DoseToWater` or H\*(10) structure results ever look off by a
-constant factor.
+constant factor. See [How the mask pre-pass works](#how-the-mask-pre-pass-works) for the
+parameter inheritance that currently keeps the pre-pass grid and the run grid identical.
