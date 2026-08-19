@@ -9,6 +9,7 @@ from the generated TOPAS input.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import math
 import re
@@ -18,6 +19,8 @@ from typing import Iterable
 
 import numpy as np
 import pydicom
+
+from .textio import read_text_lenient
 
 
 MASK_PREPASS_FILE = "structure_mask_prepass.txt"
@@ -74,7 +77,7 @@ def write_prepass_input(run_dir: str | Path, reference_topas: str | Path, struct
         return None
 
     run_dir = Path(run_dir)
-    source = Path(reference_topas).read_text()
+    source = read_text_lenient(reference_topas)
     parameters = [
         "includeFile",
         "Rt/Plan/IsoCenterX",
@@ -224,7 +227,7 @@ def _array_values(text: str, parameter: str) -> list[float]:
 
 
 def _density_from_hu(hu: np.ndarray, spr_table: Path) -> np.ndarray:
-    text = spr_table.read_text()
+    text = read_text_lenient(spr_table)
     if '"Schneider"' not in text:
         raise StructureMetricsError(f"unsupported HU material converter in {spr_table}")
 
@@ -263,7 +266,7 @@ def _prepass_structures(run_dir: Path) -> list[tuple[str, str]]:
     prepass = run_dir / PREPASS_FILE
     if not prepass.is_file():
         return []
-    text = prepass.read_text()
+    text = read_text_lenient(prepass)
     scorers: dict[str, dict[str, str]] = {}
     pattern = re.compile(
         r'^\s*\w+:Sc/(?P<scorer>[^/]+)/(?P<param>OnlyIncludeIfInRTStructure|OutputFile)\s*=\s*(?P<value>.+?)\s*$',
@@ -302,7 +305,7 @@ def compute_metrics(run_dir: str | Path) -> dict:
     prepass = run_dir / PREPASS_FILE
     if not prepass.is_file():
         raise StructureMetricsError(f"{PREPASS_FILE} not found")
-    text = prepass.read_text()
+    text = read_text_lenient(prepass)
     dicom_dir = _resolve_topas_path(run_dir, _parameter_value(text, "Ge/Patient/DicomDirectory"))
     spr_table = _resolve_topas_path(run_dir, _parameter_value(text, "includeFile"))
     ct = _load_ct(dicom_dir)
@@ -349,29 +352,34 @@ def compute_metrics(run_dir: str | Path) -> dict:
             "patient_to_structure_volume_ratio": patient_volume / volume if volume else math.nan,
         }
 
-    (run_dir / METRICS_FILE).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    _discard_masks(run_dir)
+    _write_metrics(run_dir, payload)
     return payload
 
 
-def _discard_masks(run_dir: Path) -> None:
-    """Delete the pre-pass masks now that their numbers are in ``structure_metrics.json``.
+def _write_metrics(run_dir: Path, payload: dict) -> None:
+    """Write ``structure_metrics.json`` atomically.
 
-    TOPAS writes one mask per structure as ``double`` per CT voxel -- 8 bytes to carry one
-    bit.  On a 512x512x658 CT that is 1.4 GB *per structure*, and nothing reads it again:
-    the field runs re-derive structure membership themselves (their inputs never mention
-    these files), and :func:`compute_metrics` has just consumed the only copy anyone needs.
-
-    Deleting them here rather than at the end of the run keeps the peak footprint down while
-    the fields are still to come.  A rerun regenerates them: :func:`webserver._clear_run_outputs`
-    removes ``structure_metrics.json`` alongside any masks, so the pre-pass runs again.
-
-    Called only after the JSON is safely written -- if the computation raised, the masks stay
-    put for inspection.
+    Two page renders can reach :func:`compute_metrics` at once -- the run page refreshes every
+    few seconds -- and a half-written file that :func:`load_metrics` then fails to parse would
+    read as "no metrics at all".  A rename is atomic, so a reader sees either the previous file
+    or the whole new one, never a fragment.
     """
-    for _, safe in _prepass_structures(run_dir):
-        for suffix in (".bin", ".binheader"):
-            (run_dir / f"structure_mask_{safe}{suffix}").unlink(missing_ok=True)
+    target = run_dir / METRICS_FILE
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    tmp.replace(target)
+
+
+def _missing_structures(run_dir: Path, metrics: dict) -> list[str]:
+    """Structures the pre-pass scored that ``metrics`` does not cover."""
+    have = metrics.get("structures") or {}
+    return [name for name, _ in _prepass_structures(run_dir) if name not in have]
+
+
+def _masks_present(run_dir: Path) -> bool:
+    """Whether any pre-pass mask is still on disk to recompute from."""
+    return any((run_dir / f"structure_mask_{safe}.bin").is_file()
+               for _, safe in _prepass_structures(run_dir))
 
 
 def load_metrics(run_dir: str | Path) -> dict | None:
@@ -384,11 +392,32 @@ def load_metrics(run_dir: str | Path) -> dict | None:
         return None
 
 
+def _usable_cache(run_dir: Path) -> tuple[dict, list[str]] | None:
+    """A cached result good enough to serve, or None when it should be recomputed.
+
+    A result missing structures must not be cached for the life of the run: the masks may
+    simply not have been readable when it ran.  Recompute while they are still there; once
+    they are gone, say what is missing rather than pretending.
+    """
+    metrics = load_metrics(run_dir)
+    if not metrics:
+        return None
+    missing = _missing_structures(run_dir, metrics)
+    if not missing:
+        return metrics, []
+    if not _masks_present(run_dir):
+        return metrics, [
+            "structure metrics are missing for " + ", ".join(missing)
+            + "; re-run the structure mask pre-pass to restore them"
+        ]
+    return None
+
+
 def ensure_metrics(run_dir: str | Path) -> tuple[dict | None, list[str]]:
     """Return cached metrics, or compute them if the pre-pass has completed."""
     run_dir = Path(run_dir)
-    if metrics := load_metrics(run_dir):
-        return metrics, []
+    if cached := _usable_cache(run_dir):
+        return cached
     prepass_exit = run_dir / "structure_mask_prepass.exit_code"
     if not prepass_exit.is_file():
         return None, []
@@ -398,8 +427,26 @@ def ensure_metrics(run_dir: str | Path) -> tuple[dict | None, list[str]]:
         return None, ["structure mask pre-pass exit code is unreadable"]
     if code != 0:
         return None, ["structure mask pre-pass failed; absolute structure normalisation is unavailable"]
+
+    # One computation at a time per run.  The run page refreshes every few seconds, so two
+    # renders routinely arrive together; without this both do the whole job, and the slower
+    # one overwrites the faster one's complete result with a partial one -- built by reading
+    # masks the winner had already discarded.  That is exactly how one structure's metrics
+    # went missing while the other survived.
+    #
+    # The pre-pass input doubles as the lock file: it is guaranteed to exist by the time we
+    # get here, and locking it adds no stray file to the directory the user browses.
     try:
-        return compute_metrics(run_dir), []
+        with (run_dir / PREPASS_FILE).open("r") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                if cached := _usable_cache(run_dir):   # the winner may have just written it
+                    return cached
+                return compute_metrics(run_dir), []
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+    except OSError:
+        return None, [f"{PREPASS_FILE} is unreadable"]
     except StructureMetricsError as exc:
         return None, [str(exc)]
 

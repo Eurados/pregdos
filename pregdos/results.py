@@ -63,6 +63,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from .textio import read_text_lenient
+
 # The final comment line, e.g. `# DoseToMedium ( Gy ) : Sum   Standard_Deviation`
 _QUANTITY_RE = re.compile(r"^#\s*(?P<quantity>\w+)\s*\(\s*(?P<unit>[^)]*?)\s*\)\s*:\s*(?P<columns>.+?)\s*$")
 _SCORER_RE = re.compile(r"^#\s*Results for scorer:\s*(?P<name>.+?)\s*$")
@@ -254,7 +256,7 @@ def parse_plan_scaling(topas_input: str | Path) -> Optional[PlanScaling]:
     so callers can fall back to reporting unscaled values rather than failing.
     """
     try:
-        text = Path(topas_input).read_text()
+        text = read_text_lenient(topas_input)
     except OSError:
         return None
 
@@ -295,7 +297,7 @@ def parse_scorer_csv(path: str | Path) -> ScorerResult:
     """
     path = Path(path)
     try:
-        lines = path.read_text().splitlines()
+        lines = read_text_lenient(path).splitlines()
     except OSError as e:
         raise ResultsError(f"{path.name}: cannot read ({e})") from e
 

@@ -44,6 +44,8 @@ from typing import List, Optional
 
 import fcntl
 
+from .textio import read_text_lenient
+
 # Backend identifiers, also written into run.json.
 SLURM = "slurm"
 LOCAL = "local"
@@ -481,7 +483,7 @@ class FieldProgress:
 def _spot_weights(run_dir: Path, topas_file: str) -> List[int]:
     """Per-run history counts from the TOPAS input (weights[k] = histories in run k)."""
     try:
-        text = (run_dir / topas_file).read_text()
+        text = read_text_lenient(run_dir / topas_file)
     except OSError:
         return []
     m = _SPOT_WEIGHTS_RE.search(text)
@@ -495,7 +497,7 @@ def _runs_started(run_dir: Path, topas_file: str) -> set:
     is more honest than the max index -- and lets us sum the right spot weights.
     """
     try:
-        text = (run_dir / log_name(topas_file)).read_text()
+        text = read_text_lenient(run_dir / log_name(topas_file))
     except OSError:
         return set()
     return {int(m.group(1)) for m in _RUN_LINE_RE.finditer(text)}

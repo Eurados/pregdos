@@ -28,6 +28,8 @@ from importlib.resources import files
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from .textio import read_text_lenient
+
 
 # ---------------------------------------------------------------------------
 # Regex patterns for locating sections inside a dicomexport-generated file
@@ -505,7 +507,7 @@ def append_scorers(topas_file_path: str, config: ScorerConfig) -> None:
         return
 
     path = Path(topas_file_path)
-    content = path.read_text()
+    content = read_text_lenient(path)
 
     # The stem of the TOPAS file (e.g. "topas_field01") is used as the base
     # name for all scorer output files so they land in the TOPAS working dir
