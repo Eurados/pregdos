@@ -5,17 +5,10 @@
 
 {% block content %}
 <section class="card">
-  <p>
-    <strong>Status:</strong>
-    {% if status == 'completed' %}<span class="badge success">completed</span>
-    {% elif status == 'failed' %}<span class="badge danger">failed</span>
-    {% elif status == 'canceled' %}<span class="badge danger">canceled</span>
-    {% elif status == 'running' %}<span class="badge warning">running</span>
-    {% elif status == 'queued' %}<span class="badge info">queued</span>
-    {% else %}<span class="badge">{{ status }}</span>{% endif %}
-    {% if backend %} · <strong>Backend:</strong> {{ backend }}{% endif %}
-    {% if submitted %} · <strong>Submitted:</strong> {{ submitted }}{% endif %}
-  </p>
+  <div id="run-live">
+    {% include "_run_progress.html" %}
+  </div>
+
   {% if status == 'failed' and logs %}
     <p class="hint">The run failed. Check the log for the reason:
       {% for log in logs %}
@@ -44,34 +37,6 @@
     </div>
   {% endif %}
 
-  {% if progress %}
-    {% if etr %}
-      <p class="hint" style="margin-top: 12px;">Estimated time remaining: <strong>{{ etr }}</strong></p>
-    {% endif %}
-    <div class="progress-list">
-      {% for p in progress %}
-        <div class="progress-row">
-          <div class="progress-label">
-            <code>{{ p.field }}</code>
-            <span class="hint">
-              {% if p.status == 'completed' %}done{% if p.histories_total %} · {{ '{:,}'.format(p.histories_total) }} histories{% endif %}
-              {% elif p.status == 'canceled' %}canceled
-              {% elif p.status == 'failed' %}failed at run {{ p.runs_started }}/{{ p.total_runs }}{% if p.failure %} · {{ p.failure }}{% endif %}
-              {% elif p.status == 'queued' %}queued
-              {% elif p.total_runs %}run {{ p.runs_started }}/{{ p.total_runs }} · {{ '{:,}'.format(p.histories_done) }}/{{ '{:,}'.format(p.histories_total) }} histories
-              {% else %}starting…{% endif %}
-            </span>
-          </div>
-          <div class="progress-track">
-            <progress class="progress-meter {{ p.status }}" value="{{ p.percent }}" max="100">
-              {{ p.percent }}%
-            </progress>
-            <span class="progress-pct">{{ p.percent }}%</span>
-          </div>
-        </div>
-      {% endfor %}
-    </div>
-  {% endif %}
 </section>
 
 <section class="card">
@@ -219,8 +184,37 @@
 {% block scripts %}
 {% if auto_refresh %}
 <script>
-  // The run is still going; reload periodically so the progress bars advance.
-  setTimeout(function () { location.reload(); }, 5000);
+  // Refresh only the live block.  A full `location.reload()` tore the document down every
+  // 5 s: the page visibly flashed, the scroll position jumped back to the top, and every
+  // asset was re-requested (issue #79).
+  (function () {
+    const url = {{ url_for('run_progress_fragment', study=study, run_id=run_id) | tojson }};
+    const live = document.getElementById('run-live');
+    const period = 5000;
+
+    async function tick() {
+      let data;
+      try {
+        const resp = await fetch(url, {headers: {'Accept': 'application/json'}});
+        if (!resp.ok) throw new Error(resp.status);
+        data = await resp.json();
+      } catch (e) {
+        // A blip should not stop the page updating for the rest of the run; try again.
+        setTimeout(tick, period);
+        return;
+      }
+      live.innerHTML = data.html;
+      // A finished run gains a results table, action buttons and files, none of which are in
+      // this fragment -- so load the page once more and stop polling.
+      if (data.terminal) {
+        location.reload();
+        return;
+      }
+      setTimeout(tick, period);
+    }
+
+    setTimeout(tick, period);
+  })();
 </script>
 {% endif %}
 {% endblock %}

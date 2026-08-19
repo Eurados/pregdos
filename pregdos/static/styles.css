@@ -48,6 +48,13 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, sans-serif;
+  /* Match every fallback to Inter's apparent size.  The stack is tuned for Inter, whose
+     x-height is 0.546 em; the platform UI fonts that stand in for it are all smaller
+     (Cantarell 0.482, Segoe UI ~0.50, Roboto ~0.528), so text looked a shade small wherever
+     Inter is not installed.  `font-size-adjust` scales each face so its x-height matches
+     that ratio, which leaves Inter itself untouched and lifts the others to meet it.
+     Browsers without support ignore it and simply behave as before. */
+  font-size-adjust: 0.546;
   font-size: 17px;
   line-height: 1.55;
   /* Sticky footer: a full-height flex column so the funding strip drops to the bottom of the
@@ -223,6 +230,12 @@ main {
   gap: 10px;
   flex-wrap: wrap;
   margin: 0;
+}
+
+/* Monospace keeps its own proportions: these are paths and file names, and normalising them
+   to a proportional font's x-height only makes them look wrong. */
+code, kbd, samp, pre {
+  font-size-adjust: none;
 }
 
 .path-row code {
@@ -684,6 +697,10 @@ button:focus-visible,
   flex-direction: column;
   gap: 12px;
   margin-top: 16px;
+  /* The run actions (Cancel run, Rerun) follow the bars on the task page and were touching
+     the last one.  Spacing it here rather than on `.actions`, which six other templates
+     share. */
+  margin-bottom: 20px;
 }
 
 .progress-label {

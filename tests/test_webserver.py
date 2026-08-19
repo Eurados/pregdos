@@ -1440,3 +1440,54 @@ def test_full_run_archive_zips_every_file(client, tmp_path):
 def test_full_run_archive_missing_run_redirects(client, tmp_path):
     resp = client.get("/studies/alpha/nope/archive", follow_redirects=False)
     assert resp.status_code == 302
+
+
+# --- issue #79: the task page refreshes a fragment, not the whole document ---
+
+def test_progress_fragment_returns_the_live_block(client, tmp_path):
+    run_id, _ = _completed_run(tmp_path)
+
+    resp = client.get(f"/studies/alpha/{run_id}/progress")
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert sorted(body) == ["html", "status", "terminal"]
+    assert body["status"] == "completed"
+    assert "progress-meter" in body["html"]      # the bars are in the fragment
+    assert "<html" not in body["html"]           # ...and only the fragment
+
+
+def test_progress_fragment_reports_terminal_so_the_client_stops_polling(client, tmp_path):
+    """A finished run gains a results table and buttons that live outside the fragment, so
+    the page has to be loaded once more rather than polled forever."""
+    run_id, run_dir = _completed_run(tmp_path)
+    assert client.get(f"/studies/alpha/{run_id}/progress").get_json()["terminal"] is True
+
+    (run_dir / "topas_field01.exit_code").unlink()        # back to running
+    body = client.get(f"/studies/alpha/{run_id}/progress").get_json()
+    assert body["status"] == "running" and body["terminal"] is False
+
+
+def test_progress_fragment_for_an_unknown_run_is_404(client, tmp_path):
+    assert client.get("/studies/alpha/run_20260101_000000/progress").status_code == 404
+
+
+def test_task_page_polls_the_fragment_instead_of_reloading(client, tmp_path):
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field01.exit_code").unlink()        # still running, so it auto-refreshes
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    assert f"/studies/alpha/{run_id}/progress" in body
+    assert 'id="run-live"' in body
+    assert "location.reload()" in body                    # only for the terminal hand-off
+    assert "setTimeout(function () { location.reload(); }, 5000)" not in body
+
+
+def test_pages_do_not_fetch_a_webfont_from_a_third_party(client, tmp_path):
+    """Render-blocking on every load, and a request to Google on every view of a patient page."""
+    run_id, _ = _completed_run(tmp_path)
+    for path in ("/", "/studies", f"/studies/alpha/{run_id}"):
+        body = client.get(path).data.decode()
+        assert "fonts.googleapis.com" not in body
+        assert "fonts.gstatic.com" not in body

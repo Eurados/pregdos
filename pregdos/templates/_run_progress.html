@@ -1,0 +1,46 @@
+{# Live part of the task page: status badge, ETR and the per-field bars.
+
+   Rendered both inside run_detail.html and on its own by the `run_progress_fragment`
+   endpoint, so the page can refresh this block alone instead of reloading the document
+   (issue #79).  Keeping it in one template means the wording cannot drift between the
+   first render and the updates. #}
+<p id="run-status-line">
+  <strong>Status:</strong>
+  {% if status == 'completed' %}<span class="badge success">completed</span>
+  {% elif status == 'failed' %}<span class="badge danger">failed</span>
+  {% elif status == 'canceled' %}<span class="badge danger">canceled</span>
+  {% elif status == 'running' %}<span class="badge warning">running</span>
+  {% elif status == 'queued' %}<span class="badge info">queued</span>
+  {% else %}<span class="badge">{{ status }}</span>{% endif %}
+  {% if backend %} · <strong>Backend:</strong> {{ backend }}{% endif %}
+  {% if submitted %} · <strong>Submitted:</strong> {{ submitted }}{% endif %}
+</p>
+
+{% if progress %}
+  {% if etr %}
+    <p class="hint" style="margin-top: 12px;">Estimated time remaining: <strong>{{ etr }}</strong></p>
+  {% endif %}
+  <div class="progress-list">
+    {% for p in progress %}
+      <div class="progress-row">
+        <div class="progress-label">
+          <code>{{ p.field }}</code>
+          <span class="hint">
+            {% if p.status == 'completed' %}done{% if p.histories_total %} · {{ '{:,}'.format(p.histories_total) }} histories{% endif %}
+            {% elif p.status == 'canceled' %}canceled
+            {% elif p.status == 'failed' %}failed at run {{ p.runs_started }}/{{ p.total_runs }}{% if p.failure %} · {{ p.failure }}{% endif %}
+            {% elif p.status == 'queued' %}queued
+            {% elif p.total_runs %}run {{ p.runs_started }}/{{ p.total_runs }} · {{ '{:,}'.format(p.histories_done) }}/{{ '{:,}'.format(p.histories_total) }} histories
+            {% else %}starting…{% endif %}
+          </span>
+        </div>
+        <div class="progress-track">
+          <progress class="progress-meter {{ p.status }}" value="{{ p.percent }}" max="100">
+            {{ p.percent }}%
+          </progress>
+          <span class="progress-pct">{{ p.percent }}%</span>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+{% endif %}

@@ -7,9 +7,11 @@
   <title>{% block title %}PregDos{% endblock %}</title>
   <link rel="icon" href="{{ url_for('favicon') }}" type="image/svg+xml">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  {# No webfont link: it was a render-blocking request to fonts.googleapis.com on every page
+     load (~0.5 s here), which the task page's refresh repeated every few seconds -- and it sent
+     a request to a third party on every view of a page about a patient.  `styles.css` already
+     names Inter first and falls back to the platform UI font, so a machine with Inter installed
+     looks unchanged and one without looks native (issue #79). #}
 </head>
 <body>
   <nav class="tab-nav">
