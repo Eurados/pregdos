@@ -1,6 +1,7 @@
 from flask import (
     Flask,
     Response,
+    jsonify,
     request,
     render_template,
     send_from_directory,
@@ -659,9 +660,13 @@ def list_jobs():
     return redirect(url_for("list_studies"))
 
 
-@app.route("/studies")
-def list_studies():
-    """One tile per study, each listing its conversion runs and their status."""
+def _study_tiles():
+    """One tile per study, each listing its conversion runs and their status.
+
+    Shared by the full page render and the fragment endpoint that refreshes it, so the two
+    cannot disagree about what is running.  Returns the tiles and whether anything is still
+    in flight, which is what tells the client to keep polling.
+    """
     root = studies_root()
     executor.start_next_local_run(root)
     tiles = []
@@ -696,8 +701,92 @@ def list_studies():
     # sorts chronologically), studies with no runs last.
     tiles.sort(key=lambda t: max((r["run_id"] for r in t["runs"]), default=""), reverse=True)
     # Keep the page live while any run is in flight, like the detail page.
-    auto_refresh = any(t["active"] for t in tiles)
+    return tiles, any(t["active"] for t in tiles)
+
+
+@app.route("/studies")
+def list_studies():
+    """The tasks page: every study and its runs."""
+    tiles, auto_refresh = _study_tiles()
     return render_template("studies.html", tiles=tiles, auto_refresh=auto_refresh)
+
+
+@app.route("/studies/fragment")
+def studies_fragment():
+    """Just the studies list, for the in-page refresh (issue #79).
+
+    ``active`` is false once nothing is running or queued, at which point the client stops
+    polling.  There is no terminal reload here, unlike the task page: the whole of this page's
+    content is in the fragment, so there is nothing left to fetch.
+    """
+    tiles, active = _study_tiles()
+    return jsonify({
+        "active": active,
+        "html": render_template("_studies_list.html", tiles=tiles),
+    })
+
+
+TERMINAL_STATUSES = (executor.COMPLETED, executor.FAILED, executor.CANCELED)
+
+
+def _live_state(run_dir: Path):
+    """The part of the task page that changes while a run is going: status, ETR, per-field bars.
+
+    Shared by the full page render and the fragment endpoint that refreshes it, so the two
+    cannot disagree about what the run is doing.
+
+    Returns the run metadata alongside the rest so callers do not read it a second time: this
+    runs on every poll, and two reads of the same file could straddle a metadata update and
+    describe two different states on one page.
+    """
+    info = executor.read_run_metadata(run_dir)
+    status = _run_status(run_dir)
+    field_progress = executor.run_progress(run_dir)
+    etr = None
+    if status == executor.RUNNING and info is not None:
+        seconds = executor.estimate_remaining_seconds(field_progress, info.submitted)
+        etr = _format_duration(seconds) if seconds is not None else None
+    progress = [
+        {
+            "field": p.topas_file,
+            "status": p.status,
+            "percent": round(100 * p.fraction),
+            "histories_done": p.histories_done,
+            "histories_total": p.histories_total,
+            "runs_started": p.runs_started,
+            "total_runs": p.total_runs,
+            "failure": p.failure,
+        }
+        for p in field_progress
+    ]
+    return info, status, etr, progress
+
+
+@app.route("/studies/<study>/<run_id>/progress")
+def run_progress_fragment(study, run_id):
+    """Just the live block of the task page, for the in-page refresh.
+
+    The page used to call ``location.reload()`` every 5 s, which tore the document down,
+    reset the scroll position and re-fetched every asset.  Swapping this fragment in leaves
+    the rest of the page alone (issue #79).  ``terminal`` tells the client to stop polling
+    and load the page once more, since a finished run gains a results table, new buttons and
+    downloadable files that live outside this fragment.
+    """
+    run_dir = _resolve_run(study, run_id)
+    if run_dir is None:
+        return jsonify({"error": "not found"}), 404
+    executor.start_next_local_run(studies_root())
+    info, status, etr, progress = _live_state(run_dir)
+    return jsonify({
+        "status": status,
+        "terminal": status in TERMINAL_STATUSES,
+        "html": render_template(
+            "_run_progress.html",
+            status=status, etr=etr, progress=progress,
+            backend=info.backend if info else None,
+            submitted=info.submitted if info else None,
+        ),
+    })
 
 
 @app.route("/studies/<study>/<run_id>")
@@ -720,26 +809,7 @@ def run_detail(study, run_id):
         flash(f"Could not read scorer output: {w}")
 
     files = [{"name": p.name, "size": p.stat().st_size} for p in sorted(run_dir.iterdir()) if p.is_file()]
-    info = executor.read_run_metadata(run_dir)
-    status = _run_status(run_dir)
-    field_progress = executor.run_progress(run_dir)
-    etr = None
-    if status == executor.RUNNING and info is not None:
-        seconds = executor.estimate_remaining_seconds(field_progress, info.submitted)
-        etr = _format_duration(seconds) if seconds is not None else None
-    progress = [
-        {
-            "field": p.topas_file,
-            "status": p.status,
-            "percent": round(100 * p.fraction),
-            "histories_done": p.histories_done,
-            "histories_total": p.histories_total,
-            "runs_started": p.runs_started,
-            "total_runs": p.total_runs,
-            "failure": p.failure,
-        }
-        for p in field_progress
-    ]
+    info, status, etr, progress = _live_state(run_dir)
     return render_template(
         "run_detail.html",
         study=study,
