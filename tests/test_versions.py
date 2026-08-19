@@ -383,7 +383,7 @@ def test_about_page_warns_about_missing_g4_data(monkeypatch, tmp_path):
     assert "missing" in body and "restart it" in body
 
 
-# --- dicomexport minimum (dicomexport #66: mirrored beam, #75: BeamNumber fields) ---
+# --- dicomexport minimum (dicomexport #75: BeamNumber field output) ---
 
 def test_dicomexport_at_the_minimum_is_accepted(monkeypatch):
     monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.0")
@@ -395,6 +395,7 @@ def test_dicomexport_below_the_minimum_is_rejected(monkeypatch):
     monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.4.4")
     warning = versions.dicomexport_warning()
     assert warning is not None and "1.4.4" in warning and "BeamNumber" in warning
+
 
 
 def test_dicomexport_of_unknown_version_is_rejected(monkeypatch):

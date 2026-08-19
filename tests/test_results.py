@@ -193,6 +193,30 @@ def test_beam_names_skip_beams_without_meterset(tmp_path):
     assert results.beam_names(path) == {1: "Pole 1", 2: "Pole 2", 3: "Pole 3"}
 
 
+def test_beam_names_keep_all_beams_when_the_referenced_list_is_empty(tmp_path):
+    """An empty ReferencedBeamSequence is no beam list at all, not a list selecting nothing.
+
+    Filtering on it would blank every name; falling back keeps the map keyed by BeamNumber,
+    which is still correct because callers only look up fields dicomexport wrote.
+    """
+    path = _rtplan(
+        tmp_path, [(1, "Pole 1"), (2, "Pole 2")], fractions=30, referenced_beams=[],
+    )
+    assert results.beam_names(path) == {1: "Pole 1", 2: "Pole 2"}
+
+
+def test_beam_names_keep_all_beams_when_no_referenced_beam_has_a_meterset(tmp_path):
+    """Likewise a list where nothing carries BeamMeterset -- selecting nothing is not a
+    reason to show no names."""
+    path = _rtplan(
+        tmp_path,
+        [(1, "Pole 1"), (2, "Pole 2")],
+        fractions=30,
+        referenced_beams=[(1, None), (2, None)],
+    )
+    assert results.beam_names(path) == {1: "Pole 1", 2: "Pole 2"}
+
+
 def test_beam_names_missing_plan_is_empty(tmp_path):
     assert results.beam_names(None) == {}
     assert results.beam_names(tmp_path / "absent.dcm") == {}

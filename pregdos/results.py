@@ -378,7 +378,7 @@ def _delivering_beam_numbers(ds) -> Optional[set[int]]:
     if not groups:
         return None
     refs = getattr(groups[0], "ReferencedBeamSequence", None)
-    if refs is None:
+    if not refs:
         return None
 
     numbers: set[int] = set()
@@ -388,7 +388,11 @@ def _delivering_beam_numbers(ds) -> Optional[set[int]]:
         number = getattr(ref, "ReferencedBeamNumber", None)
         if number is not None:
             numbers.add(int(number))
-    return numbers
+    # A referenced-beam list that names no meterset at all selects nothing, and a filter that
+    # selects nothing would blank every name on the results page.  Treat it as "no usable
+    # list" instead: an unfiltered map keyed by BeamNumber is still correct, because callers
+    # look up the fields dicomexport actually wrote and any extra entry is simply never read.
+    return numbers or None
 
 
 def beam_names(rtplan_path: Optional[str | Path]) -> Dict[int, str]:

@@ -153,7 +153,10 @@ def _plan_with_beams(path, beams):
     ds.IonBeamSequence = []
     for number in beams:
         beam = Dataset()
-        beam.BeamNumber = number
+        if number is None:
+            beam.add_new(0x300A00C0, "IS", None)   # BeamNumber present but empty
+        else:
+            beam.BeamNumber = number
         ds.IonBeamSequence.append(beam)
     group = Dataset()
     group.FractionGroupNumber = 1
@@ -163,14 +166,15 @@ def _plan_with_beams(path, beams):
     return ds
 
 
-def test_postprocess_stamps_beam_number_not_ordinal_position(tmp_path):
+def _study_with_cube(tmp_path, beams, field):
+    """A study whose plan carries ``beams`` and whose run holds one cube for ``field``."""
     study = tmp_path / "study"
     dicom = study / "dicom"
     run = study / "run001"
     dicom.mkdir(parents=True)
     run.mkdir()
 
-    plan = _plan_with_beams(dicom / "RN.plan.dcm", [4, 5, 3])
+    plan = _plan_with_beams(dicom / "RN.plan.dcm", beams)
     template = _template()
     ref_plan = Dataset()
     ref_plan.ReferencedSOPClassUID = plan.SOPClassUID
@@ -181,8 +185,36 @@ def test_postprocess_stamps_beam_number_not_ordinal_position(tmp_path):
     cube = _template()
     cube.DoseGridScaling = "1"
     cube.PixelData = np.ones((1, 2, 2), dtype="<u4").tobytes()
-    cube.save_as(run / "topas_field3.dcm", enforce_file_format=True)
-    (run / "topas_field03.txt").write_text("# PARTICLE_SCALING: 1\n# REQUESTED_HISTORIES: 1\n")
+    cube.save_as(run / f"topas_field{field}.dcm", enforce_file_format=True)
+    (run / f"topas_field{field:02d}.txt").write_text(
+        "# PARTICLE_SCALING: 1\n# REQUESTED_HISTORIES: 1\n")
+    return run
+
+
+def test_postprocess_survives_a_beam_whose_number_is_empty(tmp_path):
+    """A present-but-empty BeamNumber reads back as None: `hasattr` sees it, `int()` cannot."""
+    run = _study_with_cube(tmp_path, [3, None], field=3)
+
+    rtdose.postprocess(run)          # must not raise TypeError
+
+    out = pydicom.dcmread(run / "rtdose_field03.dcm", stop_before_pixels=True)
+    ref = out.ReferencedRTPlanSequence[0].ReferencedFractionGroupSequence[0].ReferencedBeamSequence[0]
+    assert ref.ReferencedBeamNumber == 3
+
+
+def test_postprocess_omits_the_beam_reference_when_the_plan_has_no_such_beam(tmp_path):
+    """Better no beam reference than one pointing at a beam that is not in the plan."""
+    run = _study_with_cube(tmp_path, [4, 5], field=3)
+
+    rtdose.postprocess(run)
+
+    out = pydicom.dcmread(run / "rtdose_field03.dcm", stop_before_pixels=True)
+    assert "ReferencedFractionGroupSequence" not in out.ReferencedRTPlanSequence[0]
+
+
+def test_postprocess_stamps_beam_number_not_ordinal_position(tmp_path):
+    """Field 3 is the *third* beam number, not the third beam in the sequence (issue #78)."""
+    run = _study_with_cube(tmp_path, [4, 5, 3], field=3)
 
     rtdose.postprocess(run)
 
