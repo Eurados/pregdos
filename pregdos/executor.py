@@ -483,10 +483,16 @@ def field_status(run_dir: str | os.PathLike, topas_file: str) -> str:
 
 
 # Killed-by-signal exit codes that a shell reports as 128 + N.  Only the two we actually see
-# get an explanation; the rest are named but left to speak for themselves.
+# get an explanation; the rest are named but left to speak for themselves.  Windows lacks
+# SIGKILL (and prints no 128+N codes anyway), so look the signals up defensively -- a missing
+# one just drops out of the map rather than crashing the import (issue #82).
 _SIGNAL_HINTS = {
-    signal.SIGKILL: "the machine most likely ran out of memory",
-    signal.SIGSEGV: "usually out of memory too, when the kernel cannot back an allocation",
+    sig: hint
+    for name, hint in (
+        ("SIGKILL", "the machine most likely ran out of memory"),
+        ("SIGSEGV", "usually out of memory too, when the kernel cannot back an allocation"),
+    )
+    if (sig := getattr(signal, name, None)) is not None
 }
 
 
