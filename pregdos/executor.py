@@ -42,8 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-import fcntl
-
+from . import portable
 from .textio import read_text_lenient
 
 # Backend identifiers, also written into run.json.
@@ -211,7 +210,7 @@ def _sbatch_argv(run_dir: Path, topas_file: str) -> List[str]:
     """
     argv: List[str] = []
     runuser = shutil.which("runuser") or "/usr/sbin/runuser"
-    if os.geteuid() == 0 and os.path.exists(runuser):
+    if portable.running_as_root() and os.path.exists(runuser):
         argv += [runuser, "-u", "slurm", "--"]
     argv += [
         "sbatch",
@@ -290,9 +289,9 @@ def _launch_local_worker(run_dir: Path, studies_root: Path, info: RunInfo) -> No
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        # Detach from the webserver's process group: the run must outlive a Ctrl-C or a
-        # reload of the Flask dev server.
-        start_new_session=True,
+        # Detach from the webserver's lifetime: the run must outlive a Ctrl-C or a reload of
+        # the Flask dev server (a new session on POSIX, a new process group on Windows).
+        **portable.detach_kwargs(),
     )
     for job in info.fields:
         job.ident = str(proc.pid)
@@ -307,7 +306,7 @@ def _worker_alive(run_dir: Path, info: RunInfo) -> bool:
     and still be running (issue #80).
     """
     idents = {f.ident for f in info.fields if f.ident}
-    return any(_process_group_alive(ident, run_dir) for ident in idents)
+    return any(portable.worker_alive(ident, run_dir) for ident in idents)
 
 
 def worker_alive(run_dir: str | os.PathLike) -> bool:
@@ -317,52 +316,6 @@ def worker_alive(run_dir: str | os.PathLike) -> bool:
     if info is None or info.backend != LOCAL:
         return False
     return _worker_alive(run_dir, info)
-
-
-def _process_group_alive(ident: str, run_dir: Optional[Path] = None) -> bool:
-    """Whether any *live* process is left in the cancelled run's process group.
-
-    ``os.killpg(pgid, 0)`` is not enough on its own.  Cancelling kills the detached wrapper
-    shell, but the shell then sits in the process table as a zombie until its parent reaps
-    it -- and the parent is the web process, which only reaps opportunistically when it next
-    spawns something.  Signal 0 succeeds on a zombie, so the scheduler concluded the run was
-    still going and refused to start anything; the only thing that would have reaped the
-    zombie was the very launch this check was blocking.  One cancel then froze the queue for
-    the life of the server (a rerun just sat there marked "queued").
-
-    So look at the actual state of every process in the group and ignore the zombies.
-    """
-    try:
-        pgid = int(ident)
-    except (TypeError, ValueError):
-        return False
-    try:
-        os.killpg(pgid, 0)
-    except OSError:                      # covers ProcessLookupError and PermissionError
-        return False
-
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            # "<pid> (<comm>) <state> <ppid> <pgrp> ...".  `comm` can itself contain spaces
-            # and brackets, so split after the last ')' rather than on whitespace.
-            fields = (entry / "stat").read_text().rpartition(")")[2].split()
-        except OSError:                  # the process exited while we were looking
-            continue
-        if len(fields) < 3 or fields[2] != str(pgid) or fields[0] == "Z":
-            continue
-        if run_dir is None:
-            return True
-        # Confirm it is really our worker.  Pids are recycled, and a run directory kept for
-        # the retention period can easily outlive the pid recorded in its metadata; without
-        # this an unrelated process inheriting that pid would block the queue for good.
-        try:
-            if (entry / "cwd").resolve() == run_dir.resolve():
-                return True
-        except OSError:                  # gone, or not ours to inspect
-            continue
-    return False
 
 
 def start_next_local_run(studies_root: str | os.PathLike) -> Optional[Path]:
@@ -375,30 +328,26 @@ def start_next_local_run(studies_root: str | os.PathLike) -> Optional[Path]:
     root = Path(studies_root)
     root.mkdir(parents=True, exist_ok=True)
     lock_path = root / LOCAL_SCHEDULER_LOCK
-    with lock_path.open("a+") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            queued: list[tuple[str, Path, RunInfo]] = []
-            for run_dir in _local_run_dirs(root):
-                info = read_run_metadata(run_dir)
-                if info is None or info.backend != LOCAL:
-                    continue
-                if _local_run_is_queued(run_dir, info):
-                    queued.append((info.submitted, run_dir, info))
-                    continue
-                # Whatever the sentinels say, a run whose worker is still on the CPU holds the
-                # slot -- including a canceled one that has not finished dying, and one whose
-                # first field failed while the shell carries on with the rest.
-                if _worker_alive(run_dir, info):
-                    return None
-
-            if not queued:
+    with lock_path.open("a+") as lock, portable.exclusive_lock(lock):
+        queued: list[tuple[str, Path, RunInfo]] = []
+        for run_dir in _local_run_dirs(root):
+            info = read_run_metadata(run_dir)
+            if info is None or info.backend != LOCAL:
+                continue
+            if _local_run_is_queued(run_dir, info):
+                queued.append((info.submitted, run_dir, info))
+                continue
+            # Whatever the sentinels say, a run whose worker is still on the CPU holds the
+            # slot -- including a canceled one that has not finished dying, and one whose
+            # first field failed while the shell carries on with the rest.
+            if _worker_alive(run_dir, info):
                 return None
-            _, run_dir, info = min(queued, key=lambda item: (item[0], item[1].name))
-            _launch_local_worker(run_dir, root, info)
-            return run_dir
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+
+        if not queued:
+            return None
+        _, run_dir, info = min(queued, key=lambda item: (item[0], item[1].name))
+        _launch_local_worker(run_dir, root, info)
+        return run_dir
 
 
 def move_local_run_up(studies_root: str | os.PathLike, target_run_dir: str | os.PathLike) -> bool:
@@ -406,29 +355,25 @@ def move_local_run_up(studies_root: str | os.PathLike, target_run_dir: str | os.
     root = Path(studies_root)
     target = Path(target_run_dir).resolve()
     lock_path = root / LOCAL_SCHEDULER_LOCK
-    with lock_path.open("a+") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            queued: list[tuple[str, Path, RunInfo]] = []
-            for run_dir in _local_run_dirs(root):
-                info = read_run_metadata(run_dir)
-                if info is not None and _local_run_is_queued(run_dir, info):
-                    queued.append((info.submitted, run_dir, info))
-            queued.sort(key=lambda item: (item[0], item[1].name))
-            for index, (_, run_dir, info) in enumerate(queued):
-                if run_dir.resolve() != target:
-                    continue
-                if index == 0:
-                    return False
-                previous_info = queued[index - 1][2]
-                previous_dir = queued[index - 1][1]
-                info.submitted, previous_info.submitted = previous_info.submitted, info.submitted
-                _write_run_metadata(run_dir, info)
-                _write_run_metadata(previous_dir, previous_info)
-                return True
-            return False
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+    with lock_path.open("a+") as lock, portable.exclusive_lock(lock):
+        queued: list[tuple[str, Path, RunInfo]] = []
+        for run_dir in _local_run_dirs(root):
+            info = read_run_metadata(run_dir)
+            if info is not None and _local_run_is_queued(run_dir, info):
+                queued.append((info.submitted, run_dir, info))
+        queued.sort(key=lambda item: (item[0], item[1].name))
+        for index, (_, run_dir, info) in enumerate(queued):
+            if run_dir.resolve() != target:
+                continue
+            if index == 0:
+                return False
+            previous_info = queued[index - 1][2]
+            previous_dir = queued[index - 1][1]
+            info.submitted, previous_info.submitted = previous_info.submitted, info.submitted
+            _write_run_metadata(run_dir, info)
+            _write_run_metadata(previous_dir, previous_info)
+            return True
+        return False
 
 
 def _submit_local(run_dir: Path, topas_files: List[str], info: RunInfo) -> None:
@@ -717,13 +662,10 @@ def cancel_run(run_dir: str | os.PathLike) -> None:
             subprocess.run(["scancel", *idents], capture_output=True, text=True)
         return
 
-    # Local backend: the fields share one detached shell, whose pid became a process-group
-    # leader via start_new_session.  Killing the group takes TOPAS down with the shell.
+    # Local backend: the fields share one detached shell (a process-group leader on POSIX, a
+    # new-process-group root on Windows).  Stopping the worker takes TOPAS down with it.
     for pid in sorted({f.ident for f in info.fields if f.ident}):
-        try:
-            os.killpg(int(pid), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, ValueError, OSError):
-            pass
+        portable.terminate_worker(pid)
     start_next_local_run(_studies_root_for(run_dir))
 
 

@@ -9,7 +9,6 @@ from the generated TOPAS input.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import math
 import re
@@ -20,6 +19,7 @@ from typing import Iterable
 import numpy as np
 import pydicom
 
+from . import portable
 from .textio import read_text_lenient
 
 
@@ -437,14 +437,12 @@ def ensure_metrics(run_dir: str | Path) -> tuple[dict | None, list[str]]:
     # The pre-pass input doubles as the lock file: it is guaranteed to exist by the time we
     # get here, and locking it adds no stray file to the directory the user browses.
     try:
-        with (run_dir / PREPASS_FILE).open("r") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            try:
-                if cached := _usable_cache(run_dir):   # the winner may have just written it
-                    return cached
-                return compute_metrics(run_dir), []
-            finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
+        # Opened read-write, not read-only: the Windows lock (msvcrt) needs write access, and
+        # this handle is only ever used as the lock -- the pre-pass contents are read elsewhere.
+        with (run_dir / PREPASS_FILE).open("r+") as lock, portable.exclusive_lock(lock):
+            if cached := _usable_cache(run_dir):   # the winner may have just written it
+                return cached
+            return compute_metrics(run_dir), []
     except OSError:
         return None, [f"{PREPASS_FILE} is unreadable"]
     except StructureMetricsError as exc:
