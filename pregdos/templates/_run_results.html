@@ -20,8 +20,8 @@
               <tr>
                 {% if loop.first %}
                   <td rowspan="{{ g.rows|length }}"><code>{{ g.display_scorer }}</code></td>
-                  <td rowspan="{{ g.rows|length }}">{{ g.structure }}</td>
-                  <td rowspan="{{ g.rows|length }}">{{ g.quantity }}</td>
+                  <td rowspan="{{ g.rows|length }}">{{ g.structure or "—" }}</td>
+                  <td rowspan="{{ g.rows|length }}">{{ g.display_quantity }}</td>
                 {% endif %}
                 <td>
                   {% if r.field is not none %}

@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
 
-from pregdos import dicom_intake, executor, results, studies
+from pregdos import dicom_intake, executor, reporting, results, studies
 from tests import dicom_factory
 from pregdos.webserver import app
 from pregdos.models import ConversionParameters, ConversionResult
@@ -1113,6 +1113,7 @@ def _pdf_bullets(monkeypatch, quantity):
     monkeypatch.setattr(report_pdf.ReportPDF, "bullet", spy)
     groups = [{
         "scorer": "S", "structure": "CTV", "quantity": quantity, "unit": "Gy",
+        "display_quantity": reporting.display_quantity(quantity, "", "Gy"),
         "rows": [{"field": 1, "field_name": "", "quantity": quantity, "unit": "Gy",
                   "sum": 1.0, "sd": 0.1, "problem": None, "simulated_histories": 1000}],
         "total_sum": 1.0, "total_sd": 0.1, "n_fields": 1,
@@ -1149,6 +1150,7 @@ def _csv_body_for_quantity(client, tmp_path, monkeypatch, quantity):
     run_id, _ = studies.create_run(tmp_path, "alpha")
     row = {
         "scorer": "S", "structure": "CTV", "quantity": quantity, "unit": "Gy",
+        "display_quantity": reporting.display_quantity(quantity, "", "Gy"),
         "field": 1, "field_name": "", "sum": 1.0, "sd": 0.1, "problem": None,
         "scale": 1.0, "simulated_histories": 1000, "raw_sum": 1.0,
         "structure_mass_normalized": False, "structure_volume_normalized": False,
@@ -1635,3 +1637,27 @@ def test_a_non_scorer_file_is_streamed_unchanged(client, tmp_path):
     run_id, run_dir = _completed_run(tmp_path)
     served = client.get(f"/studies/download/alpha/{run_id}/topas_field01.txt").data
     assert served == (run_dir / "topas_field01.txt").read_bytes()
+
+
+def test_pdf_dose_to_water_note_survives_the_physical_dose_annotation(monkeypatch):
+    """The PDF is what clinicians read, and its RBE note branched on the annotated quantity
+    string, so it never fired once Gy rows started saying "(physical dose)"."""
+    from pregdos import report_pdf
+
+    calls = []
+    original = report_pdf.ReportPDF.bullet
+    monkeypatch.setattr(report_pdf.ReportPDF, "bullet",
+                        lambda self, text, *, markdown=False: (calls.append(text),
+                                                               original(self, text, markdown=markdown))[1])
+    groups = [{
+        "scorer": "DoseWater_CTV", "display_scorer": "DoseWater", "structure": "CTV",
+        "quantity": "DoseToWater", "display_quantity": "DoseToWater (physical dose)", "unit": "Gy",
+        "rows": [{"field": 1, "field_name": "", "quantity": "DoseToWater", "unit": "Gy",
+                  "sum": 1.0, "sd": 0.1, "problem": None, "simulated_histories": 1000}],
+        "total_sum": 1.0, "total_sd": 0.1, "n_fields": 1,
+    }]
+    report_pdf.build_report_pdf(
+        study="s", run_id="r", groups=groups, warnings=[], plan_fractions=30,
+        generated_at="now", provenance={}, plan_uid=None,
+    )
+    assert any("proton RBE of 1.1" in t for t in calls)

@@ -29,6 +29,19 @@ def test_display_name_keeps_a_grid_suffix():
     assert reporting.display_scorer_name("DoseEquivNeutron_Grid", "") == "DoseEquivNeutron_Grid"
 
 
+def test_a_grid_scorer_keeps_its_suffix_through_grouping():
+    """Regression: rows used to store "—" as the structure when there was none, which is
+    truthy, so grouping stripped `_Grid` -- the one thing naming a grid scorer's target.  The
+    direct-call test above passed throughout, because it never saw the placeholder.
+    """
+    row = {"scorer": "DoseEquivNeutron_Grid", "structure": "", "quantity": "NeutronDoseEquivalent",
+           "display_quantity": "NeutronDoseEquivalent", "unit": "Sv",
+           "field": 1, "sum": 1.0, "sd": 0.1, "problem": None}
+    (group,) = reporting.group_rows([row])
+    assert group["display_scorer"] == "DoseEquivNeutron_Grid"
+    assert group["structure"] == ""      # the em-dash is rendered, not stored
+
+
 def test_display_name_survives_a_name_with_no_suffix():
     assert reporting.display_scorer_name("DoseGamma", "Liver") == "DoseGamma"
 
@@ -110,3 +123,25 @@ def test_aliases_only_cover_names_no_longer_generated():
     current = set(_SCORER_NAME.values())
     assert not (current & set(reporting._SCORER_ALIASES)), "alias shadows a generated prefix"
     assert set(reporting._SCORER_ALIASES.values()) <= current, "alias points at a dead name"
+
+
+# --- display name vs the name code branches on ---
+
+def test_rows_carry_both_the_plain_and_the_annotated_quantity():
+    """Regression: the reports annotate Gy quantities as "(physical dose)", and both report
+    writers used to branch on that annotated string.  `DoseToWater` never matched
+    `DoseToWater (physical dose)`, so the RBE note silently vanished from every report.
+    """
+    row = {"scorer": "DoseWater_CTV", "structure": "CTV", "quantity": "DoseToWater",
+           "display_quantity": "DoseToWater (physical dose)", "unit": "Gy",
+           "field": 1, "sum": 1.0, "sd": 0.1, "problem": None}
+    (group,) = reporting.group_rows([row])
+    assert group["quantity"] == "DoseToWater"                       # branch on this
+    assert group["display_quantity"] == "DoseToWater (physical dose)"   # print this
+
+
+def test_group_falls_back_when_a_row_carries_no_annotation():
+    row = {"scorer": "S", "structure": "CTV", "quantity": "DoseToWater", "unit": "Gy",
+           "field": 1, "sum": 1.0, "sd": 0.1, "problem": None}
+    (group,) = reporting.group_rows([row])
+    assert group["display_quantity"] == "DoseToWater"

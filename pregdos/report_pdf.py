@@ -247,9 +247,13 @@ class ReportPDF(FPDF):
         # `display_scorer` drops the `_<structure>` suffix the Structure column already shows.
         # Fall back to the raw name for callers that build groups without it.
         name = group.get("display_scorer") or group["scorer"]
-        # Unit gets its own field rather than parentheses: it now carries parentheses of its
-        # own ("Gy (phys)"), and nesting them reads badly.
-        text = f"{name} | {group['structure']} | {group['quantity']} | {group['unit']}"
+        # Same split as the scorer name: print the annotated quantity, branch on the plain one.
+        quantity = group.get("display_quantity") or group["quantity"]
+        # The unit gets its own field rather than sitting in parentheses after the quantity --
+        # the quantity carries parentheses of its own ("DoseToWater (physical dose)"), and
+        # nesting them reads badly.
+        structure = group["structure"] or "—"
+        text = f"{name} | {structure} | {quantity} | {group['unit']}"
         self.cell(0, 6, self._safe(text), border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
 
     def _result_row(

@@ -177,6 +177,8 @@ def group_rows(rows: list) -> list:
 
         out.append({
             "scorer": scorer, "structure": structure, "quantity": quantity, "unit": unit,
+            # A hand-built row (tests, callers) may carry only the plain name.
+            "display_quantity": members[0].get("display_quantity") or quantity,
             # The tables print this next to the Structure column, which would otherwise repeat
             # the scorer name's own suffix.  `scorer` keeps the real TOPAS object name for the
             # CSV report.
@@ -269,11 +271,17 @@ def result_rows(run_dir: Path, study: str, root: str | Path):
             # Retired prefixes are mapped here rather than at each output, so grouping, the
             # tables and the CSV report cannot disagree about what a scorer is called.
             "scorer": canonical_scorer_name(r.scorer),
-            "structure": r.structure or "—",
-            # TOPAS's name for the quantity is not always the quantity we computed: the
-            # neutron scorer borrows the AmbientDoseEquivalent machinery but is fed Q(E), and
-            # a bare "Gy" is read as RBE-weighted by this report's clinical readers.
-            "quantity": display_quantity(quantity, r.particle, unit),
+            # Left empty when the scorer has no structure filter (a grid scorer).  The
+            # em-dash placeholder is rendered where it is shown, not stored here: as data it
+            # reads as a structure name, and `display_scorer_name` then strips the `_Grid`
+            # suffix that is the only thing naming such a scorer's target.
+            "structure": r.structure,
+            # Two fields, like `scorer` / `display_scorer` above.  `quantity` is the name of
+            # what was computed -- TOPAS's, corrected where it is wrong -- and is what code
+            # branches on.  `display_quantity` adds the reader-facing annotation on top.
+            # Branching on the annotated string is how the DoseToWater note went missing.
+            "quantity": canonical_quantity(quantity, r.particle),
+            "display_quantity": display_quantity(quantity, r.particle, unit),
             "unit": unit,
             "sum": total,
             "sd": sd,
@@ -354,7 +362,7 @@ def build_report_csv(run_dir: Path, study: str, run_id: str, root: str | Path) -
     for group in group_rows(rows):
         for r in group["rows"]:
             writer.writerow([
-                r["scorer"], r["structure"], r["quantity"],
+                r["scorer"], r["structure"], r["display_quantity"],
                 "" if r["field"] is None else r["field"], r["field_name"], r["unit"],
                 "" if r["sum"] is None else repr(r["sum"]),
                 "" if r["sd"] is None else repr(r["sd"]),
@@ -373,7 +381,7 @@ def build_report_csv(run_dir: Path, study: str, run_id: str, root: str | Path) -
                 if r.get("simulated_histories") is not None
             ) or None
             writer.writerow([
-                group["scorer"], group["structure"], group["quantity"], "ALL", "", group["unit"],
+                group["scorer"], group["structure"], group["display_quantity"], "ALL", "", group["unit"],
                 repr(group["total_sum"]),
                 "" if group["total_sd"] is None else repr(group["total_sd"]),
                 "" if total_histories is None else total_histories,

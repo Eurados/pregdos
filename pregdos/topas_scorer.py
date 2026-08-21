@@ -100,8 +100,10 @@ class ScorerType(str, Enum):
     AmbientDoseEquivalent scorer carries no coefficients of its own and simply folds fluence
     with the table it is given, so it is the mechanism for any fluence-to-dose-equivalent
     conversion.  See pregdos/data/neutron_dose_equivalent.csv for why the coefficients are
-    deliberately not h*(10).  TOPAS still reports the quantity as "AmbientDoseEquivalent" in
-    its CSV header; that name is its own and PregDos does not rewrite it."""
+    deliberately not h*(10).  TOPAS writes "AmbientDoseEquivalent" into its CSV header, and the
+    files on disk keep it -- they are the record of what ran -- but PregDos corrects the name
+    everywhere it is read: in the reports (``reporting.display_quantity``) and in scorer CSVs
+    served for download (``reporting.canonicalize_header_bytes``)."""
 
     GAMMA_DOSE = "gamma"
     """Absorbed dose to medium from photons and their descendants (DoseToMedium)."""
