@@ -509,10 +509,15 @@ _SPOT_WEIGHTS_RE = re.compile(r"uv:Tf/spotWeight/Values\s*=\s*\d+((?:\s+\d+)+)")
 class FieldProgress:
     """How far one field has run, for a progress bar.
 
-    Progress is measured in **histories**, not runs: spot weights are very uneven (early
-    spots can carry thousands of particles, late spots a handful), so "run 600 of 659" can be
-    anywhere from a fifth to nearly all of the work.  Weighting each started run by its spot
+    Progress is measured in **histories**, not spots: spot weights are very uneven (early
+    spots can carry thousands of particles, late spots a handful), so "spot 600 of 659" can be
+    anywhere from a fifth to nearly all of the work.  Weighting each started spot by its
     weight makes the bar track the actual compute done.
+
+    The counters keep the name ``runs_*`` because that is what they count: one Geant4 run per
+    spot is how dicomexport happens to emit a field today (nbassler/dicomexport#88 would put
+    every spot in a single run).  The UI says "spot" because that is the unit a planner knows,
+    and because "run" already means a PregDos run on the same page.
     """
 
     topas_file: str

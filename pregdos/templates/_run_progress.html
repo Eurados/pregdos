@@ -28,9 +28,9 @@
           <span class="hint">
             {% if p.status == 'completed' %}done{% if p.histories_total %} · {{ '{:,}'.format(p.histories_total) }} histories{% endif %}
             {% elif p.status == 'canceled' %}canceled
-            {% elif p.status == 'failed' %}failed at run {{ p.runs_started }}/{{ p.total_runs }}{% if p.failure %} · {{ p.failure }}{% endif %}
+            {% elif p.status == 'failed' %}failed at spot {{ p.runs_started }}/{{ p.total_runs }}{% if p.failure %} · {{ p.failure }}{% endif %}
             {% elif p.status == 'queued' %}queued
-            {% elif p.total_runs %}run {{ p.runs_started }}/{{ p.total_runs }} · {{ '{:,}'.format(p.histories_done) }}/{{ '{:,}'.format(p.histories_total) }} histories
+            {% elif p.total_runs %}spot {{ p.runs_started }}/{{ p.total_runs }} · {{ '{:,}'.format(p.histories_done) }}/{{ '{:,}'.format(p.histories_total) }} histories
             {% else %}starting…{% endif %}
           </span>
         </div>
