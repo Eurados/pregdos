@@ -1139,6 +1139,24 @@ def test_pdf_dose_to_water_note_absent_without_scorer(monkeypatch):
     assert not any("DoseToWater is" in t for t, _ in without)
 
 
+def test_pdf_says_ambient_dose_equivalent_is_neutrons_only(monkeypatch):
+    """The H*(10) scorer carries a neutron-only filter, so the number is not a total dose.
+    Readers otherwise assume it covers all particles and read an in-beam structure's larger
+    proton dose as a contradiction."""
+    notes = [(t, md) for t, md in _pdf_bullets(monkeypatch, "AmbientDoseEquivalent")
+             if "AmbientDoseEquivalent" in t]
+    assert len(notes) == 1
+    text, markdown = notes[0]
+    assert markdown is True
+    assert "**neutrons only**" in text      # rendered bold in the PDF
+    assert "not** a total dose" in text
+
+
+def test_pdf_neutron_note_absent_without_an_ambient_scorer(monkeypatch):
+    without = _pdf_bullets(monkeypatch, "DoseToWater")
+    assert not any("neutrons only" in t for t, _ in without)
+
+
 def _csv_body_for_quantity(client, tmp_path, monkeypatch, quantity):
     """Render the CSV report for a run whose only scorer has the given quantity."""
     from pregdos import webserver
@@ -1165,6 +1183,21 @@ def test_csv_dose_to_water_note_only_when_scorer_present(client, tmp_path, monke
 def test_csv_dose_to_water_note_absent_without_scorer(client, tmp_path, monkeypatch):
     body = _csv_body_for_quantity(client, tmp_path, monkeypatch, "AmbientDoseEquivalent")
     assert "the proton RBE of 1.1" not in body
+
+
+def test_csv_says_ambient_dose_equivalent_is_neutrons_only(client, tmp_path, monkeypatch):
+    """H*(10) here is scored with a neutron-only filter, so it is not a total dose.  Without
+    saying so, a reader compares it against the proton rows and concludes the numbers are
+    inconsistent -- an in-beam structure legitimately gets more proton dose than H*(10).
+    """
+    body = _csv_body_for_quantity(client, tmp_path, monkeypatch, "AmbientDoseEquivalent")
+    assert "NEUTRONS ONLY" in body
+    assert "not a total dose" in body
+
+
+def test_csv_neutron_note_absent_without_an_ambient_scorer(client, tmp_path, monkeypatch):
+    body = _csv_body_for_quantity(client, tmp_path, monkeypatch, "DoseToWater")
+    assert "NEUTRONS ONLY" not in body
 
 
 # --- grouping and per-scorer totals ---
@@ -1451,10 +1484,39 @@ def test_progress_fragment_returns_the_live_block(client, tmp_path):
 
     assert resp.status_code == 200
     body = resp.get_json()
-    assert sorted(body) == ["html", "status", "terminal"]
+    assert sorted(body) == ["html", "results_html", "status", "terminal"]
     assert body["status"] == "completed"
     assert "progress-meter" in body["html"]      # the bars are in the fragment
     assert "<html" not in body["html"]           # ...and only the fragment
+
+
+def test_results_tile_says_ambient_dose_equivalent_is_neutrons_only(client, tmp_path):
+    """The note box has to say it: the run's H*(10) row is neutron-filtered, so a structure
+    clipped by the beam shows more proton dose than H*(10), which reads as a contradiction
+    unless the reader knows H*(10) is not a total."""
+    run_id, run_dir = _completed_run(tmp_path)
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    plain = " ".join(body.replace("<strong>", "").replace("</strong>", "").split())
+    assert "H*(10) is scored from neutrons only" in plain
+    assert "not a total dose" in plain
+
+
+def test_progress_fragment_carries_results_finished_so_far(client, tmp_path):
+    """Fields finish one at a time, and each writes its own CSVs.  The poll has to re-render
+    the results table or a finished field stays invisible until the whole run ends -- which
+    is what happened when the fragment carried only the progress bars.
+    """
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field01.exit_code").unlink()        # field done, run still going
+
+    body = client.get(f"/studies/alpha/{run_id}/progress").get_json()
+
+    assert body["status"] == "running" and body["terminal"] is False
+    assert "scorer-table" in body["results_html"]         # the finished CSV is in there
+    assert "BrainStem" in body["results_html"]
+    # ...and the reader is told the table is not the whole plan yet.
+    assert "still going" in body["results_html"]
 
 
 def test_progress_fragment_reports_terminal_so_the_client_stops_polling(client, tmp_path):

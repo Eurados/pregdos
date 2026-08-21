@@ -338,6 +338,13 @@ def build_report_pdf(
     else:
         pdf.bullet("Planned fractions were unavailable; reported values use the generated TOPAS plan scale.")
     pdf.bullet("The uncertainty is the 1-sigma Monte-Carlo statistical error.")
+    has_ambient = any(group.get("quantity") == "AmbientDoseEquivalent" for group in groups)
+    if has_ambient:
+        pdf.bullet("AmbientDoseEquivalent H*(10) is scored from **neutrons only**. It excludes "
+                   "protons, photons and every other particle, so it is **not** a total dose: a "
+                   "structure in or near the beam can receive more absorbed dose from protons "
+                   "than this row shows. It is a protection quantity in Sv and must not be added "
+                   "to the absorbed-dose rows in Gy.", markdown=True)
     has_dose_to_water = any(group.get("quantity") == "DoseToWater" for group in groups)
     if has_dose_to_water:
         pdf.bullet("DoseToWater is **physical** absorbed dose in Gy; the proton RBE of 1.1 is "

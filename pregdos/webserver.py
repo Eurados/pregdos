@@ -762,21 +762,49 @@ def _live_state(run_dir: Path):
     return info, status, etr, progress
 
 
+def _render_results(run_dir: Path, study: str, run_id: str, status: str):
+    """Render the scorer results block, and return it with the warnings parsing produced.
+
+    Shared by the full page render and the poll fragment.  The table grows while a run is in
+    flight -- each field writes its CSVs as it finishes -- so the fragment has to re-render it
+    rather than let the page keep whatever was there at load time.
+
+    Warnings are returned rather than flashed: the caller decides.  Flashing from the poll
+    endpoint would queue a message in the session every 5 s and dump the backlog on the next
+    page the user opened.
+    """
+    rows, warnings, plan_fractions = _result_rows(run_dir, study)
+    groups = _group_rows(rows)
+    html = render_template(
+        "_run_results.html",
+        study=study,
+        run_id=run_id,
+        status=status,
+        groups=groups,
+        plan_fractions=plan_fractions,
+        # Only a finished run has every field's cube, and only a run that scored the in-field
+        # grid has any cube at all.
+        can_export_dose=status == executor.COMPLETED and bool(rtdose.field_cubes(run_dir)),
+    )
+    return html, warnings
+
+
 @app.route("/studies/<study>/<run_id>/progress")
 def run_progress_fragment(study, run_id):
-    """Just the live block of the task page, for the in-page refresh.
+    """The live blocks of the task page -- progress and scorer results -- for the in-page refresh.
 
     The page used to call ``location.reload()`` every 5 s, which tore the document down,
-    reset the scroll position and re-fetched every asset.  Swapping this fragment in leaves
+    reset the scroll position and re-fetched every asset.  Swapping these fragments in leaves
     the rest of the page alone (issue #79).  ``terminal`` tells the client to stop polling
-    and load the page once more, since a finished run gains a results table, new buttons and
-    downloadable files that live outside this fragment.
+    and load the page once more, since a finished run gains action buttons and downloadable
+    files that live outside both fragments.
     """
     run_dir = _resolve_run(study, run_id)
     if run_dir is None:
         return jsonify({"error": "not found"}), 404
     executor.start_next_local_run(studies_root())
     info, status, etr, progress = _live_state(run_dir)
+    results_html, _warnings = _render_results(run_dir, study, run_id, status)
     return jsonify({
         "status": status,
         "terminal": status in TERMINAL_STATUSES,
@@ -786,6 +814,7 @@ def run_progress_fragment(study, run_id):
             backend=info.backend if info else None,
             submitted=info.submitted if info else None,
         ),
+        "results_html": results_html,
     })
 
 
@@ -803,13 +832,12 @@ def run_detail(study, run_id):
         return redirect(url_for("list_studies"))
     executor.start_next_local_run(studies_root())
 
-    rows, warnings, plan_fractions = _result_rows(run_dir, study)
-    groups = _group_rows(rows)
+    files = [{"name": p.name, "size": p.stat().st_size} for p in sorted(run_dir.iterdir()) if p.is_file()]
+    info, status, etr, progress = _live_state(run_dir)
+    results_html, warnings = _render_results(run_dir, study, run_id, status)
     for w in warnings:
         flash(f"Could not read scorer output: {w}")
 
-    files = [{"name": p.name, "size": p.stat().st_size} for p in sorted(run_dir.iterdir()) if p.is_file()]
-    info, status, etr, progress = _live_state(run_dir)
     return render_template(
         "run_detail.html",
         study=study,
@@ -819,17 +847,13 @@ def run_detail(study, run_id):
         auto_refresh=status in (executor.RUNNING, executor.QUEUED),
         progress=progress,
         etr=etr,
-        groups=groups,
-        plan_fractions=plan_fractions,
+        results_html=results_html,
         files=files,
         backend=info.backend if info else None,
         submitted=info.submitted if info else None,
         can_cancel=status in (executor.RUNNING, executor.QUEUED),
         can_rerun=status in (executor.COMPLETED, executor.FAILED, executor.CANCELED),
         can_move_up=status == executor.QUEUED and info is not None and info.backend == executor.LOCAL,
-        # Only a finished run has every field's cube, and only a run that scored the in-field
-        # grid has any cube at all.
-        can_export_dose=status == executor.COMPLETED and bool(rtdose.field_cubes(run_dir)),
         logs=[f["name"] for f in files if f["name"].endswith(".log")],
     )
 
@@ -1021,6 +1045,11 @@ def download_report(study, run_id):
         writer.writerow(["# Note", "Reported values are scaled to total course dose using the planned fraction count."])
     else:
         writer.writerow(["# Note", "Planned fractions were unavailable; reported values use the generated TOPAS plan scale."])
+    if any(r.get("quantity") == "AmbientDoseEquivalent" for r in rows):
+        writer.writerow(["# Note", "AmbientDoseEquivalent H*(10) is scored from NEUTRONS ONLY. It excludes "
+                         "protons, photons and every other particle, so it is not a total dose: a structure in "
+                         "or near the beam can receive more absorbed dose from protons than this row shows. It is "
+                         "a protection quantity in Sv and must not be added to the absorbed-dose rows in Gy."])
     if any(r.get("quantity") == "DoseToWater" for r in rows):
         writer.writerow(["# Note", "DoseToWater is physical absorbed dose in Gy; the proton RBE of 1.1 "
                          "is not applied to these values (unlike the RTDOSE export)."])
