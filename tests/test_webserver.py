@@ -1155,7 +1155,8 @@ def _csv_body_for_quantity(client, tmp_path, monkeypatch, quantity):
         "structure_volume_cm3": None, "structure_mass_g": None,
         "structure_average_density_g_cm3": None,
     }
-    monkeypatch.setattr(webserver, "_result_rows", lambda run_dir, study: ([row], [], 30))
+    monkeypatch.setattr(webserver.reporting, "result_rows",
+                        lambda run_dir, study, root: ([row], [], 30))
     return client.get(f"/studies/alpha/{run_id}/report.csv").data.decode()
 
 
@@ -1225,8 +1226,8 @@ def _row(
 
 
 def test_group_rows_totals_fields_and_adds_sd_in_quadrature():
-    from pregdos.webserver import _group_rows
-    groups = _group_rows([_row(field=2, total=2.0, sd=0.3), _row(field=1, total=1.0, sd=0.4)])
+    from pregdos.reporting import group_rows
+    groups = group_rows([_row(field=2, total=2.0, sd=0.3), _row(field=1, total=1.0, sd=0.4)])
     assert len(groups) == 1
     g = groups[0]
     assert [r["field"] for r in g["rows"]] == [1, 2]        # sorted by field within the scorer
@@ -1236,30 +1237,30 @@ def test_group_rows_totals_fields_and_adds_sd_in_quadrature():
 
 
 def test_group_rows_sorts_by_scorer_then_field():
-    from pregdos.webserver import _group_rows
-    groups = _group_rows([_row(scorer="Zeta", field=1), _row(scorer="Alpha", field=2),
+    from pregdos.reporting import group_rows
+    groups = group_rows([_row(scorer="Zeta", field=1), _row(scorer="Alpha", field=2),
                           _row(scorer="Alpha", field=1)])
     assert [g["scorer"] for g in groups] == ["Alpha", "Zeta"]
     assert [r["field"] for r in groups[0]["rows"]] == [1, 2]
 
 
 def test_no_total_for_a_single_field():
-    from pregdos.webserver import _group_rows
-    (g,) = _group_rows([_row(field=1)])
+    from pregdos.reporting import group_rows
+    (g,) = group_rows([_row(field=1)])
     assert g["total_sum"] is None       # a "total" of one row is just noise
 
 
 def test_no_total_when_any_field_is_unusable():
     """A partial sum over fields would understate the dose while looking authoritative."""
-    from pregdos.webserver import _group_rows
-    (g,) = _group_rows([_row(field=1, total=1.0), _row(field=2, total=None, problem="NaN Sum")])
+    from pregdos.reporting import group_rows
+    (g,) = group_rows([_row(field=1, total=1.0), _row(field=2, total=None, problem="NaN Sum")])
     assert g["total_sum"] is None
     assert g["n_fields"] == 2
 
 
 def test_total_sd_absent_when_a_field_lacks_one():
-    from pregdos.webserver import _group_rows
-    (g,) = _group_rows([_row(field=1, sd=0.1), _row(field=2, sd=None)])
+    from pregdos.reporting import group_rows
+    (g,) = group_rows([_row(field=1, sd=0.1), _row(field=2, sd=None)])
     assert g["total_sum"] == pytest.approx(2.0)
     assert g["total_sd"] is None
 
@@ -1296,8 +1297,8 @@ def test_report_csv_includes_all_field_totals(client, tmp_path):
 def test_no_total_when_two_csvs_share_a_field(client, tmp_path):
     """`IfOutputFileAlreadyExists = Increment` re-runs a field into `..._1.csv`.  Summing the
     two would double-count that field."""
-    from pregdos.webserver import _group_rows
-    (g,) = _group_rows([_row(field=1, total=1.0), _row(field=1, total=1.0)])
+    from pregdos.reporting import group_rows
+    (g,) = group_rows([_row(field=1, total=1.0), _row(field=1, total=1.0)])
     assert g["total_sum"] is None
     assert g["n_fields"] == 2
 
