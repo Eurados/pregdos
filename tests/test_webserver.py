@@ -1661,3 +1661,16 @@ def test_pdf_dose_to_water_note_survives_the_physical_dose_annotation(monkeypatc
         generated_at="now", provenance={}, plan_uid=None,
     )
     assert any("proton RBE of 1.1" in t for t in calls)
+
+
+def test_every_run_download_uses_the_same_name_scheme(client, tmp_path):
+    """The ZIP used `study__run` while the reports used `study_run`, so the boundary between
+    the study name and the run id was visible in one download and not the others."""
+    run_id, _ = _completed_run(tmp_path)
+    names = {
+        path: client.get(f"/studies/alpha/{run_id}{path}").headers["Content-Disposition"]
+        for path in ("/report.csv", "/report.pdf", "/archive")
+    }
+    assert names["/report.csv"] == f'attachment; filename="alpha__{run_id}_report.csv"'
+    assert names["/report.pdf"] == f'attachment; filename="alpha__{run_id}_report.pdf"'
+    assert names["/archive"] == f'attachment; filename="alpha__{run_id}.zip"'

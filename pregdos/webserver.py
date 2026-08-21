@@ -643,6 +643,16 @@ def _run_status(run_dir: Path) -> str:
     return executor.run_status(run_dir)
 
 
+def _download_name(study: str, run_id: str, suffix: str) -> str:
+    """Attachment filename for a run's downloads: ``<study>__<run id><suffix>``.
+
+    The doubled underscore separates the study name from the run id, which carries single
+    underscores of its own (``run_20260821_101316``) -- without it the boundary is invisible.
+    One helper for all three downloads so the ZIP, CSV and PDF cannot drift apart again.
+    """
+    return f"{secure_filename(study)}__{secure_filename(run_id)}{suffix}"
+
+
 def _resolve_run(study, run_id):
     """Resolve a run directory from URL parameters, or return None."""
     try:
@@ -869,7 +879,7 @@ def download_report(study, run_id):
         csv_text,
         mimetype="text/csv",
         headers={
-            "Content-Disposition": f'attachment; filename="{secure_filename(study)}_{run_id}_report.csv"',
+            "Content-Disposition": f'attachment; filename="{_download_name(study, run_id, "_report.csv")}"',
             "Cache-Control": "no-store",
             "Pragma": "no-cache",
             "Expires": "0",
@@ -900,7 +910,7 @@ def download_pdf_report(study, run_id):
         pdf,
         mimetype="application/pdf",
         headers={
-            "Content-Disposition": f'attachment; filename="{secure_filename(study)}_{run_id}_report.pdf"',
+            "Content-Disposition": f'attachment; filename="{_download_name(study, run_id, "_report.pdf")}"',
             "Cache-Control": "no-store",
             "Pragma": "no-cache",
             "Expires": "0",
@@ -1168,7 +1178,7 @@ def download_full_run(study, run_id):
         if chunk := stream.drain():
             yield chunk
 
-    download_name = f"{secure_filename(study)}__{secure_filename(run_id)}.zip"
+    download_name = _download_name(study, run_id, ".zip")
     return Response(
         stream_with_context(generate()),
         mimetype="application/zip",
