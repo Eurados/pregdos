@@ -50,13 +50,13 @@ _TIME_MARKER_RE = re.compile(
 )
 
 # ---------------------------------------------------------------------------
-# ICRP 74 neutron conversion table -- loaded from the package data CSV file.
-# Edit pregdos/data/icrp74_neutron_h10.csv to change the table; do not touch
+# Neutron fluence-to-dose-equivalent table -- loaded from the package data CSV file.
+# Edit pregdos/data/neutron_dose_equivalent.csv to change the table; do not touch
 # the strings below, they are populated automatically at import time.
 # ---------------------------------------------------------------------------
 
 def _load_neutron_table() -> Tuple[str, str]:
-    """Read the ICRP 74 neutron H*(10) table from the package data CSV.
+    """Read the neutron fluence-to-dose-equivalent table from the package data CSV.
 
     Returns a pair of TOPAS-formatted strings ready to be embedded directly
     in a ``dv:Sc/.../FluenceToDoseConversion...`` parameter line:
@@ -67,7 +67,7 @@ def _load_neutron_table() -> Tuple[str, str]:
     Lines starting with ``#`` and the CSV header row are ignored, so the
     source file can carry as many explanatory comments as needed.
     """
-    csv_path = files("pregdos") / "data" / "icrp74_neutron_h10.csv"
+    csv_path = files("pregdos") / "data" / "neutron_dose_equivalent.csv"
     energies: List[str] = []
     values: List[str] = []
     for line in csv_path.read_text(encoding="utf-8").splitlines():
@@ -94,7 +94,14 @@ class ScorerType(str, Enum):
     """The out-of-field dose quantities supported by this module."""
 
     NEUTRON_DOSE_EQUIV = "neutron"
-    """Ambient dose equivalent H*(10) from neutrons (TOPAS AmbientDoseEquivalent)."""
+    """Neutron dose equivalent, H = Q(E) * fluence(n).
+
+    *Not* ambient dose equivalent, despite the TOPAS scorer used to compute it: TOPAS's
+    AmbientDoseEquivalent scorer carries no coefficients of its own and simply folds fluence
+    with the table it is given, so it is the mechanism for any fluence-to-dose-equivalent
+    conversion.  See pregdos/data/neutron_dose_equivalent.csv for why the coefficients are
+    deliberately not h*(10).  TOPAS still reports the quantity as "AmbientDoseEquivalent" in
+    its CSV header; that name is its own and PregDos does not rewrite it."""
 
     GAMMA_DOSE = "gamma"
     """Absorbed dose to medium from photons and their descendants (DoseToMedium)."""
@@ -186,8 +193,8 @@ SCORER_DEFS = [
     {
         "id": "neutron",
         "scorer_type": ScorerType.NEUTRON_DOSE_EQUIV,
-        "label": "Neutron dose equivalent H*(10)",
-        "description": "AmbientDoseEquivalent with ICRP 74 fluence-to-dose conversion",
+        "label": "Neutron dose equivalent",
+        "description": "H = Q(E) * neutron fluence, folded via the TOPAS AmbientDoseEquivalent scorer",
     },
     {
         "id": "gamma",
@@ -219,7 +226,10 @@ SCORER_DEFS = [
 # The full name is built dynamically as "{prefix}_{sanitized_structure_name}"
 # so multiple structures can each have their own scorer in the same file.
 _SCORER_NAME = {
-    ScorerType.NEUTRON_DOSE_EQUIV: "AmBDose",
+    # TOPAS reports this row's quantity as the bare "AmbientDoseEquivalent", which is wrong
+    # twice over: the scorer is neutron-filtered, and the coefficients are not h*(10).  The
+    # scorer name is ours, so it says what the number actually is, like its siblings.
+    ScorerType.NEUTRON_DOSE_EQUIV: "DoseEquivNeutron",
     ScorerType.GAMMA_DOSE: "DoseGamma",
     ScorerType.DOSE_TO_WATER: "DoseWater",
     ScorerType.PROTON_PRIMARY: "DoseProtonPrimary",
@@ -308,7 +318,7 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
     is_structure = entry.volume_type == VolumeType.STRUCTURE
 
     # Build a unique TOPAS scorer name that encodes both the quantity and the
-    # target: AmBDose_Fetus, DoseGamma_GTV_T1, DoseProtonPrimary_Grid, etc.
+    # target: DoseEquivNeutron_Fetus, DoseGamma_GTV_T1, DoseProtonPrimary_Grid, etc.
     base_name = _SCORER_NAME[entry.scorer_type]
     if is_structure:
         name = f"{base_name}_{_sanitize_name(entry.structure_name)}"
@@ -335,10 +345,12 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
     lines: List[str] = []
 
     if entry.scorer_type == ScorerType.NEUTRON_DOSE_EQUIV:
-        # ── Neutron ambient dose equivalent H*(10) ────────────────────────
-        # TOPAS AmbientDoseEquivalent quantity: multiplies the neutron fluence
-        # spectrum by the ICRP 74 H*(10) coefficients via a lookup table.
-        # The result is in Sv (integrated over the scoring volume / simulation).
+        # ── Neutron dose equivalent, H = Q(E) * fluence(n) ────────────────
+        # TOPAS's AmbientDoseEquivalent quantity folds the neutron fluence
+        # spectrum with a lookup table it does not supply itself, so it is the
+        # mechanism here rather than the quantity: the coefficients are Q(E)-
+        # weighted, not h*(10).  The result is in Sv (integrated over the
+        # scoring volume / simulation).
         lines += [
             f'sv:Sc/{name}/OnlyIncludeParticlesNamed              = 1 "neutron"',
             f's:Sc/{name}/Quantity                                = "AmbientDoseEquivalent"',
@@ -361,9 +373,9 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
             f's:Sc/{name}/EBinEnergy                              = "PreStep"',
             f's:Sc/{name}/OutputType                              = "csv"',
             f'sv:Sc/{name}/Report                                 = 2 "Sum" "Standard_Deviation"',
-            # Tell TOPAS which particle type drives the h*(10) lookup
+            # Tell TOPAS which particle type drives the conversion lookup
             f's:Sc/{name}/GetAmbientDoseEquivalentForParticleNamed = "neutron"',
-            # Embed the full ICRP 74 Table A.42 conversion table (114 points)
+            # Embed the full fluence-to-dose-equivalent table (114 points)
             f"dv:Sc/{name}/FluenceToDoseConversionEnergies        = 114",
             _NEUTRON_ENERGIES,
             f"dv:Sc/{name}/FluenceToDoseConversionValues          = 114",

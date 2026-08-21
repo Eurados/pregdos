@@ -602,7 +602,7 @@ def test_convert_appends_selected_scorers_and_survives_rerun(client, tmp_path, m
         run_id = studies.list_runs(tmp_path, "mystudy")[0]
         text = (studies.run_path(tmp_path, "mystudy", run_id) / "topas_field01.txt").read_text()
         assert "DoseToWater" in text, run       # original in-field scorer preserved …
-        assert "AmBDose_CTV" in text, run       # … plus both selected out-of-field scorers
+        assert "DoseEquivNeutron_CTV" in text, run       # … plus both selected out-of-field scorers
         assert "DoseGamma_CTV" in text, run
 
 
@@ -749,7 +749,7 @@ def test_run_detail_shows_scaled_scorer_results(client, tmp_path):
     resp = client.get(f"/studies/alpha/{run_id}")
     assert resp.status_code == 200
     body = resp.data.decode()
-    assert "AmBDose_BrainStem" in body and "BrainStem" in body and "Sv" in body
+    assert "<code>DoseEquivNeutron</code>" in body and "BrainStem" in body and "Sv" in body
     # 1.049973996636311e-11 Sv * 953656.09 = 1.0013e-05, shown SI-prefixed (~10.01 µSv)
     disp = results.humanize_dose(1.049973996636311e-11 * 953656.0980490245, None, "Sv")
     assert disp["value"] in body and disp["unit"] in body
@@ -795,7 +795,7 @@ def test_run_detail_converts_structure_energy_deposit_to_gy(client, tmp_path):
     body = client.get(f"/studies/alpha/{run_id}").data.decode()
 
     expected = 10.0 * 953656.0980490245 * 1.602176634e-13 / 0.002
-    assert "DoseProtonPrimary_CTV" in body
+    assert "<code>DoseProtonPrimary</code>" in body
     assert "DoseToMedium" in body
     assert "mass-normalized" not in body
     disp = results.humanize_dose(expected, None, "Gy")
@@ -852,7 +852,7 @@ def test_run_detail_corrects_structure_dose_to_water_by_volume(client, tmp_path)
     body = client.get(f"/studies/alpha/{run_id}").data.decode()
 
     expected = 1.0e-9 * 953656.0980490245 * 50.0
-    assert "DoseWater_CTV" in body
+    assert "<code>DoseWater</code>" in body
     assert "DoseToWater" in body
     assert "volume-normalized" not in body
     disp = results.humanize_dose(expected, None, "Gy")
@@ -876,7 +876,7 @@ def test_run_detail_rejects_structure_dose_to_water_without_component(client, tm
 
     body = client.get(f"/studies/alpha/{run_id}").data.decode()
 
-    assert "DoseWater_CTV" in body
+    assert "<code>DoseWater</code>" in body
     assert "unusable" in body
     assert "scorer component" in body
 
@@ -973,7 +973,7 @@ def test_run_detail_unparseable_csv_warns_not_500(client, tmp_path):
     resp = client.get(f"/studies/alpha/{run_id}")
     assert resp.status_code == 200
     assert b"Could not read scorer output" in resp.data
-    assert b"AmBDose_BrainStem" in resp.data      # the good CSV still renders
+    assert b"<code>DoseEquivNeutron</code>" in resp.data   # the good CSV still renders
 
 
 def test_run_detail_missing_run_redirects(client, tmp_path):
@@ -990,7 +990,7 @@ def test_report_csv_download(client, tmp_path):
     assert "attachment" in resp.headers["Content-Disposition"]
     assert resp.headers["Cache-Control"] == "no-store"
     body = resp.data.decode()
-    assert "AmBDose_BrainStem" in body and "AmbientDoseEquivalent" in body
+    assert "DoseEquivNeutron_BrainStem" in body and "NeutronDoseEquivalent" in body
     assert "# PregDos Dose Report" in body
     assert "# PregDos" in body and "# TOPAS" in body
     assert "issue #50" in body
@@ -1011,7 +1011,7 @@ def test_report_csv_includes_units_row_before_results(client, tmp_path):
         "units", "", "", "", "", "Gy or Sv", "Gy or Sv", "Gy or Sv", "1", "1",
         "", "", "cm3", "g", "g/cm3", "",
     ]
-    assert rows[header_index + 2][0] == "AmBDose_BrainStem"
+    assert rows[header_index + 2][0] == "DoseEquivNeutron_BrainStem"
 
 
 def test_report_csv_includes_fraction_count_and_course_scaled_dose(client, tmp_path):
@@ -1034,7 +1034,7 @@ def test_report_csv_marks_nan_rows_unusable(client, tmp_path):
         "-nan, 1e-15\n"
     )
     body = client.get(f"/studies/alpha/{run_id}/report.csv").data.decode()
-    assert "AmBDose_Fetus" in body and "4.2.3" in body   # flagged, not rendered as a dose
+    assert "DoseEquivNeutron_Fetus" in body and "4.2.3" in body   # flagged, not rendered as a dose
 
     page = client.get(f"/studies/alpha/{run_id}").data.decode()
     assert "unusable" in page
@@ -1139,22 +1139,6 @@ def test_pdf_dose_to_water_note_absent_without_scorer(monkeypatch):
     assert not any("DoseToWater is" in t for t, _ in without)
 
 
-def test_pdf_says_ambient_dose_equivalent_is_neutrons_only(monkeypatch):
-    """The H*(10) scorer carries a neutron-only filter, so the number is not a total dose.
-    Readers otherwise assume it covers all particles and read an in-beam structure's larger
-    proton dose as a contradiction."""
-    notes = [(t, md) for t, md in _pdf_bullets(monkeypatch, "AmbientDoseEquivalent")
-             if "AmbientDoseEquivalent" in t]
-    assert len(notes) == 1
-    text, markdown = notes[0]
-    assert markdown is True
-    assert "**neutrons only**" in text      # rendered bold in the PDF
-    assert "not** a total dose" in text
-
-
-def test_pdf_neutron_note_absent_without_an_ambient_scorer(monkeypatch):
-    without = _pdf_bullets(monkeypatch, "DoseToWater")
-    assert not any("neutrons only" in t for t, _ in without)
 
 
 def _csv_body_for_quantity(client, tmp_path, monkeypatch, quantity):
@@ -1185,19 +1169,42 @@ def test_csv_dose_to_water_note_absent_without_scorer(client, tmp_path, monkeypa
     assert "the proton RBE of 1.1" not in body
 
 
-def test_csv_says_ambient_dose_equivalent_is_neutrons_only(client, tmp_path, monkeypatch):
-    """H*(10) here is scored with a neutron-only filter, so it is not a total dose.  Without
-    saying so, a reader compares it against the proton rows and concludes the numbers are
-    inconsistent -- an in-beam structure legitimately gets more proton dose than H*(10).
-    """
-    body = _csv_body_for_quantity(client, tmp_path, monkeypatch, "AmbientDoseEquivalent")
-    assert "NEUTRONS ONLY" in body
-    assert "not a total dose" in body
+def test_csv_reports_the_rtplan_uid(client, tmp_path):
+    """The `# Study` line is only the upload's filename, so on its own the report cannot be
+    tied back to a plan in the TPS."""
+    run_id, _ = _completed_run(tmp_path)
+    body = client.get(f"/studies/alpha/{run_id}/report.csv").data.decode()
+    assert "# RTPLAN UID,1.2.246.352.71.5.37402163639.265919.20240227185649" in body
 
 
-def test_csv_neutron_note_absent_without_an_ambient_scorer(client, tmp_path, monkeypatch):
+def test_csv_rtplan_uid_says_unavailable_when_it_cannot_be_read(client, tmp_path, monkeypatch):
     body = _csv_body_for_quantity(client, tmp_path, monkeypatch, "DoseToWater")
-    assert "NEUTRONS ONLY" not in body
+    assert "# RTPLAN UID,unavailable" in body
+
+
+def test_pdf_reports_the_rtplan_uid_at_full_width(monkeypatch):
+    """A UID does not fit a half-width value cell, and `_clip` would truncate it into
+    something that still looks like a UID but identifies nothing.  It gets its own row."""
+    from pregdos import report_pdf
+
+    calls = []
+    original = report_pdf.ReportPDF.kv_table
+
+    def spy(self, items, cols=2):
+        calls.append((items, cols))
+        return original(self, items, cols=cols)
+
+    monkeypatch.setattr(report_pdf.ReportPDF, "kv_table", spy)
+    uid = "1.2.246.352.71.5.37402163639.265919.20240227185649"
+    report_pdf.build_report_pdf(
+        study="s", run_id="run_x", groups=[], warnings=[], plan_fractions=30,
+        generated_at="now", provenance={}, plan_uid=uid,
+    )
+    uid_rows = [(items, cols) for items, cols in calls if items == [("RTPLAN UID", uid)]]
+    assert len(uid_rows) == 1
+    assert uid_rows[0][1] == 1          # full width, so the UID is never clipped
+
+
 
 
 # --- grouping and per-scorer totals ---
@@ -1269,6 +1276,7 @@ def _second_field_csv(run_dir, param_file="topas_field02.txt"):
     (run_dir / "topas_field02_neutron_BrainStem.csv").write_text(
         f"# Parameter File: {param_file}\n"
         "# Results for scorer: AmBDose_BrainStem\n"
+        '# Filtered by: OnlyIncludeParticlesNamed = 1 "neutron"\n'
         '# Filtered by: OnlyIncludeIfInRTStructure = 1 "BrainStem"\n'
         "# Scored in component: Patient\n"
         "# AmbientDoseEquivalent ( Sv ) : Sum   Standard_Deviation   \n"
@@ -1489,17 +1497,6 @@ def test_progress_fragment_returns_the_live_block(client, tmp_path):
     assert "progress-meter" in body["html"]      # the bars are in the fragment
     assert "<html" not in body["html"]           # ...and only the fragment
 
-
-def test_results_tile_says_ambient_dose_equivalent_is_neutrons_only(client, tmp_path):
-    """The note box has to say it: the run's H*(10) row is neutron-filtered, so a structure
-    clipped by the beam shows more proton dose than H*(10), which reads as a contradiction
-    unless the reader knows H*(10) is not a total."""
-    run_id, run_dir = _completed_run(tmp_path)
-    body = client.get(f"/studies/alpha/{run_id}").data.decode()
-
-    plain = " ".join(body.replace("<strong>", "").replace("</strong>", "").split())
-    assert "H*(10) is scored from neutrons only" in plain
-    assert "not a total dose" in plain
 
 
 def test_progress_fragment_carries_results_finished_so_far(client, tmp_path):

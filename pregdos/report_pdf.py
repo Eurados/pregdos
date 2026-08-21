@@ -244,7 +244,12 @@ class ReportPDF(FPDF):
             self.add_page()
         self.set_font(self._font_family, "B", 8)
         self.set_fill_color(238, 241, 245)
-        text = f"{group['scorer']} | {group['structure']} | {group['quantity']} ({group['unit']})"
+        # `display_scorer` drops the `_<structure>` suffix the Structure column already shows.
+        # Fall back to the raw name for callers that build groups without it.
+        name = group.get("display_scorer") or group["scorer"]
+        # Unit gets its own field rather than parentheses: it now carries parentheses of its
+        # own ("Gy (phys)"), and nesting them reads badly.
+        text = f"{name} | {group['structure']} | {group['quantity']} | {group['unit']}"
         self.cell(0, 6, self._safe(text), border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
 
     def _result_row(
@@ -299,6 +304,7 @@ def build_report_pdf(
     plan_fractions: int | None,
     generated_at: str,
     provenance: dict[str, str],
+    plan_uid: str | None = None,
 ) -> bytes:
     pdf = ReportPDF("PregDos Report", run_id)
     pdf.add_page()
@@ -310,6 +316,9 @@ def build_report_pdf(
         ("Generated", generated_at),
         ("Fractions", plan_fractions if plan_fractions else "unavailable"),
     ])
+    # A UID is far too wide for a half-width value cell, and `_clip` would silently truncate it
+    # into something that looks like a UID but identifies nothing.  Give it the full width.
+    pdf.kv_table([("RTPLAN UID", plan_uid or "unavailable")], cols=1)
 
     pdf.heading("Provenance")
     pdf.kv_table([
@@ -338,13 +347,6 @@ def build_report_pdf(
     else:
         pdf.bullet("Planned fractions were unavailable; reported values use the generated TOPAS plan scale.")
     pdf.bullet("The uncertainty is the 1-sigma Monte-Carlo statistical error.")
-    has_ambient = any(group.get("quantity") == "AmbientDoseEquivalent" for group in groups)
-    if has_ambient:
-        pdf.bullet("AmbientDoseEquivalent H*(10) is scored from **neutrons only**. It excludes "
-                   "protons, photons and every other particle, so it is **not** a total dose: a "
-                   "structure in or near the beam can receive more absorbed dose from protons "
-                   "than this row shows. It is a protection quantity in Sv and must not be added "
-                   "to the absorbed-dose rows in Gy.", markdown=True)
     has_dose_to_water = any(group.get("quantity") == "DoseToWater" for group in groups)
     if has_dose_to_water:
         pdf.bullet("DoseToWater is **physical** absorbed dose in Gy; the proton RBE of 1.1 is "

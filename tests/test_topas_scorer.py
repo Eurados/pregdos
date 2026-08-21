@@ -23,7 +23,7 @@ def _make_entry(scorer_type, volume_type=VolumeType.STRUCTURE, structure="fetus"
 def test_neutron_scorer_block_structure():
     entry = _make_entry(ScorerType.NEUTRON_DOSE_EQUIV)
     block = scorer_block(entry, "topas_field01")
-    assert 's:Sc/AmBDose_fetus/Quantity' in block
+    assert 's:Sc/DoseEquivNeutron_fetus/Quantity' in block
     assert '"AmbientDoseEquivalent"' in block
     assert 'OnlyIncludeParticlesNamed' in block
     assert '"neutron"' in block
@@ -149,7 +149,7 @@ def test_append_scorers_adds_neutron_scorer(tmp_path):
     )
     append_scorers(str(p), config)
     result = p.read_text()
-    assert "AmBDose_fetus" in result
+    assert "DoseEquivNeutron_fetus" in result
     assert "DoseToWater" in result  # in-field scorer preserved
     assert _TIME_BODY in result     # time features preserved
 
@@ -180,7 +180,7 @@ def test_append_scorers_multiple_scorers(tmp_path):
     append_scorers(str(p), config)
     result = p.read_text()
     assert "DoseGamma_fetus" in result
-    assert "AmBDose_fetus" in result
+    assert "DoseEquivNeutron_fetus" in result
     assert "DoseProtonPrimary_fetus" in result
 
 
@@ -207,7 +207,7 @@ def test_append_scorers_no_existing_scorer_section(tmp_path):
     )
     append_scorers(str(p), config)
     result = p.read_text()
-    assert "AmBDose_fetus" in result
+    assert "DoseEquivNeutron_fetus" in result
 
 
 # ---------------------------------------------------------------------------

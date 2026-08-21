@@ -70,12 +70,17 @@ _QUANTITY_RE = re.compile(r"^#\s*(?P<quantity>\w+)\s*\(\s*(?P<unit>[^)]*?)\s*\)\
 _SCORER_RE = re.compile(r"^#\s*Results for scorer:\s*(?P<name>.+?)\s*$")
 _PARAMETER_FILE_RE = re.compile(r"^#\s*Parameter File:\s*(?P<name>.+?)\s*$")
 _STRUCTURE_RE = re.compile(r'^#\s*Filtered by:\s*OnlyIncludeIfInRTStructure\s*=\s*\d+\s*"(?P<name>.+?)"\s*$')
+_PARTICLE_RE = re.compile(r'^#\s*Filtered by:\s*OnlyIncludeParticlesNamed\s*=\s*\d+\s*"(?P<name>.+?)"\s*$')
 _COMPONENT_RE = re.compile(r"^#\s*Scored in component:\s*(?P<name>.+?)\s*$")
 _VERSION_RE = re.compile(r"^#\s*TOPAS Version:\s*(?P<version>.+?)\s*$")
 
 # Plan scaling, from the header dicomexport writes into the TOPAS input.
 _HEADER_VALUE_RE = re.compile(r"^#\s*(?P<key>[A-Z_]+):\s*(?P<value>[-\d.eE+]+)\s*$", re.MULTILINE)
 _SPOT_WEIGHT_RE = re.compile(r"uv:Tf/spotWeight/Values\s*=\s*(?P<count>\d+)(?P<values>(?:\s+\d+)+)")
+# dicomexport stamps the RTPLAN's SOPInstanceUID into every field it generates:
+#     # SOP_INSTANCE_UID 1.2.246.352.221.5164...
+# No colon and a non-numeric value, so `_HEADER_VALUE_RE` does not cover it.
+_PLAN_UID_RE = re.compile(r"^#\s*SOP_INSTANCE_UID\s+(?P<uid>[0-9.]+)\s*$", re.MULTILINE)
 
 # TOPAS writes `-nan` / `nan` / `inf`; float() accepts them, so a NaN reaches us silently.
 _SUM = "Sum"
@@ -143,6 +148,8 @@ class ScorerResult:
     """RT structure the scorer was restricted to, or "" for an unfiltered scorer."""
     component: str = ""
     """TOPAS component the scorer was attached to, e.g. ``Patient``."""
+    particle: str = ""
+    """``OnlyIncludeParticlesNamed`` filter, or "" if the scorer counted every particle."""
     parameter_file: str = ""
     topas_version: str = ""
     run_index: Optional[int] = None
@@ -244,6 +251,100 @@ class ScorerResult:
 # Plan scaling
 # ---------------------------------------------------------------------------
 
+def display_quantity(quantity: str, particle: str, unit: str) -> str:
+    """The quantity name to print, which is not always the one TOPAS wrote.
+
+    TOPAS labels this scorer's output ``AmbientDoseEquivalent`` because that is the scorer it
+    is, but the scorer holds no coefficients of its own -- it folds fluence with whatever
+    ``FluenceToDoseConversion*`` table it is handed (``TsScoreAmbientDoseEquivalent.cc:44``).
+    PregDos hands it Q(E) coefficients, so the number is a neutron dose equivalent and *not*
+    H*(10); see ``pregdos/data/neutron_dose_equivalent.csv``.  Printing TOPAS's name would put
+    a quantity in the report that the report does not contain.
+
+    Only a neutron-filtered scorer is renamed.  An ``AmbientDoseEquivalent`` scorer without
+    that filter is not one of ours and may well be genuine H*(10), so it keeps TOPAS's name --
+    guessing wrong in that direction would invent a quantity rather than correct one.
+
+    Every Gy quantity is additionally marked as physical dose.  This report is read by
+    clinicians, and in a proton clinic a bare "Gy" is habitually read as RBE-weighted: the TPS
+    prints Gy for what is really Gy(RBE), and PregDos's own RTDOSE export is Gy(RBE) too.  None
+    of these values carry an RBE.  The mark goes on the quantity rather than the unit so it is
+    stated once per group instead of on every value and every uncertainty.  Sv is left alone --
+    it is already a weighted quantity and is not misread this way.
+    """
+    if quantity == "AmbientDoseEquivalent" and particle == "neutron":
+        return "NeutronDoseEquivalent"
+    if unit == "Gy":
+        return f"{quantity} (physical dose)"
+    return quantity
+
+
+# Scorer name prefixes PregDos used to generate but has since retired.  Renamed 2026-08-21:
+# the "AmB" meant *ambient* dose equivalent, which this scorer never computed -- see
+# ``pregdos/data/neutron_dose_equivalent.csv``.  Runs made before the rename still carry the
+# old name in their CSVs, and a report is not the place to leave a name for the wrong
+# quantity, so it is mapped on the way in.
+_SCORER_ALIASES = {
+    "AmBDose": "DoseEquivNeutron",
+    "AmBDoseNeutron": "DoseEquivNeutron",
+}
+
+
+def canonical_scorer_name(scorer: str) -> str:
+    """``scorer`` with any retired prefix replaced by the one PregDos generates today.
+
+    Applied to the parsed row, so grouping, the tables and the CSV report all agree -- and a
+    run directory holding output from both sides of a rename still groups as one scorer.
+    """
+    prefix, sep, rest = scorer.partition("_")
+    return _SCORER_ALIASES.get(prefix, prefix) + sep + rest
+
+
+def display_scorer_name(scorer: str, structure: str) -> str:
+    """The scorer name with its redundant ``_<structure>`` suffix removed, for display.
+
+    TOPAS scorer names have to be unique within one input file, so pregdos builds them as
+    ``DoseEquivNeutron_Pacemaker`` -- quantity plus target.  In a results table the target
+    already has its own column right next to it, so the suffix is read twice:
+
+        DoseGamma_Pacemaker | Pacemaker | DoseToMedium (Gy)
+
+    The full name stays in the TOPAS input and in the CSV report, which are the record of
+    what actually ran; only the human-facing tables drop it.
+
+    Everything from the first underscore goes: no prefix in ``topas_scorer._SCORER_NAME``
+    contains one, so the first underscore is always the boundary, whatever the structure was
+    called.  A scorer with no structure keeps its whole name -- nothing is being repeated
+    beside it, and for a grid scorer the ``_Grid`` suffix is all that names the target.
+
+    Retired prefixes are mapped first, so this is safe to call on a raw parsed name as well as
+    on one already canonicalized.
+    """
+    name = canonical_scorer_name(scorer)
+    return name.split("_", 1)[0] if structure else name
+
+
+def plan_uid(run_dir: str | Path) -> Optional[str]:
+    """The RTPLAN ``SOPInstanceUID`` this run simulated, or None if it cannot be determined.
+
+    Read from the *generated TOPAS input* rather than from the study's RTPLAN file, so the UID
+    names the plan that was actually simulated.  The study directory can be re-uploaded or
+    replaced after a run; the inputs in the run directory cannot.
+
+    Every field of one plan carries the same UID.  If the fields disagree, the run mixes plans
+    and no single UID describes it, so return None rather than name one of them.
+    """
+    uids = set()
+    for topas_input in sorted(Path(run_dir).glob("topas_field*.txt")):
+        try:
+            text = read_text_lenient(topas_input)
+        except OSError:
+            continue
+        if (m := _PLAN_UID_RE.search(text)):
+            uids.add(m.group("uid"))
+    return uids.pop() if len(uids) == 1 else None
+
+
 def parse_plan_scaling(topas_input: str | Path) -> Optional[PlanScaling]:
     """Read the plan particle budget from a generated TOPAS input file.
 
@@ -296,7 +397,7 @@ def parse_scorer_csv(path: str | Path) -> ScorerResult:
     except OSError as e:
         raise ResultsError(f"{path.name}: cannot read ({e})") from e
 
-    scorer = quantity = unit = structure = component = parameter_file = topas_version = ""
+    scorer = quantity = unit = structure = component = parameter_file = topas_version = particle = ""
     columns: List[str] = []
     data: List[str] = []
 
@@ -311,6 +412,8 @@ def parse_scorer_csv(path: str | Path) -> ScorerResult:
             structure = m.group("name")
         elif (m := _COMPONENT_RE.match(line)):
             component = m.group("name")
+        elif (m := _PARTICLE_RE.match(line)):
+            particle = m.group("name")
         elif (m := _PARAMETER_FILE_RE.match(line)):
             parameter_file = m.group("name")
         elif (m := _VERSION_RE.match(line)):
@@ -357,6 +460,7 @@ def parse_scorer_csv(path: str | Path) -> ScorerResult:
         rows=rows,
         structure=structure,
         component=component,
+        particle=particle,
         parameter_file=parameter_file,
         topas_version=topas_version,
         run_index=run_index,

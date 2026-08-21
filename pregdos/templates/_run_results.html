@@ -19,7 +19,7 @@
             {% for r in g.rows %}
               <tr>
                 {% if loop.first %}
-                  <td rowspan="{{ g.rows|length }}"><code>{{ g.scorer }}</code></td>
+                  <td rowspan="{{ g.rows|length }}"><code>{{ g.display_scorer }}</code></td>
                   <td rowspan="{{ g.rows|length }}">{{ g.structure }}</td>
                   <td rowspan="{{ g.rows|length }}">{{ g.quantity }}</td>
                 {% endif %}
@@ -70,17 +70,6 @@
          next to it -- an unlabelled "All N fields" total reads as the whole plan. #}
       <p class="hint">The run is still going; fields that have not finished yet are missing
         from this table, and any total covers only the fields listed.</p>
-    {% endif %}
-
-    {% if groups | selectattr('quantity', 'equalto', 'AmbientDoseEquivalent') | list %}
-      <div class="hint-box">
-        <code>AmbientDoseEquivalent</code> H*(10) is scored from <strong>neutrons only</strong>.
-        It excludes protons, photons and every other particle, so it is <strong>not</strong> a
-        total dose — a structure in or near the beam can easily receive more absorbed dose from
-        protons than this row shows. Read it alongside the proton and gamma rows rather than in
-        place of them, and do not add it to them: H*(10) is a protection quantity in Sv, not an
-        absorbed dose in Gy.
-      </div>
     {% endif %}
 
     <div class="hint-box">

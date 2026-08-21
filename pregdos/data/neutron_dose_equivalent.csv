@@ -1,14 +1,26 @@
-# ICRP Publication 74 (1996) — Conversion Coefficients for use in Radiological
-# Protection Against External Radiation.
-# Table A.42: Fluence-to-ambient-dose-equivalent conversion coefficients H*(10)
-# for neutrons, anteroposterior (AP) geometry.
+# Neutron fluence-to-dose-equivalent conversion coefficients, H = Q(E) * fluence(n).
 #
-# To update this table: replace the numeric rows with values from the relevant
-# ICRP publication and adjust the count in the header row accordingly.
+# NOT ambient dose equivalent H*(10), despite the TOPAS parameter these feed.  TOPAS's
+# AmbientDoseEquivalent scorer ships no table of its own -- it just folds track-length
+# fluence with whatever h(E) you hand it (TsScoreAmbientDoseEquivalent.cc:44) -- so it is
+# the mechanism used to get a Q-weighted dose equivalent out of TOPAS, and the parameter
+# name is inherited, not descriptive.
+#
+# Checked against ICRP 74 Table A.42 (2026-08-21): these are not those coefficients.  Below
+# ~1e-4 MeV this table follows 1/sqrt(E) to within 0.2% -- the 1/v capture signature of
+# kerma -- while h*(10) is flat at 6-17 pSv*cm2 there, because it is defined at 10 mm depth
+# in the ICRU sphere and picks up the 1H(n,gamma) photons.  Point values differ by up to
+# 100x.  That difference is deliberate: PregDos scores fluence *inside the patient*, after
+# TOPAS has already transported the neutrons there, so folding in h*(10) would double-count
+# the sphere buildup it carries.  A local Q-weighted coefficient is the consistent choice.
+#
+# Original source of the numbers is not recorded; if you re-derive them, say where from.
+#
+# To update this table: replace the numeric rows and adjust the count in the header row.
 # The loader in topas_scorer.py reads every non-comment, non-header row.
 #
 # Column 1: Neutron kinetic energy (MeV)
-# Column 2: h*(10) conversion coefficient (Sv*mm2 per neutron per mm2 fluence)
+# Column 2: h(E) conversion coefficient (Sv*mm2 per neutron per mm2 fluence)
 #
 energy_MeV,H_star_10_Sv_mm2
 1.01E-09,1.62657E-09

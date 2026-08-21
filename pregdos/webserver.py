@@ -896,6 +896,10 @@ def _group_rows(rows: list) -> list:
 
         out.append({
             "scorer": scorer, "structure": structure, "quantity": quantity, "unit": unit,
+            # The tables print this next to the Structure column, which would otherwise repeat
+            # the scorer name's own suffix.  `scorer` keeps the real TOPAS object name for the
+            # CSV report.
+            "display_scorer": results.display_scorer_name(scorer, structure),
             "rows": members, "total_sum": total_sum, "total_sd": total_sd,
             "n_fields": len(members),
         })
@@ -929,6 +933,10 @@ def _result_rows(run_dir: Path, study: str):
         metric = None
         mass_normalized = False
         volume_normalized = False
+        # The branches below rewrite both (EnergyDeposit in MeV becomes DoseToMedium in Gy once
+        # mass-normalized).  `display_quantity` is applied at the end, to whatever they settle
+        # on, so it sees the real unit -- the branches themselves all test `r.quantity`, the
+        # name TOPAS actually wrote.
         quantity = r.quantity
         unit = r.unit
         problem = r.problem
@@ -959,7 +967,7 @@ def _result_rows(run_dir: Path, study: str):
                     problem = "structure volume metrics or scorer component are missing; cannot correct fluence denominator"
             elif r.quantity == "DoseToWater" and r.structure:
                 # DoseToWater is an intensive dose (Gy) that TOPAS divides by the whole
-                # patient-box volume for a single-bin scorer, exactly like the H*(10) fluence
+                # patient-box volume for a single-bin scorer, exactly like the neutron fluence
                 # scorer. Rescale that denominator to the structure volume (V_patient/V_struct);
                 # only EnergyDeposit (energy, no volume division) uses the structure mass.
                 correction = (
@@ -990,9 +998,14 @@ def _result_rows(run_dir: Path, study: str):
         rows.append({
             "field": number,
             "field_name": names.get(number, "") if number is not None else "",
-            "scorer": r.scorer,
+            # Retired prefixes are mapped here rather than at each output, so grouping, the
+            # tables and the CSV report cannot disagree about what a scorer is called.
+            "scorer": results.canonical_scorer_name(r.scorer),
             "structure": r.structure or "—",
-            "quantity": quantity,
+            # TOPAS's name for the quantity is not always the quantity we computed: the
+            # neutron scorer borrows the AmbientDoseEquivalent machinery but is fed Q(E), and
+            # a bare "Gy" is read as RBE-weighted by this report's clinical readers.
+            "quantity": results.display_quantity(quantity, r.particle, unit),
             "unit": unit,
             "sum": total,
             "sd": sd,
@@ -1025,6 +1038,9 @@ def download_report(study, run_id):
     writer = csv.writer(buf)
     writer.writerow(["# PregDos Dose Report"])
     writer.writerow(["# Study", study])
+    # The study name is only the upload's filename; the RTPLAN UID is what ties this report to
+    # an identifiable plan in the TPS.
+    writer.writerow(["# RTPLAN UID", results.plan_uid(run_dir) or "unavailable"])
     writer.writerow(["# Run", run_id])
     writer.writerow(["# Generated", generated_at])
     if plan_fractions:
@@ -1045,11 +1061,6 @@ def download_report(study, run_id):
         writer.writerow(["# Note", "Reported values are scaled to total course dose using the planned fraction count."])
     else:
         writer.writerow(["# Note", "Planned fractions were unavailable; reported values use the generated TOPAS plan scale."])
-    if any(r.get("quantity") == "AmbientDoseEquivalent" for r in rows):
-        writer.writerow(["# Note", "AmbientDoseEquivalent H*(10) is scored from NEUTRONS ONLY. It excludes "
-                         "protons, photons and every other particle, so it is not a total dose: a structure in "
-                         "or near the beam can receive more absorbed dose from protons than this row shows. It is "
-                         "a protection quantity in Sv and must not be added to the absorbed-dose rows in Gy."])
     if any(r.get("quantity") == "DoseToWater" for r in rows):
         writer.writerow(["# Note", "DoseToWater is physical absorbed dose in Gy; the proton RBE of 1.1 "
                          "is not applied to these values (unlike the RTDOSE export)."])
@@ -1130,6 +1141,7 @@ def download_pdf_report(study, run_id):
         groups=_group_rows(rows),
         warnings=warnings,
         plan_fractions=plan_fractions,
+        plan_uid=results.plan_uid(run_dir),
         generated_at=datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"),
         provenance=_report_provenance(),
     )
