@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from pregdos import executor
+from pregdos import executor, portable
 
 
 @pytest.fixture
@@ -168,12 +168,12 @@ def test_scheduler_waits_for_a_canceled_worker_to_actually_die(tmp_path, monkeyp
     launch = mocker.patch("pregdos.executor._launch_local_worker")
 
     # The canceled worker has not exited yet.
-    mocker.patch("pregdos.executor._process_group_alive", return_value=True)
+    mocker.patch("pregdos.executor.portable.worker_alive", return_value=True)
     assert executor.start_next_local_run(tmp_path) is None
     launch.assert_not_called()
 
     # It is gone now, so the queue may advance.
-    mocker.patch("pregdos.executor._process_group_alive", return_value=False)
+    mocker.patch("pregdos.executor.portable.worker_alive", return_value=False)
     assert executor.start_next_local_run(tmp_path) == queued
     launch.assert_called_once()
 
@@ -446,7 +446,7 @@ def test_process_group_alive_is_false_for_a_zombie():
     try:
         assert _wait_for_state(proc.pid, "Z") == "Z"        # defunct, not yet reaped
         os.killpg(proc.pid, 0)                              # what the old check relied on
-        assert executor._process_group_alive(str(proc.pid)) is False
+        assert portable.worker_alive(str(proc.pid)) is False
     finally:
         proc.wait()                                         # reap, so the test leaks nothing
 
@@ -456,16 +456,16 @@ def test_process_group_alive_is_true_for_a_running_worker():
 
     proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
     try:
-        assert executor._process_group_alive(str(proc.pid)) is True
+        assert portable.worker_alive(str(proc.pid)) is True
     finally:
         proc.kill()
         proc.wait()
 
 
 def test_process_group_alive_is_false_for_an_unusable_ident():
-    assert executor._process_group_alive("") is False
-    assert executor._process_group_alive("not-a-pid") is False
-    assert executor._process_group_alive("21474836") is False       # no such group
+    assert portable.worker_alive("") is False
+    assert portable.worker_alive("not-a-pid") is False
+    assert portable.worker_alive("21474836") is False       # no such group
 
 
 # --- issue #80: a failed field must not make a live run look finished ---
@@ -513,11 +513,11 @@ def test_scheduler_is_blocked_by_a_live_worker_whose_field_failed(tmp_path, mock
 
     launch = mocker.patch("pregdos.executor._launch_local_worker")
 
-    mocker.patch("pregdos.executor._process_group_alive", return_value=True)
+    mocker.patch("pregdos.executor.portable.worker_alive", return_value=True)
     assert executor.start_next_local_run(tmp_path) is None
     launch.assert_not_called()
 
-    mocker.patch("pregdos.executor._process_group_alive", return_value=False)
+    mocker.patch("pregdos.executor.portable.worker_alive", return_value=False)
     assert executor.start_next_local_run(tmp_path) == waiting
 
 
@@ -530,9 +530,9 @@ def test_process_group_alive_ignores_a_pid_recycled_into_another_directory(tmp_p
     other.mkdir()
     proc = subprocess.Popen(["sleep", "30"], cwd=str(other), start_new_session=True)
     try:
-        assert executor._process_group_alive(str(proc.pid)) is True          # it is alive
-        assert executor._process_group_alive(str(proc.pid), tmp_path) is False  # but not ours
-        assert executor._process_group_alive(str(proc.pid), other) is True
+        assert portable.worker_alive(str(proc.pid)) is True          # it is alive
+        assert portable.worker_alive(str(proc.pid), tmp_path) is False  # but not ours
+        assert portable.worker_alive(str(proc.pid), other) is True
     finally:
         proc.kill()
         proc.wait()
