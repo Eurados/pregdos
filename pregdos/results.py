@@ -251,6 +251,41 @@ class ScorerResult:
 # Plan scaling
 # ---------------------------------------------------------------------------
 
+def canonical_quantity(quantity: str, particle: str) -> str:
+    """The name of the quantity actually computed, correcting TOPAS's where it is wrong.
+
+    Name correction only -- no reader-facing annotation -- so the result stays a single token
+    and a rewritten CSV header is still machine-readable.  See :func:`display_quantity` for the
+    presentation layer, and ``pregdos/data/neutron_dose_equivalent.csv`` for why the neutron
+    scorer's output is not ambient dose equivalent.
+    """
+    if quantity == "AmbientDoseEquivalent" and particle == "neutron":
+        return "NeutronDoseEquivalent"
+    return quantity
+
+
+# A TOPAS scorer CSV header can carry a structure name copied out of DICOM in latin-1, so the
+# rewrite works on bytes: decoding to patch it would risk re-encoding it differently and
+# corrupting a name we were only passing through.  Only ASCII tokens PregDos generated are
+# touched.
+_NEUTRON_FILTER = b'OnlyIncludeParticlesNamed = 1 "neutron"'
+
+
+def canonicalize_header_bytes(head: bytes) -> bytes:
+    """Correct retired names in the header block of a TOPAS scorer CSV.
+
+    The raw CSVs are shipped in the run download, so the names a reader sees there have to
+    agree with the report.  Applied on the way out; the files on disk stay exactly as TOPAS
+    wrote them, because those are the record of what ran.
+    """
+    for retired, current in _SCORER_ALIASES.items():
+        head = head.replace(b"# Results for scorer: " + retired.encode(),
+                            b"# Results for scorer: " + current.encode())
+    if _NEUTRON_FILTER in head:
+        head = head.replace(b"# AmbientDoseEquivalent (", b"# NeutronDoseEquivalent (")
+    return head
+
+
 def display_quantity(quantity: str, particle: str, unit: str) -> str:
     """The quantity name to print, which is not always the one TOPAS wrote.
 
@@ -272,8 +307,7 @@ def display_quantity(quantity: str, particle: str, unit: str) -> str:
     stated once per group instead of on every value and every uncertainty.  Sv is left alone --
     it is already a weighted quantity and is not misread this way.
     """
-    if quantity == "AmbientDoseEquivalent" and particle == "neutron":
-        return "NeutronDoseEquivalent"
+    quantity = canonical_quantity(quantity, particle)
     if unit == "Gy":
         return f"{quantity} (physical dose)"
     return quantity

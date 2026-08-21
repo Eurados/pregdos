@@ -1591,3 +1591,46 @@ def test_studies_fragment_with_no_studies_is_still_valid(client, tmp_path):
     body = client.get("/studies/fragment").get_json()
     assert body["active"] is False
     assert "No studies yet" in body["html"]
+
+
+# --- retired names must not leave the server, not even in the raw run files ---
+
+def test_downloaded_scorer_csv_has_the_retired_names_corrected(client, tmp_path):
+    """The run download ships the raw TOPAS CSVs alongside the report.  A reader who opens one
+    must not find it naming a quantity PregDos does not report."""
+    run_id, run_dir = _completed_run(tmp_path)
+    name = _REAL_CSV.name
+    on_disk = (run_dir / name).read_bytes()
+    assert b"AmBDose_BrainStem" in on_disk and b"AmbientDoseEquivalent" in on_disk
+
+    served = client.get(f"/studies/download/alpha/{run_id}/{name}").data
+
+    assert b"AmBDose" not in served and b"AmbientDoseEquivalent" not in served
+    assert b"DoseEquivNeutron_BrainStem" in served
+    assert b"NeutronDoseEquivalent ( Sv )" in served
+    # the data itself is untouched
+    assert served.splitlines()[-1] == on_disk.splitlines()[-1]
+
+
+def test_the_file_on_disk_is_left_exactly_as_topas_wrote_it(client, tmp_path):
+    """Correcting the copy that leaves the server, not the record of what ran."""
+    run_id, run_dir = _completed_run(tmp_path)
+    before = (run_dir / _REAL_CSV.name).read_bytes()
+    client.get(f"/studies/download/alpha/{run_id}/{_REAL_CSV.name}")
+    assert (run_dir / _REAL_CSV.name).read_bytes() == before
+
+
+def test_run_archive_corrects_the_names_too(client, tmp_path):
+    run_id, _ = _completed_run(tmp_path)
+    data = client.get(f"/studies/alpha/{run_id}/archive").data
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        served = zf.read(f"{run_id}/{_REAL_CSV.name}")
+    assert b"AmBDose" not in served and b"DoseEquivNeutron_BrainStem" in served
+
+
+def test_a_non_scorer_file_is_streamed_unchanged(client, tmp_path):
+    """Only the scorer CSV header is rewritten; the TOPAS input is the reproducibility record
+    and goes out byte for byte."""
+    run_id, run_dir = _completed_run(tmp_path)
+    served = client.get(f"/studies/download/alpha/{run_id}/topas_field01.txt").data
+    assert served == (run_dir / "topas_field01.txt").read_bytes()

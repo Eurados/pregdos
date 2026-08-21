@@ -1314,7 +1314,35 @@ def download_job_file(study, run_id, filename):
     if run_dir is None:
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
-    return send_from_directory(str(run_dir), secure_filename(filename), as_attachment=True)
+    safe = secure_filename(filename)
+    if safe.endswith(".csv") and (run_dir / safe).is_file():
+        return Response(
+            _served_bytes(run_dir / safe),
+            mimetype="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{safe}"'},
+        )
+    return send_from_directory(str(run_dir), safe, as_attachment=True)
+
+
+# How much of a file to inspect for a scorer header.  A grid scorer's CSV can be millions of
+# rows, so only the leading block is examined and the rest is streamed untouched.
+_HEADER_SCAN_BYTES = 8192
+
+
+def _served_bytes(path: Path):
+    """Yield a run file's contents, with retired scorer names corrected in its header.
+
+    The files on disk are left exactly as TOPAS wrote them -- they are the record of what ran.
+    What leaves the server is corrected, so a downloaded CSV does not name a quantity that
+    PregDos does not report (`AmBDose`, `AmbientDoseEquivalent`).
+    """
+    with open(path, "rb") as fh:
+        head = fh.read(_HEADER_SCAN_BYTES)
+        # Patch only whole lines, so a name is never split across the chunk boundary.
+        cut = head.rfind(b"\n") + 1
+        yield results.canonicalize_header_bytes(head[:cut]) + head[cut:]
+        while block := fh.read(1 << 20):
+            yield block
 
 
 class _ZipStream:
@@ -1379,11 +1407,8 @@ def download_full_run(study, run_id):
             for path in files:
                 # Nest everything under a `<run_id>/` folder so the archive unpacks tidily.
                 arcname = f"{run_id}/{path.relative_to(run_dir).as_posix()}"
-                with zf.open(arcname, "w") as dest, open(path, "rb") as src:
-                    while True:
-                        block = src.read(1 << 20)
-                        if not block:
-                            break
+                with zf.open(arcname, "w") as dest:
+                    for block in _served_bytes(path):
                         dest.write(block)
                         if chunk := stream.drain():
                             yield chunk
