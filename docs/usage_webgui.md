@@ -55,7 +55,7 @@ For a minimal completed run with the head phantom:
 
 1. Select the target structure, such as `CTV`.
 2. Keep the built-in in-field `DoseToWater` scorer if you want an RTDOSE comparison.
-3. Add the structure scorers you want to report, such as ambient dose equivalent or gamma dose.
+3. Add the structure scorers you want to report, such as neutron dose equivalent or gamma dose.
 4. Choose the number of histories per field. For a quick smoke test, use a small value; for
    meaningful results, use a production history count appropriate to the study.
 

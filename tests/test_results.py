@@ -481,3 +481,40 @@ def test_one_significant_digit_formats_uncertainty_for_display():
     assert results.one_significant_digit("0.24") == "0.2"
     assert results.one_significant_digit("16") == "20"
     assert results.one_significant_digit(None) is None
+
+
+# --- RTPLAN UID provenance ---
+
+_FIXTURE_UID = "1.2.246.352.71.5.37402163639.265919.20240227185649"
+
+
+def test_plan_uid_read_from_the_generated_input(tmp_path):
+    """The study name is just the upload's filename; the RTPLAN UID is what identifies the
+    plan.  It is read from the run's own TOPAS input, not the study's RTPLAN, so replacing the
+    study directory afterwards cannot change what the report claims was simulated."""
+    (tmp_path / "topas_field01.txt").write_bytes(TOPAS_INPUT.read_bytes())
+    assert results.plan_uid(tmp_path) == _FIXTURE_UID
+
+
+def test_plan_uid_agrees_across_fields_of_one_plan(tmp_path):
+    for name in ("topas_field01.txt", "topas_field02.txt", "topas_field03.txt"):
+        (tmp_path / name).write_bytes(TOPAS_INPUT.read_bytes())
+    assert results.plan_uid(tmp_path) == _FIXTURE_UID
+
+
+def test_plan_uid_is_none_when_fields_name_different_plans(tmp_path):
+    """No single UID describes a run that mixed plans, so name none rather than one."""
+    (tmp_path / "topas_field01.txt").write_bytes(TOPAS_INPUT.read_bytes())
+    (tmp_path / "topas_field02.txt").write_text(
+        TOPAS_INPUT.read_text().replace(_FIXTURE_UID, "1.2.3.4.5")
+    )
+    assert results.plan_uid(tmp_path) is None
+
+
+def test_plan_uid_is_none_without_a_topas_input(tmp_path):
+    assert results.plan_uid(tmp_path) is None
+
+
+def test_particle_filter_is_parsed_from_the_real_csv():
+    assert parse_scorer_csv(NEUTRON).particle == "neutron"
+    assert parse_scorer_csv(PROTON).particle == "proton"

@@ -70,12 +70,17 @@ _QUANTITY_RE = re.compile(r"^#\s*(?P<quantity>\w+)\s*\(\s*(?P<unit>[^)]*?)\s*\)\
 _SCORER_RE = re.compile(r"^#\s*Results for scorer:\s*(?P<name>.+?)\s*$")
 _PARAMETER_FILE_RE = re.compile(r"^#\s*Parameter File:\s*(?P<name>.+?)\s*$")
 _STRUCTURE_RE = re.compile(r'^#\s*Filtered by:\s*OnlyIncludeIfInRTStructure\s*=\s*\d+\s*"(?P<name>.+?)"\s*$')
+_PARTICLE_RE = re.compile(r'^#\s*Filtered by:\s*OnlyIncludeParticlesNamed\s*=\s*\d+\s*"(?P<name>.+?)"\s*$')
 _COMPONENT_RE = re.compile(r"^#\s*Scored in component:\s*(?P<name>.+?)\s*$")
 _VERSION_RE = re.compile(r"^#\s*TOPAS Version:\s*(?P<version>.+?)\s*$")
 
 # Plan scaling, from the header dicomexport writes into the TOPAS input.
 _HEADER_VALUE_RE = re.compile(r"^#\s*(?P<key>[A-Z_]+):\s*(?P<value>[-\d.eE+]+)\s*$", re.MULTILINE)
 _SPOT_WEIGHT_RE = re.compile(r"uv:Tf/spotWeight/Values\s*=\s*(?P<count>\d+)(?P<values>(?:\s+\d+)+)")
+# dicomexport stamps the RTPLAN's SOPInstanceUID into every field it generates:
+#     # SOP_INSTANCE_UID 1.2.246.352.221.5164...
+# No colon and a non-numeric value, so `_HEADER_VALUE_RE` does not cover it.
+_PLAN_UID_RE = re.compile(r"^#\s*SOP_INSTANCE_UID\s+(?P<uid>[0-9.]+)\s*$", re.MULTILINE)
 
 # TOPAS writes `-nan` / `nan` / `inf`; float() accepts them, so a NaN reaches us silently.
 _SUM = "Sum"
@@ -143,6 +148,8 @@ class ScorerResult:
     """RT structure the scorer was restricted to, or "" for an unfiltered scorer."""
     component: str = ""
     """TOPAS component the scorer was attached to, e.g. ``Patient``."""
+    particle: str = ""
+    """``OnlyIncludeParticlesNamed`` filter, or "" if the scorer counted every particle."""
     parameter_file: str = ""
     topas_version: str = ""
     run_index: Optional[int] = None
@@ -244,6 +251,27 @@ class ScorerResult:
 # Plan scaling
 # ---------------------------------------------------------------------------
 
+def plan_uid(run_dir: str | Path) -> Optional[str]:
+    """The RTPLAN ``SOPInstanceUID`` this run simulated, or None if it cannot be determined.
+
+    Read from the *generated TOPAS input* rather than from the study's RTPLAN file, so the UID
+    names the plan that was actually simulated.  The study directory can be re-uploaded or
+    replaced after a run; the inputs in the run directory cannot.
+
+    Every field of one plan carries the same UID.  If the fields disagree, the run mixes plans
+    and no single UID describes it, so return None rather than name one of them.
+    """
+    uids = set()
+    for topas_input in sorted(Path(run_dir).glob("topas_field*.txt")):
+        try:
+            text = read_text_lenient(topas_input)
+        except OSError:
+            continue
+        if (m := _PLAN_UID_RE.search(text)):
+            uids.add(m.group("uid"))
+    return uids.pop() if len(uids) == 1 else None
+
+
 def parse_plan_scaling(topas_input: str | Path) -> Optional[PlanScaling]:
     """Read the plan particle budget from a generated TOPAS input file.
 
@@ -296,7 +324,7 @@ def parse_scorer_csv(path: str | Path) -> ScorerResult:
     except OSError as e:
         raise ResultsError(f"{path.name}: cannot read ({e})") from e
 
-    scorer = quantity = unit = structure = component = parameter_file = topas_version = ""
+    scorer = quantity = unit = structure = component = parameter_file = topas_version = particle = ""
     columns: List[str] = []
     data: List[str] = []
 
@@ -311,6 +339,8 @@ def parse_scorer_csv(path: str | Path) -> ScorerResult:
             structure = m.group("name")
         elif (m := _COMPONENT_RE.match(line)):
             component = m.group("name")
+        elif (m := _PARTICLE_RE.match(line)):
+            particle = m.group("name")
         elif (m := _PARAMETER_FILE_RE.match(line)):
             parameter_file = m.group("name")
         elif (m := _VERSION_RE.match(line)):
@@ -357,6 +387,7 @@ def parse_scorer_csv(path: str | Path) -> ScorerResult:
         rows=rows,
         structure=structure,
         component=component,
+        particle=particle,
         parameter_file=parameter_file,
         topas_version=topas_version,
         run_index=run_index,

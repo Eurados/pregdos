@@ -14,10 +14,7 @@ import importlib.metadata
 import importlib.resources
 import pydicom
 
-import csv
 import datetime
-import io
-import math
 import zipfile
 import os
 import secrets
@@ -27,7 +24,8 @@ import subprocess
 import sys
 import shutil
 
-from . import dicom_intake, executor, report_pdf, results, rtdose, structure_metrics, studies, versions
+from . import (dicom_intake, executor, report_pdf, reporting, results, rtdose, structure_metrics,
+               studies, versions)
 from .models import ConversionParameters, ConversionResult
 from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
@@ -645,6 +643,16 @@ def _run_status(run_dir: Path) -> str:
     return executor.run_status(run_dir)
 
 
+def _download_name(study: str, run_id: str, suffix: str) -> str:
+    """Attachment filename for a run's downloads: ``<study>__<run id><suffix>``.
+
+    The doubled underscore separates the study name from the run id, which carries single
+    underscores of its own (``run_20260821_101316``) -- without it the boundary is invisible.
+    One helper for all three downloads so the ZIP, CSV and PDF cannot drift apart again.
+    """
+    return f"{secure_filename(study)}__{secure_filename(run_id)}{suffix}"
+
+
 def _resolve_run(study, run_id):
     """Resolve a run directory from URL parameters, or return None."""
     try:
@@ -762,21 +770,49 @@ def _live_state(run_dir: Path):
     return info, status, etr, progress
 
 
+def _render_results(run_dir: Path, study: str, run_id: str, status: str):
+    """Render the scorer results block, and return it with the warnings parsing produced.
+
+    Shared by the full page render and the poll fragment.  The table grows while a run is in
+    flight -- each field writes its CSVs as it finishes -- so the fragment has to re-render it
+    rather than let the page keep whatever was there at load time.
+
+    Warnings are returned rather than flashed: the caller decides.  Flashing from the poll
+    endpoint would queue a message in the session every 5 s and dump the backlog on the next
+    page the user opened.
+    """
+    rows, warnings, plan_fractions = reporting.result_rows(run_dir, study, studies_root())
+    groups = reporting.group_rows(rows)
+    html = render_template(
+        "_run_results.html",
+        study=study,
+        run_id=run_id,
+        status=status,
+        groups=groups,
+        plan_fractions=plan_fractions,
+        # Only a finished run has every field's cube, and only a run that scored the in-field
+        # grid has any cube at all.
+        can_export_dose=status == executor.COMPLETED and bool(rtdose.field_cubes(run_dir)),
+    )
+    return html, warnings
+
+
 @app.route("/studies/<study>/<run_id>/progress")
 def run_progress_fragment(study, run_id):
-    """Just the live block of the task page, for the in-page refresh.
+    """The live blocks of the task page -- progress and scorer results -- for the in-page refresh.
 
     The page used to call ``location.reload()`` every 5 s, which tore the document down,
-    reset the scroll position and re-fetched every asset.  Swapping this fragment in leaves
+    reset the scroll position and re-fetched every asset.  Swapping these fragments in leaves
     the rest of the page alone (issue #79).  ``terminal`` tells the client to stop polling
-    and load the page once more, since a finished run gains a results table, new buttons and
-    downloadable files that live outside this fragment.
+    and load the page once more, since a finished run gains action buttons and downloadable
+    files that live outside both fragments.
     """
     run_dir = _resolve_run(study, run_id)
     if run_dir is None:
         return jsonify({"error": "not found"}), 404
     executor.start_next_local_run(studies_root())
     info, status, etr, progress = _live_state(run_dir)
+    results_html, _warnings = _render_results(run_dir, study, run_id, status)
     return jsonify({
         "status": status,
         "terminal": status in TERMINAL_STATUSES,
@@ -786,6 +822,7 @@ def run_progress_fragment(study, run_id):
             backend=info.backend if info else None,
             submitted=info.submitted if info else None,
         ),
+        "results_html": results_html,
     })
 
 
@@ -803,13 +840,12 @@ def run_detail(study, run_id):
         return redirect(url_for("list_studies"))
     executor.start_next_local_run(studies_root())
 
-    rows, warnings, plan_fractions = _result_rows(run_dir, study)
-    groups = _group_rows(rows)
+    files = [{"name": p.name, "size": p.stat().st_size} for p in sorted(run_dir.iterdir()) if p.is_file()]
+    info, status, etr, progress = _live_state(run_dir)
+    results_html, warnings = _render_results(run_dir, study, run_id, status)
     for w in warnings:
         flash(f"Could not read scorer output: {w}")
 
-    files = [{"name": p.name, "size": p.stat().st_size} for p in sorted(run_dir.iterdir()) if p.is_file()]
-    info, status, etr, progress = _live_state(run_dir)
     return render_template(
         "run_detail.html",
         study=study,
@@ -819,171 +855,15 @@ def run_detail(study, run_id):
         auto_refresh=status in (executor.RUNNING, executor.QUEUED),
         progress=progress,
         etr=etr,
-        groups=groups,
-        plan_fractions=plan_fractions,
+        results_html=results_html,
         files=files,
         backend=info.backend if info else None,
         submitted=info.submitted if info else None,
         can_cancel=status in (executor.RUNNING, executor.QUEUED),
         can_rerun=status in (executor.COMPLETED, executor.FAILED, executor.CANCELED),
         can_move_up=status == executor.QUEUED and info is not None and info.backend == executor.LOCAL,
-        # Only a finished run has every field's cube, and only a run that scored the in-field
-        # grid has any cube at all.
-        can_export_dose=status == executor.COMPLETED and bool(rtdose.field_cubes(run_dir)),
         logs=[f["name"] for f in files if f["name"].endswith(".log")],
     )
-
-
-def _group_rows(rows: list) -> list:
-    """Group scorer rows by scorer, and total each group over its fields.
-
-    A clinician reads one quantity at a time -- "how much neutron dose did the brainstem
-    get, from all fields together" -- so the scorer is the outer key and the field the inner.
-
-    The per-field values are each already scaled to that field's own particle budget, so the
-    plan total is their plain sum.  Their uncertainties, however, come from independent Monte
-    Carlo runs and therefore add **in quadrature**, not linearly.
-
-    A group containing any unusable row (a NaN Sum, or a multi-bin grid) gets no total: a
-    partial sum over fields would understate the dose while looking authoritative.  Nor is a
-    group totalled when two rows share a field number -- ``IfOutputFileAlreadyExists =
-    "Increment"`` writes a second CSV for a re-run of the *same* field, and adding those
-    together would double-count it.
-    """
-    groups: dict = {}
-    for row in rows:
-        key = (row["scorer"], row["structure"], row["quantity"], row["unit"])
-        groups.setdefault(key, []).append(row)
-
-    out = []
-    for (scorer, structure, quantity, unit), members in groups.items():
-        members.sort(key=lambda r: (r["field"] is None, r["field"]))
-        summable = [r for r in members if r["problem"] is None and r["sum"] is not None]
-        complete = len(summable) == len(members)
-
-        fields = [r["field"] for r in members]
-        distinct_fields = None not in fields and len(set(fields)) == len(fields)
-
-        total_sum = total_sd = None
-        if complete and distinct_fields and len(members) > 1:
-            total_sum = sum(r["sum"] for r in summable)
-            sds = [r["sd"] for r in summable if r["sd"] is not None]
-            total_sd = math.sqrt(sum(sd * sd for sd in sds)) if len(sds) == len(summable) else None
-
-        out.append({
-            "scorer": scorer, "structure": structure, "quantity": quantity, "unit": unit,
-            "rows": members, "total_sum": total_sum, "total_sd": total_sd,
-            "n_fields": len(members),
-        })
-
-    out.sort(key=lambda g: (g["scorer"], g["structure"]))
-    return out
-
-
-def _result_rows(run_dir: Path, study: str):
-    """Parsed, plan-scaled scorer rows for one run, ready for the results table."""
-    parsed, warnings = results.collect_results(run_dir)
-    metrics, metric_warnings = structure_metrics.ensure_metrics(run_dir)
-    warnings.extend(metric_warnings)
-
-    # Field names come from the study's RTPLAN, keyed by the DICOM BeamNumber that
-    # dicomexport writes into `_field<NN>` -- so show the name a clinician would recognise
-    # next to each field, not just an index.
-    plan_fractions = None
-    try:
-        rtplan = studies.find_rtplan(studies_root(), study)
-        names = results.beam_names(rtplan)
-        plan_fractions = results.planned_fractions(rtplan)
-    except StudyError:
-        names = {}
-    fraction_multiplier = plan_fractions or 1
-
-    rows = []
-    for r in parsed:
-        scaling = results.scaling_for(r, run_dir)
-        total, sd = r.scaled(scaling)
-        metric = None
-        mass_normalized = False
-        volume_normalized = False
-        quantity = r.quantity
-        unit = r.unit
-        problem = r.problem
-        if r.is_single_bin:
-            metric = structure_metrics.structure_metric(metrics, r.structure)
-            if r.quantity == "EnergyDeposit":
-                converted = structure_metrics.energy_deposit_to_gy(metrics, r.structure, r.unit, total, sd)
-                if converted is not None:
-                    total, sd = converted
-                    quantity = "DoseToMedium"
-                    unit = "Gy"
-                    mass_normalized = True
-                elif problem is None:
-                    problem = "structure mass metrics are missing; cannot convert EnergyDeposit to Gy"
-            elif r.quantity == "AmbientDoseEquivalent" and r.structure:
-                correction = (
-                    structure_metrics.fluence_volume_correction_factor(metrics, r.structure)
-                    if r.component == "Patient"
-                    else None
-                )
-                if correction is not None:
-                    if total is not None:
-                        total *= correction
-                    if sd is not None:
-                        sd *= correction
-                    volume_normalized = True
-                elif problem is None:
-                    problem = "structure volume metrics or scorer component are missing; cannot correct fluence denominator"
-            elif r.quantity == "DoseToWater" and r.structure:
-                # DoseToWater is an intensive dose (Gy) that TOPAS divides by the whole
-                # patient-box volume for a single-bin scorer, exactly like the H*(10) fluence
-                # scorer. Rescale that denominator to the structure volume (V_patient/V_struct);
-                # only EnergyDeposit (energy, no volume division) uses the structure mass.
-                correction = (
-                    structure_metrics.fluence_volume_correction_factor(metrics, r.structure)
-                    if r.component == "Patient"
-                    else None
-                )
-                if correction is not None:
-                    if total is not None:
-                        total *= correction
-                    if sd is not None:
-                        sd *= correction
-                    volume_normalized = True
-                elif problem is None:
-                    problem = (
-                        "structure volume metrics or scorer component are missing; "
-                        "cannot correct DoseToWater denominator"
-                    )
-            elif r.quantity == "DoseToMedium" and r.component == "Patient" and r.structure and problem is None:
-                problem = ("structure DoseToMedium from TOPAS is not accepted; "
-                           "rerun with PregDos EnergyDeposit structure scoring")
-        if fraction_multiplier != 1:
-            if total is not None:
-                total *= fraction_multiplier
-            if sd is not None:
-                sd *= fraction_multiplier
-        number = r.field_number
-        rows.append({
-            "field": number,
-            "field_name": names.get(number, "") if number is not None else "",
-            "scorer": r.scorer,
-            "structure": r.structure or "—",
-            "quantity": quantity,
-            "unit": unit,
-            "sum": total,
-            "sd": sd,
-            "raw_sum": r.raw_sum,
-            "problem": problem,
-            "scale": scaling.factor * fraction_multiplier if scaling else None,
-            "simulated_histories": scaling.simulated_histories if scaling else None,
-            "structure_volume_cm3": metric.get("volume_cm3") if metric else None,
-            "structure_mass_g": metric.get("mass_g") if metric else None,
-            "structure_average_density_g_cm3": metric.get("average_density_g_cm3") if metric else None,
-            "structure_mass_normalized": mass_normalized,
-            "structure_volume_normalized": volume_normalized,
-            "csv_name": r.csv_name,
-        })
-    return rows, warnings, plan_fractions
 
 
 @app.route("/studies/<study>/<run_id>/report.csv")
@@ -994,96 +874,17 @@ def download_report(study, run_id):
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
 
-    rows, warnings, plan_fractions = _result_rows(run_dir, study)
-    generated_at = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-    provenance = _report_provenance()
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["# PregDos Dose Report"])
-    writer.writerow(["# Study", study])
-    writer.writerow(["# Run", run_id])
-    writer.writerow(["# Generated", generated_at])
-    if plan_fractions:
-        writer.writerow(["# Fractions", plan_fractions])
-    else:
-        writer.writerow(["# Fractions", "unavailable"])
-    writer.writerow(["# PregDos", provenance.get("pregdos", "")])
-    writer.writerow(["# TOPAS", provenance.get("topas", "")])
-    writer.writerow(["# dicomexport", provenance.get("dicomexport", "")])
-    # Prefix the Geant4 version with "v" so spreadsheets do not coerce e.g. "11.3" into a date.
-    geant4 = provenance.get("geant4", "")
-    writer.writerow(["# Geant4", f"v{geant4}" if geant4 else ""])
-    for warning in warnings:
-        writer.writerow(["# Warning", warning])
-    writer.writerow(["# Note", "PregDos is under active development and validation is ongoing; "
-                     "results should be checked independently."])
-    if plan_fractions:
-        writer.writerow(["# Note", "Reported values are scaled to total course dose using the planned fraction count."])
-    else:
-        writer.writerow(["# Note", "Planned fractions were unavailable; reported values use the generated TOPAS plan scale."])
-    if any(r.get("quantity") == "DoseToWater" for r in rows):
-        writer.writerow(["# Note", "DoseToWater is physical absorbed dose in Gy; the proton RBE of 1.1 "
-                         "is not applied to these values (unlike the RTDOSE export)."])
-    writer.writerow(["# Note", "Structure EnergyDeposit rows are mass-normalized; structure DoseToWater and "
-                     "fluence rows are volume-normalized from the patient-box scorer volume to the structure volume "
-                     "(issue #50)."])
-    writer.writerow(["# Note", "dose_uncertainty is the 1-sigma Monte-Carlo statistical error "
-                     "(sqrt(N)*SD/Sum applied to the scaled dose; N = simulated histories)."])
-    writer.writerow(["# Note", "field=ALL rows total a scorer over its fields; their uncertainties add in quadrature."])
-    writer.writerow(["scorer", "structure", "quantity", "field", "field_name", "unit",
-                     "dose", "dose_uncertainty", "simulated_histories", "scale_factor",
-                     "mass_normalized", "volume_normalized", "structure_volume_cm3", "structure_mass_g",
-                     "structure_average_density_g_cm3", "status"])
-    writer.writerow(["units", "", "", "", "", "Gy or Sv", "Gy or Sv", "Gy or Sv", "1", "1",
-                     "", "", "cm3", "g", "g/cm3", ""])
-    for group in _group_rows(rows):
-        for r in group["rows"]:
-            writer.writerow([
-                r["scorer"], r["structure"], r["quantity"],
-                "" if r["field"] is None else r["field"], r["field_name"], r["unit"],
-                "" if r["sum"] is None else repr(r["sum"]),
-                "" if r["sd"] is None else repr(r["sd"]),
-                "" if r["simulated_histories"] is None else r["simulated_histories"],
-                "" if r["scale"] is None else repr(r["scale"]),
-                "yes" if r["structure_mass_normalized"] else "",
-                "yes" if r["structure_volume_normalized"] else "",
-                "" if r["structure_volume_cm3"] is None else repr(r["structure_volume_cm3"]),
-                "" if r["structure_mass_g"] is None else repr(r["structure_mass_g"]),
-                "" if r["structure_average_density_g_cm3"] is None else repr(r["structure_average_density_g_cm3"]),
-                r["problem"] or "",
-            ])
-        if group["total_sum"] is not None:
-            total_histories = sum(
-                r.get("simulated_histories") or 0 for r in group["rows"]
-                if r.get("simulated_histories") is not None
-            ) or None
-            writer.writerow([
-                group["scorer"], group["structure"], group["quantity"], "ALL", "", group["unit"],
-                repr(group["total_sum"]),
-                "" if group["total_sd"] is None else repr(group["total_sd"]),
-                "" if total_histories is None else total_histories,
-                "", "", "", "", "", "", f"sum over {group['n_fields']} fields",
-            ])
+    csv_text = reporting.build_report_csv(run_dir, study, run_id, studies_root())
     return Response(
-        buf.getvalue(),
+        csv_text,
         mimetype="text/csv",
         headers={
-            "Content-Disposition": f'attachment; filename="{secure_filename(study)}_{run_id}_report.csv"',
+            "Content-Disposition": f'attachment; filename="{_download_name(study, run_id, "_report.csv")}"',
             "Cache-Control": "no-store",
             "Pragma": "no-cache",
             "Expires": "0",
         },
     )
-
-
-def _report_provenance() -> dict[str, str]:
-    repo_root = Path(__file__).resolve().parent.parent
-    return {
-        "pregdos": versions.canonical_package_version("pregdos", repo_root),
-        "dicomexport": versions.dicomexport_version(),
-        "topas": versions.topas_version(),
-        "geant4": versions.geant4_version(),
-    }
 
 
 @app.route("/studies/<study>/<run_id>/report.pdf")
@@ -1094,21 +895,22 @@ def download_pdf_report(study, run_id):
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
 
-    rows, warnings, plan_fractions = _result_rows(run_dir, study)
+    rows, warnings, plan_fractions = reporting.result_rows(run_dir, study, studies_root())
     pdf = report_pdf.build_report_pdf(
         study=study,
         run_id=run_id,
-        groups=_group_rows(rows),
+        groups=reporting.group_rows(rows),
         warnings=warnings,
         plan_fractions=plan_fractions,
+        plan_uid=results.plan_uid(run_dir),
         generated_at=datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"),
-        provenance=_report_provenance(),
+        provenance=reporting.report_provenance(),
     )
     return Response(
         pdf,
         mimetype="application/pdf",
         headers={
-            "Content-Disposition": f'attachment; filename="{secure_filename(study)}_{run_id}_report.pdf"',
+            "Content-Disposition": f'attachment; filename="{_download_name(study, run_id, "_report.pdf")}"',
             "Cache-Control": "no-store",
             "Pragma": "no-cache",
             "Expires": "0",
@@ -1273,7 +1075,35 @@ def download_job_file(study, run_id, filename):
     if run_dir is None:
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
-    return send_from_directory(str(run_dir), secure_filename(filename), as_attachment=True)
+    safe = secure_filename(filename)
+    if safe.endswith(".csv") and (run_dir / safe).is_file():
+        return Response(
+            _served_bytes(run_dir / safe),
+            mimetype="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{safe}"'},
+        )
+    return send_from_directory(str(run_dir), safe, as_attachment=True)
+
+
+# How much of a file to inspect for a scorer header.  A grid scorer's CSV can be millions of
+# rows, so only the leading block is examined and the rest is streamed untouched.
+_HEADER_SCAN_BYTES = 8192
+
+
+def _served_bytes(path: Path):
+    """Yield a run file's contents, with retired scorer names corrected in its header.
+
+    The files on disk are left exactly as TOPAS wrote them -- they are the record of what ran.
+    What leaves the server is corrected, so a downloaded CSV does not name a quantity that
+    PregDos does not report (`AmBDose`, `AmbientDoseEquivalent`).
+    """
+    with open(path, "rb") as fh:
+        head = fh.read(_HEADER_SCAN_BYTES)
+        # Patch only whole lines, so a name is never split across the chunk boundary.
+        cut = head.rfind(b"\n") + 1
+        yield reporting.canonicalize_header_bytes(head[:cut]) + head[cut:]
+        while block := fh.read(1 << 20):
+            yield block
 
 
 class _ZipStream:
@@ -1338,11 +1168,8 @@ def download_full_run(study, run_id):
             for path in files:
                 # Nest everything under a `<run_id>/` folder so the archive unpacks tidily.
                 arcname = f"{run_id}/{path.relative_to(run_dir).as_posix()}"
-                with zf.open(arcname, "w") as dest, open(path, "rb") as src:
-                    while True:
-                        block = src.read(1 << 20)
-                        if not block:
-                            break
+                with zf.open(arcname, "w") as dest:
+                    for block in _served_bytes(path):
                         dest.write(block)
                         if chunk := stream.drain():
                             yield chunk
@@ -1351,7 +1178,7 @@ def download_full_run(study, run_id):
         if chunk := stream.drain():
             yield chunk
 
-    download_name = f"{secure_filename(study)}__{secure_filename(run_id)}.zip"
+    download_name = _download_name(study, run_id, ".zip")
     return Response(
         stream_with_context(generate()),
         mimetype="application/zip",

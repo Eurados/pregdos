@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
 
-from pregdos import dicom_intake, executor, results, studies
+from pregdos import dicom_intake, executor, reporting, results, studies
 from tests import dicom_factory
 from pregdos.webserver import app
 from pregdos.models import ConversionParameters, ConversionResult
@@ -602,7 +602,7 @@ def test_convert_appends_selected_scorers_and_survives_rerun(client, tmp_path, m
         run_id = studies.list_runs(tmp_path, "mystudy")[0]
         text = (studies.run_path(tmp_path, "mystudy", run_id) / "topas_field01.txt").read_text()
         assert "DoseToWater" in text, run       # original in-field scorer preserved …
-        assert "AmBDose_CTV" in text, run       # … plus both selected out-of-field scorers
+        assert "DoseEquivNeutron_CTV" in text, run       # … plus both selected out-of-field scorers
         assert "DoseGamma_CTV" in text, run
 
 
@@ -749,7 +749,7 @@ def test_run_detail_shows_scaled_scorer_results(client, tmp_path):
     resp = client.get(f"/studies/alpha/{run_id}")
     assert resp.status_code == 200
     body = resp.data.decode()
-    assert "AmBDose_BrainStem" in body and "BrainStem" in body and "Sv" in body
+    assert "<code>DoseEquivNeutron</code>" in body and "BrainStem" in body and "Sv" in body
     # 1.049973996636311e-11 Sv * 953656.09 = 1.0013e-05, shown SI-prefixed (~10.01 µSv)
     disp = results.humanize_dose(1.049973996636311e-11 * 953656.0980490245, None, "Sv")
     assert disp["value"] in body and disp["unit"] in body
@@ -795,7 +795,7 @@ def test_run_detail_converts_structure_energy_deposit_to_gy(client, tmp_path):
     body = client.get(f"/studies/alpha/{run_id}").data.decode()
 
     expected = 10.0 * 953656.0980490245 * 1.602176634e-13 / 0.002
-    assert "DoseProtonPrimary_CTV" in body
+    assert "<code>DoseProtonPrimary</code>" in body
     assert "DoseToMedium" in body
     assert "mass-normalized" not in body
     disp = results.humanize_dose(expected, None, "Gy")
@@ -852,7 +852,7 @@ def test_run_detail_corrects_structure_dose_to_water_by_volume(client, tmp_path)
     body = client.get(f"/studies/alpha/{run_id}").data.decode()
 
     expected = 1.0e-9 * 953656.0980490245 * 50.0
-    assert "DoseWater_CTV" in body
+    assert "<code>DoseWater</code>" in body
     assert "DoseToWater" in body
     assert "volume-normalized" not in body
     disp = results.humanize_dose(expected, None, "Gy")
@@ -876,7 +876,7 @@ def test_run_detail_rejects_structure_dose_to_water_without_component(client, tm
 
     body = client.get(f"/studies/alpha/{run_id}").data.decode()
 
-    assert "DoseWater_CTV" in body
+    assert "<code>DoseWater</code>" in body
     assert "unusable" in body
     assert "scorer component" in body
 
@@ -973,7 +973,7 @@ def test_run_detail_unparseable_csv_warns_not_500(client, tmp_path):
     resp = client.get(f"/studies/alpha/{run_id}")
     assert resp.status_code == 200
     assert b"Could not read scorer output" in resp.data
-    assert b"AmBDose_BrainStem" in resp.data      # the good CSV still renders
+    assert b"<code>DoseEquivNeutron</code>" in resp.data   # the good CSV still renders
 
 
 def test_run_detail_missing_run_redirects(client, tmp_path):
@@ -990,7 +990,7 @@ def test_report_csv_download(client, tmp_path):
     assert "attachment" in resp.headers["Content-Disposition"]
     assert resp.headers["Cache-Control"] == "no-store"
     body = resp.data.decode()
-    assert "AmBDose_BrainStem" in body and "AmbientDoseEquivalent" in body
+    assert "DoseEquivNeutron_BrainStem" in body and "NeutronDoseEquivalent" in body
     assert "# PregDos Dose Report" in body
     assert "# PregDos" in body and "# TOPAS" in body
     assert "issue #50" in body
@@ -1011,7 +1011,7 @@ def test_report_csv_includes_units_row_before_results(client, tmp_path):
         "units", "", "", "", "", "Gy or Sv", "Gy or Sv", "Gy or Sv", "1", "1",
         "", "", "cm3", "g", "g/cm3", "",
     ]
-    assert rows[header_index + 2][0] == "AmBDose_BrainStem"
+    assert rows[header_index + 2][0] == "DoseEquivNeutron_BrainStem"
 
 
 def test_report_csv_includes_fraction_count_and_course_scaled_dose(client, tmp_path):
@@ -1034,7 +1034,7 @@ def test_report_csv_marks_nan_rows_unusable(client, tmp_path):
         "-nan, 1e-15\n"
     )
     body = client.get(f"/studies/alpha/{run_id}/report.csv").data.decode()
-    assert "AmBDose_Fetus" in body and "4.2.3" in body   # flagged, not rendered as a dose
+    assert "DoseEquivNeutron_Fetus" in body and "4.2.3" in body   # flagged, not rendered as a dose
 
     page = client.get(f"/studies/alpha/{run_id}").data.decode()
     assert "unusable" in page
@@ -1113,6 +1113,7 @@ def _pdf_bullets(monkeypatch, quantity):
     monkeypatch.setattr(report_pdf.ReportPDF, "bullet", spy)
     groups = [{
         "scorer": "S", "structure": "CTV", "quantity": quantity, "unit": "Gy",
+        "display_quantity": reporting.display_quantity(quantity, "", "Gy"),
         "rows": [{"field": 1, "field_name": "", "quantity": quantity, "unit": "Gy",
                   "sum": 1.0, "sd": 0.1, "problem": None, "simulated_histories": 1000}],
         "total_sum": 1.0, "total_sd": 0.1, "n_fields": 1,
@@ -1139,6 +1140,8 @@ def test_pdf_dose_to_water_note_absent_without_scorer(monkeypatch):
     assert not any("DoseToWater is" in t for t, _ in without)
 
 
+
+
 def _csv_body_for_quantity(client, tmp_path, monkeypatch, quantity):
     """Render the CSV report for a run whose only scorer has the given quantity."""
     from pregdos import webserver
@@ -1147,13 +1150,15 @@ def _csv_body_for_quantity(client, tmp_path, monkeypatch, quantity):
     run_id, _ = studies.create_run(tmp_path, "alpha")
     row = {
         "scorer": "S", "structure": "CTV", "quantity": quantity, "unit": "Gy",
+        "display_quantity": reporting.display_quantity(quantity, "", "Gy"),
         "field": 1, "field_name": "", "sum": 1.0, "sd": 0.1, "problem": None,
         "scale": 1.0, "simulated_histories": 1000, "raw_sum": 1.0,
         "structure_mass_normalized": False, "structure_volume_normalized": False,
         "structure_volume_cm3": None, "structure_mass_g": None,
         "structure_average_density_g_cm3": None,
     }
-    monkeypatch.setattr(webserver, "_result_rows", lambda run_dir, study: ([row], [], 30))
+    monkeypatch.setattr(webserver.reporting, "result_rows",
+                        lambda run_dir, study, root: ([row], [], 30))
     return client.get(f"/studies/alpha/{run_id}/report.csv").data.decode()
 
 
@@ -1165,6 +1170,44 @@ def test_csv_dose_to_water_note_only_when_scorer_present(client, tmp_path, monke
 def test_csv_dose_to_water_note_absent_without_scorer(client, tmp_path, monkeypatch):
     body = _csv_body_for_quantity(client, tmp_path, monkeypatch, "AmbientDoseEquivalent")
     assert "the proton RBE of 1.1" not in body
+
+
+def test_csv_reports_the_rtplan_uid(client, tmp_path):
+    """The `# Study` line is only the upload's filename, so on its own the report cannot be
+    tied back to a plan in the TPS."""
+    run_id, _ = _completed_run(tmp_path)
+    body = client.get(f"/studies/alpha/{run_id}/report.csv").data.decode()
+    assert "# RTPLAN UID,1.2.246.352.71.5.37402163639.265919.20240227185649" in body
+
+
+def test_csv_rtplan_uid_says_unavailable_when_it_cannot_be_read(client, tmp_path, monkeypatch):
+    body = _csv_body_for_quantity(client, tmp_path, monkeypatch, "DoseToWater")
+    assert "# RTPLAN UID,unavailable" in body
+
+
+def test_pdf_reports_the_rtplan_uid_at_full_width(monkeypatch):
+    """A UID does not fit a half-width value cell, and `_clip` would truncate it into
+    something that still looks like a UID but identifies nothing.  It gets its own row."""
+    from pregdos import report_pdf
+
+    calls = []
+    original = report_pdf.ReportPDF.kv_table
+
+    def spy(self, items, cols=2):
+        calls.append((items, cols))
+        return original(self, items, cols=cols)
+
+    monkeypatch.setattr(report_pdf.ReportPDF, "kv_table", spy)
+    uid = "1.2.246.352.71.5.37402163639.265919.20240227185649"
+    report_pdf.build_report_pdf(
+        study="s", run_id="run_x", groups=[], warnings=[], plan_fractions=30,
+        generated_at="now", provenance={}, plan_uid=uid,
+    )
+    uid_rows = [(items, cols) for items, cols in calls if items == [("RTPLAN UID", uid)]]
+    assert len(uid_rows) == 1
+    assert uid_rows[0][1] == 1          # full width, so the UID is never clipped
+
+
 
 
 # --- grouping and per-scorer totals ---
@@ -1185,8 +1228,8 @@ def _row(
 
 
 def test_group_rows_totals_fields_and_adds_sd_in_quadrature():
-    from pregdos.webserver import _group_rows
-    groups = _group_rows([_row(field=2, total=2.0, sd=0.3), _row(field=1, total=1.0, sd=0.4)])
+    from pregdos.reporting import group_rows
+    groups = group_rows([_row(field=2, total=2.0, sd=0.3), _row(field=1, total=1.0, sd=0.4)])
     assert len(groups) == 1
     g = groups[0]
     assert [r["field"] for r in g["rows"]] == [1, 2]        # sorted by field within the scorer
@@ -1196,30 +1239,30 @@ def test_group_rows_totals_fields_and_adds_sd_in_quadrature():
 
 
 def test_group_rows_sorts_by_scorer_then_field():
-    from pregdos.webserver import _group_rows
-    groups = _group_rows([_row(scorer="Zeta", field=1), _row(scorer="Alpha", field=2),
+    from pregdos.reporting import group_rows
+    groups = group_rows([_row(scorer="Zeta", field=1), _row(scorer="Alpha", field=2),
                           _row(scorer="Alpha", field=1)])
     assert [g["scorer"] for g in groups] == ["Alpha", "Zeta"]
     assert [r["field"] for r in groups[0]["rows"]] == [1, 2]
 
 
 def test_no_total_for_a_single_field():
-    from pregdos.webserver import _group_rows
-    (g,) = _group_rows([_row(field=1)])
+    from pregdos.reporting import group_rows
+    (g,) = group_rows([_row(field=1)])
     assert g["total_sum"] is None       # a "total" of one row is just noise
 
 
 def test_no_total_when_any_field_is_unusable():
     """A partial sum over fields would understate the dose while looking authoritative."""
-    from pregdos.webserver import _group_rows
-    (g,) = _group_rows([_row(field=1, total=1.0), _row(field=2, total=None, problem="NaN Sum")])
+    from pregdos.reporting import group_rows
+    (g,) = group_rows([_row(field=1, total=1.0), _row(field=2, total=None, problem="NaN Sum")])
     assert g["total_sum"] is None
     assert g["n_fields"] == 2
 
 
 def test_total_sd_absent_when_a_field_lacks_one():
-    from pregdos.webserver import _group_rows
-    (g,) = _group_rows([_row(field=1, sd=0.1), _row(field=2, sd=None)])
+    from pregdos.reporting import group_rows
+    (g,) = group_rows([_row(field=1, sd=0.1), _row(field=2, sd=None)])
     assert g["total_sum"] == pytest.approx(2.0)
     assert g["total_sd"] is None
 
@@ -1236,6 +1279,7 @@ def _second_field_csv(run_dir, param_file="topas_field02.txt"):
     (run_dir / "topas_field02_neutron_BrainStem.csv").write_text(
         f"# Parameter File: {param_file}\n"
         "# Results for scorer: AmBDose_BrainStem\n"
+        '# Filtered by: OnlyIncludeParticlesNamed = 1 "neutron"\n'
         '# Filtered by: OnlyIncludeIfInRTStructure = 1 "BrainStem"\n'
         "# Scored in component: Patient\n"
         "# AmbientDoseEquivalent ( Sv ) : Sum   Standard_Deviation   \n"
@@ -1255,8 +1299,8 @@ def test_report_csv_includes_all_field_totals(client, tmp_path):
 def test_no_total_when_two_csvs_share_a_field(client, tmp_path):
     """`IfOutputFileAlreadyExists = Increment` re-runs a field into `..._1.csv`.  Summing the
     two would double-count that field."""
-    from pregdos.webserver import _group_rows
-    (g,) = _group_rows([_row(field=1, total=1.0), _row(field=1, total=1.0)])
+    from pregdos.reporting import group_rows
+    (g,) = group_rows([_row(field=1, total=1.0), _row(field=1, total=1.0)])
     assert g["total_sum"] is None
     assert g["n_fields"] == 2
 
@@ -1451,10 +1495,28 @@ def test_progress_fragment_returns_the_live_block(client, tmp_path):
 
     assert resp.status_code == 200
     body = resp.get_json()
-    assert sorted(body) == ["html", "status", "terminal"]
+    assert sorted(body) == ["html", "results_html", "status", "terminal"]
     assert body["status"] == "completed"
     assert "progress-meter" in body["html"]      # the bars are in the fragment
     assert "<html" not in body["html"]           # ...and only the fragment
+
+
+
+def test_progress_fragment_carries_results_finished_so_far(client, tmp_path):
+    """Fields finish one at a time, and each writes its own CSVs.  The poll has to re-render
+    the results table or a finished field stays invisible until the whole run ends -- which
+    is what happened when the fragment carried only the progress bars.
+    """
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field01.exit_code").unlink()        # field done, run still going
+
+    body = client.get(f"/studies/alpha/{run_id}/progress").get_json()
+
+    assert body["status"] == "running" and body["terminal"] is False
+    assert "scorer-table" in body["results_html"]         # the finished CSV is in there
+    assert "BrainStem" in body["results_html"]
+    # ...and the reader is told the table is not the whole plan yet.
+    assert "still going" in body["results_html"]
 
 
 def test_progress_fragment_reports_terminal_so_the_client_stops_polling(client, tmp_path):
@@ -1532,3 +1594,83 @@ def test_studies_fragment_with_no_studies_is_still_valid(client, tmp_path):
     body = client.get("/studies/fragment").get_json()
     assert body["active"] is False
     assert "No studies yet" in body["html"]
+
+
+# --- retired names must not leave the server, not even in the raw run files ---
+
+def test_downloaded_scorer_csv_has_the_retired_names_corrected(client, tmp_path):
+    """The run download ships the raw TOPAS CSVs alongside the report.  A reader who opens one
+    must not find it naming a quantity PregDos does not report."""
+    run_id, run_dir = _completed_run(tmp_path)
+    name = _REAL_CSV.name
+    on_disk = (run_dir / name).read_bytes()
+    assert b"AmBDose_BrainStem" in on_disk and b"AmbientDoseEquivalent" in on_disk
+
+    served = client.get(f"/studies/download/alpha/{run_id}/{name}").data
+
+    assert b"AmBDose" not in served and b"AmbientDoseEquivalent" not in served
+    assert b"DoseEquivNeutron_BrainStem" in served
+    assert b"NeutronDoseEquivalent ( Sv )" in served
+    # the data itself is untouched
+    assert served.splitlines()[-1] == on_disk.splitlines()[-1]
+
+
+def test_the_file_on_disk_is_left_exactly_as_topas_wrote_it(client, tmp_path):
+    """Correcting the copy that leaves the server, not the record of what ran."""
+    run_id, run_dir = _completed_run(tmp_path)
+    before = (run_dir / _REAL_CSV.name).read_bytes()
+    client.get(f"/studies/download/alpha/{run_id}/{_REAL_CSV.name}")
+    assert (run_dir / _REAL_CSV.name).read_bytes() == before
+
+
+def test_run_archive_corrects_the_names_too(client, tmp_path):
+    run_id, _ = _completed_run(tmp_path)
+    data = client.get(f"/studies/alpha/{run_id}/archive").data
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        served = zf.read(f"{run_id}/{_REAL_CSV.name}")
+    assert b"AmBDose" not in served and b"DoseEquivNeutron_BrainStem" in served
+
+
+def test_a_non_scorer_file_is_streamed_unchanged(client, tmp_path):
+    """Only the scorer CSV header is rewritten; the TOPAS input is the reproducibility record
+    and goes out byte for byte."""
+    run_id, run_dir = _completed_run(tmp_path)
+    served = client.get(f"/studies/download/alpha/{run_id}/topas_field01.txt").data
+    assert served == (run_dir / "topas_field01.txt").read_bytes()
+
+
+def test_pdf_dose_to_water_note_survives_the_physical_dose_annotation(monkeypatch):
+    """The PDF is what clinicians read, and its RBE note branched on the annotated quantity
+    string, so it never fired once Gy rows started saying "(physical dose)"."""
+    from pregdos import report_pdf
+
+    calls = []
+    original = report_pdf.ReportPDF.bullet
+    monkeypatch.setattr(report_pdf.ReportPDF, "bullet",
+                        lambda self, text, *, markdown=False: (calls.append(text),
+                                                               original(self, text, markdown=markdown))[1])
+    groups = [{
+        "scorer": "DoseWater_CTV", "display_scorer": "DoseWater", "structure": "CTV",
+        "quantity": "DoseToWater", "display_quantity": "DoseToWater (physical dose)", "unit": "Gy",
+        "rows": [{"field": 1, "field_name": "", "quantity": "DoseToWater", "unit": "Gy",
+                  "sum": 1.0, "sd": 0.1, "problem": None, "simulated_histories": 1000}],
+        "total_sum": 1.0, "total_sd": 0.1, "n_fields": 1,
+    }]
+    report_pdf.build_report_pdf(
+        study="s", run_id="r", groups=groups, warnings=[], plan_fractions=30,
+        generated_at="now", provenance={}, plan_uid=None,
+    )
+    assert any("proton RBE of 1.1" in t for t in calls)
+
+
+def test_every_run_download_uses_the_same_name_scheme(client, tmp_path):
+    """The ZIP used `study__run` while the reports used `study_run`, so the boundary between
+    the study name and the run id was visible in one download and not the others."""
+    run_id, _ = _completed_run(tmp_path)
+    names = {
+        path: client.get(f"/studies/alpha/{run_id}{path}").headers["Content-Disposition"]
+        for path in ("/report.csv", "/report.pdf", "/archive")
+    }
+    assert names["/report.csv"] == f'attachment; filename="alpha__{run_id}_report.csv"'
+    assert names["/report.pdf"] == f'attachment; filename="alpha__{run_id}_report.pdf"'
+    assert names["/archive"] == f'attachment; filename="alpha__{run_id}.zip"'

@@ -1,0 +1,114 @@
+<section class="card">
+  <h2>Scorer results</h2>
+  {% if plan_fractions %}
+    <p class="hint">Planned fractions: {{ plan_fractions }}. Reported values are total course dose.</p>
+  {% else %}
+    <p class="hint">Planned fractions unavailable. Reported values use the generated TOPAS plan scale.</p>
+  {% endif %}
+  {% if groups %}
+    <div class="scorer-table-wrap">
+      <table class="scorer-table">
+        <thead>
+          <tr>
+            <th>Scorer</th><th>Structure</th><th>Quantity</th><th>Field</th>
+            <th>Dose</th><th>Stat. uncertainty (1σ)</th><th>Unit</th>
+          </tr>
+        </thead>
+        {% for g in groups %}
+          <tbody class="scorer-group">
+            {% for r in g.rows %}
+              <tr>
+                {% if loop.first %}
+                  <td rowspan="{{ g.rows|length }}"><code>{{ g.display_scorer }}</code></td>
+                  <td rowspan="{{ g.rows|length }}">{{ g.structure or "—" }}</td>
+                  <td rowspan="{{ g.rows|length }}">{{ g.display_quantity }}</td>
+                {% endif %}
+                <td>
+                  {% if r.field is not none %}
+                    {{ r.field }}{% if r.field_name %} &mdash; {{ r.field_name }}{% endif %}
+                  {% else %}&mdash;{% endif %}
+                </td>
+                {% if r.problem %}
+                  <td colspan="3"><span class="badge danger">unusable</span> {{ r.problem }}</td>
+                {% elif r.sum is none %}
+                  <td colspan="3" class="hint">multi-bin grid — download the CSV</td>
+                {% else %}
+                  {% set d = fmt_dose(r.sum, r.sd, r.unit) %}
+                  <td>{{ d.value }}</td>
+                  <td>
+                    {% if d.sd is not none %}
+                      ± {{ fmt_uncertainty(d.sd) }}
+                    {% else %}&mdash;{% endif %}
+                  </td>
+                  <td>{{ d.unit }}</td>
+                {% endif %}
+              </tr>
+            {% endfor %}
+            {% if g.total_sum is not none %}
+              {# The rowspan cells above cover only the per-field rows, so the total row
+                 supplies its own leading cells. #}
+              {% set dt = fmt_dose(g.total_sum, g.total_sd, g.unit) %}
+              <tr class="scorer-total">
+                <td colspan="3"></td>
+                <td><strong>All {{ g.n_fields }} fields</strong></td>
+                <td><strong>{{ dt.value }}</strong></td>
+                <td>
+                  {% if dt.sd is not none %}
+                    ± {{ fmt_uncertainty(dt.sd) }}
+                  {% else %}&mdash;{% endif %}
+                </td>
+                <td>{{ dt.unit }}</td>
+              </tr>
+            {% endif %}
+          </tbody>
+        {% endfor %}
+      </table>
+    </div>
+
+    {% if status in ('running', 'queued') %}
+      {# Fields finish one at a time, so a running job shows a real but partial table.  Say so
+         next to it -- an unlabelled "All N fields" total reads as the whole plan. #}
+      <p class="hint">The run is still going; fields that have not finished yet are missing
+        from this table, and any total covers only the fields listed.</p>
+    {% endif %}
+
+    <div class="hint-box">
+      <code>DoseToWater</code> is reported as <strong>physical</strong> absorbed dose in Gy;
+      PregDos does not apply proton RBE to this quantity. Clinical Eclipse proton RTDOSE
+      values are commonly stored as Gy(RBE), so compare those separately from physical
+      <code>DoseToWater</code>.
+    </div>
+
+    <p class="hint retention-notice">
+      ⚠ PregDos is under active development and validation is ongoing; results should be
+      checked independently.
+    </p>
+    <p class="hint retention-notice">
+      ⚠ Runs are temporary and are automatically deleted after {{ run_retention_days }} days.
+      Download anything you need to keep.
+    </p>
+    <div class="download-panel">
+      <span class="download-label">Downloads</span>
+      <div class="download-actions">
+        <a class="btn primary" href="{{ url_for('download_report', study=study, run_id=run_id) }}">CSV</a>
+        <a class="btn" href="{{ url_for('download_pdf_report', study=study, run_id=run_id) }}">PDF</a>
+        {% if can_export_dose %}
+          <a class="btn"
+             href="{{ url_for('download_rtdose_bundle', study=study, run_id=run_id) }}"
+             title="DICOM dose export for TPS import">RTDOSE</a>
+        {% endif %}
+      </div>
+    </div>
+    <ul class="download-notes">
+      <li><strong>CSV</strong>: raw numeric results, provenance, histories, and normalization audit fields.</li>
+      <li><strong>PDF</strong>: formatted dose report for review and archiving.</li>
+      {% if can_export_dose %}
+        <li><strong>RTDOSE</strong>: DICOM dose export for TPS import, in Gy(RBE) for the whole course.</li>
+      {% endif %}
+    </ul>
+  {% elif status in ('running', 'queued') %}
+    <p>No results yet — the run is still going.</p>
+  {% else %}
+    <p>No scorer output found in this run.</p>
+  {% endif %}
+</section>

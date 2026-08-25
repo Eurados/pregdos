@@ -50,13 +50,13 @@ _TIME_MARKER_RE = re.compile(
 )
 
 # ---------------------------------------------------------------------------
-# ICRP 74 neutron conversion table -- loaded from the package data CSV file.
-# Edit pregdos/data/icrp74_neutron_h10.csv to change the table; do not touch
+# Neutron fluence-to-dose-equivalent table -- loaded from the package data CSV file.
+# Edit pregdos/data/neutron_dose_equivalent.csv to change the table; do not touch
 # the strings below, they are populated automatically at import time.
 # ---------------------------------------------------------------------------
 
 def _load_neutron_table() -> Tuple[str, str]:
-    """Read the ICRP 74 neutron H*(10) table from the package data CSV.
+    """Read the neutron fluence-to-dose-equivalent table from the package data CSV.
 
     Returns a pair of TOPAS-formatted strings ready to be embedded directly
     in a ``dv:Sc/.../FluenceToDoseConversion...`` parameter line:
@@ -67,7 +67,7 @@ def _load_neutron_table() -> Tuple[str, str]:
     Lines starting with ``#`` and the CSV header row are ignored, so the
     source file can carry as many explanatory comments as needed.
     """
-    csv_path = files("pregdos") / "data" / "icrp74_neutron_h10.csv"
+    csv_path = files("pregdos") / "data" / "neutron_dose_equivalent.csv"
     energies: List[str] = []
     values: List[str] = []
     for line in csv_path.read_text(encoding="utf-8").splitlines():
@@ -94,7 +94,16 @@ class ScorerType(str, Enum):
     """The out-of-field dose quantities supported by this module."""
 
     NEUTRON_DOSE_EQUIV = "neutron"
-    """Ambient dose equivalent H*(10) from neutrons (TOPAS AmbientDoseEquivalent)."""
+    """Neutron dose equivalent, H = Q(E) * fluence(n).
+
+    *Not* ambient dose equivalent, despite the TOPAS scorer used to compute it: TOPAS's
+    AmbientDoseEquivalent scorer carries no coefficients of its own and simply folds fluence
+    with the table it is given, so it is the mechanism for any fluence-to-dose-equivalent
+    conversion.  See pregdos/data/neutron_dose_equivalent.csv for why the coefficients are
+    deliberately not h*(10).  TOPAS writes "AmbientDoseEquivalent" into its CSV header, and the
+    files on disk keep it -- they are the record of what ran -- but PregDos corrects the name
+    everywhere it is read: in the reports (``reporting.display_quantity``) and in scorer CSVs
+    served for download (``reporting.canonicalize_header_bytes``)."""
 
     GAMMA_DOSE = "gamma"
     """Absorbed dose to medium from photons and their descendants (DoseToMedium)."""
@@ -186,8 +195,8 @@ SCORER_DEFS = [
     {
         "id": "neutron",
         "scorer_type": ScorerType.NEUTRON_DOSE_EQUIV,
-        "label": "Neutron dose equivalent H*(10)",
-        "description": "AmbientDoseEquivalent with ICRP 74 fluence-to-dose conversion",
+        "label": "Neutron dose equivalent",
+        "description": "H = Q(E) * neutron fluence, folded via the TOPAS AmbientDoseEquivalent scorer",
     },
     {
         "id": "gamma",
@@ -219,12 +228,64 @@ SCORER_DEFS = [
 # The full name is built dynamically as "{prefix}_{sanitized_structure_name}"
 # so multiple structures can each have their own scorer in the same file.
 _SCORER_NAME = {
-    ScorerType.NEUTRON_DOSE_EQUIV: "AmBDose",
+    # TOPAS reports this row's quantity as the bare "AmbientDoseEquivalent", which is wrong
+    # twice over: the scorer is neutron-filtered, and the coefficients are not h*(10).  The
+    # scorer name is ours, so it says what the number actually is, like its siblings.
+    ScorerType.NEUTRON_DOSE_EQUIV: "DoseEquivNeutron",
     ScorerType.GAMMA_DOSE: "DoseGamma",
     ScorerType.DOSE_TO_WATER: "DoseWater",
     ScorerType.PROTON_PRIMARY: "DoseProtonPrimary",
     ScorerType.PROTON_SECONDARY: "DoseProtonSecondary",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _AbsorbedDoseSpec:
+    """What distinguishes one absorbed-dose scorer from another.
+
+    An empty ``quantity`` means "whatever the volume mode implies": EnergyDeposit in a
+    structure -- PregDos converts that to Gy from the ROI mass, because TOPAS's single-bin dose
+    denominator is not the ROI mass -- and DoseToMedium on a grid.  ``{name}`` inside a line is
+    substituted with the scorer's name.
+    """
+
+    filters: Tuple[str, ...] = ()
+    quantity: str = ""
+    before_component: Tuple[str, ...] = ()
+    always_reference_patient: bool = False
+
+
+_ABSORBED_DOSE_SPECS = {
+    # Captures prompt gammas and the secondary electrons they produce -- Compton electrons
+    # carry a "gamma ancestor" -- which is why the filter is on ancestry, not on the particle.
+    ScorerType.GAMMA_DOSE: _AbsorbedDoseSpec(
+        filters=('sv:Sc/{name}/OnlyIncludeIfParticleOrAncestorNamed  = 1 "gamma"',),
+    ),
+    # Mainly for validation against Eclipse RTDOSE exports.  In structure mode PregDos corrects
+    # the single-bin TOPAS denominator by the structure volume ratio from the mask pre-pass.
+    ScorerType.DOSE_TO_WATER: _AbsorbedDoseSpec(
+        quantity="DoseToWater",
+        before_component=('b:Sc/{name}/PreCalculateStoppingPowerRatios          = "True"',),
+        always_reference_patient=True,
+    ),
+    # "Primary" means no neutron anywhere in the ancestry: beam protons, and protons scattered
+    # from them, that arrived without passing through a neutron interaction.
+    ScorerType.PROTON_PRIMARY: _AbsorbedDoseSpec(
+        filters=(
+            'sv:Sc/{name}/OnlyIncludeParticlesNamed              = 1 "proton"',
+            'sv:Sc/{name}/OnlyIncludeIfParticleOrAncestorNotNamed = 1 "neutron"',
+        ),
+    ),
+    # Recoil protons knocked out of tissue nuclei by neutrons.  Important out of field: neutrons
+    # travel far from the beam and still produce high-LET protons where they stop.
+    ScorerType.PROTON_SECONDARY: _AbsorbedDoseSpec(
+        filters=(
+            'sv:Sc/{name}/OnlyIncludeParticlesNamed              = 1 "proton"',
+            'sv:Sc/{name}/OnlyIncludeIfParticleOrAncestorNamed  = 1 "neutron"',
+        ),
+    ),
+}
+
 
 # Suffix appended to the TOPAS file stem to form the output CSV filename.
 # E.g. "topas_field01" + "_neutron" → "topas_field01_neutron.csv"
@@ -308,7 +369,7 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
     is_structure = entry.volume_type == VolumeType.STRUCTURE
 
     # Build a unique TOPAS scorer name that encodes both the quantity and the
-    # target: AmBDose_Fetus, DoseGamma_GTV_T1, DoseProtonPrimary_Grid, etc.
+    # target: DoseEquivNeutron_Fetus, DoseGamma_GTV_T1, DoseProtonPrimary_Grid, etc.
     base_name = _SCORER_NAME[entry.scorer_type]
     if is_structure:
         name = f"{base_name}_{_sanitize_name(entry.structure_name)}"
@@ -335,10 +396,12 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
     lines: List[str] = []
 
     if entry.scorer_type == ScorerType.NEUTRON_DOSE_EQUIV:
-        # ── Neutron ambient dose equivalent H*(10) ────────────────────────
-        # TOPAS AmbientDoseEquivalent quantity: multiplies the neutron fluence
-        # spectrum by the ICRP 74 H*(10) coefficients via a lookup table.
-        # The result is in Sv (integrated over the scoring volume / simulation).
+        # ── Neutron dose equivalent, H = Q(E) * fluence(n) ────────────────
+        # TOPAS's AmbientDoseEquivalent quantity folds the neutron fluence
+        # spectrum with a lookup table it does not supply itself, so it is the
+        # mechanism here rather than the quantity: the coefficients are Q(E)-
+        # weighted, not h*(10).  The result is in Sv (integrated over the
+        # scoring volume / simulation).
         lines += [
             f'sv:Sc/{name}/OnlyIncludeParticlesNamed              = 1 "neutron"',
             f's:Sc/{name}/Quantity                                = "AmbientDoseEquivalent"',
@@ -361,119 +424,42 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
             f's:Sc/{name}/EBinEnergy                              = "PreStep"',
             f's:Sc/{name}/OutputType                              = "csv"',
             f'sv:Sc/{name}/Report                                 = 2 "Sum" "Standard_Deviation"',
-            # Tell TOPAS which particle type drives the h*(10) lookup
+            # Tell TOPAS which particle type drives the conversion lookup
             f's:Sc/{name}/GetAmbientDoseEquivalentForParticleNamed = "neutron"',
-            # Embed the full ICRP 74 Table A.42 conversion table (114 points)
+            # Embed the full fluence-to-dose-equivalent table (114 points)
             f"dv:Sc/{name}/FluenceToDoseConversionEnergies        = 114",
             _NEUTRON_ENERGIES,
             f"dv:Sc/{name}/FluenceToDoseConversionValues          = 114",
             _NEUTRON_VALUES,
         ]
 
-    elif entry.scorer_type == ScorerType.GAMMA_DOSE:
-        # ── Gamma absorbed dose ───────────────────────────────────────────
-        # OnlyIncludeIfParticleOrAncestorNamed captures both prompt gammas and
-        # secondary electrons produced by gamma interactions (e.g. Compton
-        # electrons), because those electrons carry a "gamma ancestor".
+    else:
+        # The four absorbed-dose scorers differ only in the quantity they score and the
+        # particle filters they apply; component, bins, structure filter and the output block
+        # are common.  A spec per type plus one emitter keeps them from drifting apart, and
+        # adding a fifth becomes a table entry rather than another copied branch.
+        spec = _ABSORBED_DOSE_SPECS[entry.scorer_type]
+        lines.append(f's:Sc/{name}/Quantity                                = "{spec.quantity or absorbed_quantity}"')
+        lines += [line.format(name=name) for line in spec.before_component]
+        lines.append(f's:Sc/{name}/Component                               = "{component}"')
+        lines += [line.format(name=name) for line in spec.filters]
         lines += [
-            f's:Sc/{name}/Quantity                                = "{absorbed_quantity}"',
-            f's:Sc/{name}/Component                               = "{component}"',
-            f'sv:Sc/{name}/OnlyIncludeIfParticleOrAncestorNamed  = 1 "gamma"',
             f"i:Sc/{name}/XBins                                   = {xbins}",
             f"i:Sc/{name}/YBins                                   = {ybins}",
             f"i:Sc/{name}/ZBins                                   = {zbins}",
         ]
         if is_structure:
             lines.append(f'sv:Sc/{name}/OnlyIncludeIfInRTStructure         = 1 "{entry.structure_name}"')
+        # ReferencedDicomPatient links voxels to CT HU values.  DoseToWater wants it in both
+        # modes; the others only on a grid, where the quantity is DoseToMedium.
+        if spec.always_reference_patient or not is_structure:
+            lines.append(f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"')
         lines += [
             f's:Sc/{name}/IfOutputFileAlreadyExists               = "Increment"',
             f's:Sc/{name}/OutputType                              = "csv"',
             f's:Sc/{name}/OutputFile                              = "{output_file}"',
             f'sv:Sc/{name}/Report                                 = 2 "Sum" "Standard_Deviation"',
         ]
-        if not is_structure:
-            # ReferencedDicomPatient links grid voxels to CT HU values for DoseToMedium.
-            lines.insert(-4, f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"')
-
-    elif entry.scorer_type == ScorerType.DOSE_TO_WATER:
-        # ── All-particle absorbed dose to water ───────────────────────────
-        # This scorer is mainly for validation against Eclipse RTDOSE exports.  In
-        # structure mode PregDos corrects the single-bin TOPAS denominator using
-        # the structure volume ratio (V_patient / V_structure) from the RTSTRUCT mask pre-pass.
-        lines += [
-            f's:Sc/{name}/Quantity                                = "DoseToWater"',
-            f'b:Sc/{name}/PreCalculateStoppingPowerRatios          = "True"',
-            f's:Sc/{name}/Component                               = "{component}"',
-            f"i:Sc/{name}/XBins                                   = {xbins}",
-            f"i:Sc/{name}/YBins                                   = {ybins}",
-            f"i:Sc/{name}/ZBins                                   = {zbins}",
-        ]
-        if is_structure:
-            lines.append(f'sv:Sc/{name}/OnlyIncludeIfInRTStructure         = 1 "{entry.structure_name}"')
-        lines += [
-            f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"',
-            f's:Sc/{name}/IfOutputFileAlreadyExists               = "Increment"',
-            f's:Sc/{name}/OutputType                              = "csv"',
-            f's:Sc/{name}/OutputFile                              = "{output_file}"',
-            f'sv:Sc/{name}/Report                                 = 2 "Sum" "Standard_Deviation"',
-        ]
-
-    elif entry.scorer_type == ScorerType.PROTON_PRIMARY:
-        # ── Primary-proton absorbed dose ──────────────────────────────────
-        # "Primary" here means: protons whose full ancestry is free of neutrons.
-        # These are beam protons (and protons scattered from them) that reached
-        # the fetus without passing through a neutron interaction.
-        # OnlyIncludeIfParticleOrAncestorNotNamed = "neutron" excludes any
-        # proton that is itself a neutron or has a neutron anywhere in its history.
-        lines += [
-            f's:Sc/{name}/Quantity                                = "{absorbed_quantity}"',
-            f's:Sc/{name}/Component                               = "{component}"',
-            f'sv:Sc/{name}/OnlyIncludeParticlesNamed              = 1 "proton"',
-            # Exclude protons produced (directly or indirectly) via neutron interactions
-            f'sv:Sc/{name}/OnlyIncludeIfParticleOrAncestorNotNamed = 1 "neutron"',
-            f"i:Sc/{name}/XBins                                   = {xbins}",
-            f"i:Sc/{name}/YBins                                   = {ybins}",
-            f"i:Sc/{name}/ZBins                                   = {zbins}",
-        ]
-        if is_structure:
-            lines.append(f'sv:Sc/{name}/OnlyIncludeIfInRTStructure         = 1 "{entry.structure_name}"')
-        lines += [
-            f's:Sc/{name}/IfOutputFileAlreadyExists               = "Increment"',
-            f's:Sc/{name}/OutputType                              = "csv"',
-            f's:Sc/{name}/OutputFile                              = "{output_file}"',
-            f'sv:Sc/{name}/Report                                 = 2 "Sum" "Standard_Deviation"',
-        ]
-        if not is_structure:
-            lines.insert(-4, f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"')
-
-    elif entry.scorer_type == ScorerType.PROTON_SECONDARY:
-        # ── Secondary-proton absorbed dose (neutron-origin) ───────────────
-        # These are protons knocked out of tissue nuclei by neutrons (n,p)
-        # reactions).  They are important for out-of-field dosimetry because
-        # neutrons can travel far from the beam and still produce high-LET
-        # recoil protons with significant dose-equivalent contribution.
-        # OnlyIncludeIfParticleOrAncestorNamed = "neutron" keeps only those
-        # protons that have a neutron somewhere in their ancestry.
-        lines += [
-            f's:Sc/{name}/Quantity                                = "{absorbed_quantity}"',
-            f's:Sc/{name}/Component                               = "{component}"',
-            f'sv:Sc/{name}/OnlyIncludeParticlesNamed              = 1 "proton"',
-            # Keep only protons that descend from a neutron interaction
-            f'sv:Sc/{name}/OnlyIncludeIfParticleOrAncestorNamed  = 1 "neutron"',
-            f"i:Sc/{name}/XBins                                   = {xbins}",
-            f"i:Sc/{name}/YBins                                   = {ybins}",
-            f"i:Sc/{name}/ZBins                                   = {zbins}",
-        ]
-        if is_structure:
-            lines.append(f'sv:Sc/{name}/OnlyIncludeIfInRTStructure         = 1 "{entry.structure_name}"')
-        lines += [
-            f's:Sc/{name}/IfOutputFileAlreadyExists               = "Increment"',
-            f's:Sc/{name}/OutputType                              = "csv"',
-            f's:Sc/{name}/OutputFile                              = "{output_file}"',
-            f'sv:Sc/{name}/Report                                 = 2 "Sum" "Standard_Deviation"',
-        ]
-        if not is_structure:
-            lines.insert(-4, f's:Sc/{name}/ReferencedDicomPatient                  = "Patient"')
 
     return "\n".join(lines) + "\n"
 
