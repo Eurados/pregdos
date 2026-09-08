@@ -57,6 +57,41 @@ pregdos-web
 
 Open http://localhost:5000.
 
+### Airgapped Install (No Network At All)
+
+Releases carry an **offline wheelhouse**: one tarball with PregDos, `dicomexport`, and every
+dependency, plus `pip`/`setuptools`/`wheel` so a venv can be bootstrapped with no index.
+
+```bash
+tar xzf pregdos-<version>-wheelhouse-cp311-manylinux_2_28_x86_64.tar.gz
+cd pregdos-<version>-wheelhouse-cp311-manylinux_2_28_x86_64
+sha256sum -c sha256sums
+
+python3.11 -m venv /opt/pregdos/venv
+/opt/pregdos/venv/bin/pip install --no-index --find-links=wheelhouse pregdos
+/opt/pregdos/venv/bin/python verify_offline_install.py
+```
+
+The last step renders real pages rather than only importing the module — the bundled
+templates, beam models and SPR tables resolve at runtime, so a packaging gap shows up as a
+broken page, not an import error. CI runs the same script against the same tarball, in a
+container with no network, before the release is published.
+
+**The tarball is target-specific.** Its wheels carry Python ABI and platform tags, so the name
+records what it was built for. On RHEL 9 the system `python3` is 3.9 — install the `python3.11`
+AppStream package and build the venv with that, not with `python3`. Using the wrong interpreter
+fails with "no matching distribution", which is the intended outcome.
+
+TOPAS is not included (separate licensing; the site supplies it). Point `topas_bin` at the
+local installation via the config file below.
+
+To build the artifact yourself, on a machine that *does* have a network:
+
+```bash
+python packaging/build_wheelhouse.py            # defaults to cp311 / manylinux_2_28_x86_64
+python packaging/build_wheelhouse.py --python-version 313 --platform manylinux_2_28_x86_64
+```
+
 ### Configuration File
 
 For anything beyond a developer laptop, settings belong in a TOML file rather than in

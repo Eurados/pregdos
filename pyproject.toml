@@ -13,14 +13,15 @@ readme = "README.md"
 # 3.11 for stdlib tomllib, which pregdos/config.py reads the site config with.  CI has only
 # ever tested 3.11, so the previous >=3.10 claim was unverified rather than supported.
 requires-python = ">=3.11"
+# Exactly what pregdos imports, and nothing else.  Transitive dependencies are the resolver's
+# job: scipy and pandas arrive because dicomexport declares them, and werkzeug is here only
+# because pregdos imports secure_filename itself rather than reaching through Flask.
 dependencies = [
     "pydicom>=2.3.1",
     "numpy",
-    "scipy",
     "flask>=2.0.0",
+    "werkzeug",
     "requests",
-    "tqdm",
-    "setuptools-scm",
     "fpdf2>=2.8.7",
     # >=1.4.3: emits relative DicomDirectory/CloneRTDoseGridFrom (keeps studies relocatable,
     # pregdos #41), points DicomDirectory at the CT dir (nested-CT #52), sizes the World from

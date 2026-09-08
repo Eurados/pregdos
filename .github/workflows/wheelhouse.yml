@@ -1,0 +1,106 @@
+name: Offline wheelhouse
+
+# Builds the airgapped-site artifact (#98) and proves it installs with no network at all.
+#
+# Runs on tags (attaching the tarball to the release), and on demand so the artifact can be
+# exercised without cutting a release.  Also on changes to the packaging scripts themselves,
+# because the failure this guards against -- a missing transitive dependency -- is invisible
+# until someone carries the tarball to a machine where it cannot be investigated.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - 'pyproject.toml'
+      - '.github/workflows/wheelhouse.yml'
+  workflow_dispatch:
+    inputs:
+      python_version:
+        description: 'Target Python, no dot'
+        default: '311'
+      platform:
+        description: 'Target platform tag'
+        default: 'manylinux_2_28_x86_64'
+
+permissions:
+  contents: write        # needed only by the release job below
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      PYTHON_VERSION: ${{ inputs.python_version || '311' }}
+      PLATFORM: ${{ inputs.platform || 'manylinux_2_28_x86_64' }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0        # setuptools-scm needs the tags to derive a version
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Build the wheelhouse
+        run: |
+          python -m pip install --upgrade pip
+          python packaging/build_wheelhouse.py \
+            --python-version "$PYTHON_VERSION" \
+            --platform "$PLATFORM"
+
+      - name: Show what was built
+        run: |
+          ls -la dist/
+          tar tzf dist/*.tar.gz | head -20
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheelhouse
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  verify-offline:
+    # The step that makes the artifact trustworthy: a clean Python matching the target, with
+    # no network at all. If a transitive dependency is missing it fails here rather than at
+    # the hospital.
+    #
+    # The isolation is a `docker run --network none`, not a job-level `container:`, because
+    # the job itself needs network to download the artifact -- a job that cannot reach GitHub
+    # cannot fetch the thing it is meant to test.
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7        # for packaging/verify_wheelhouse.sh
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheelhouse
+          path: /tmp/artifact
+
+      - name: Install and verify with no network
+        run: |
+          docker run --rm --network none \
+            -v /tmp/artifact:/artifact:ro \
+            -v "$PWD/packaging":/packaging:ro \
+            python:3.11-slim \
+            bash /packaging/verify_wheelhouse.sh /artifact/*.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify-offline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheelhouse
+          path: dist
+
+      - name: Attach the wheelhouse to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          fail_on_unmatched_files: true
