@@ -82,12 +82,14 @@ jobs:
           path: /tmp/artifact
 
       - name: Install and verify with no network
+        # /artifact is passed as a directory, not a glob: a glob here would be expanded by the
+        # runner's shell, where that path does not exist, and reach the container unexpanded.
         run: |
           docker run --rm --network none \
             -v /tmp/artifact:/artifact:ro \
             -v "$PWD/packaging":/packaging:ro \
             python:3.11-slim \
-            bash /packaging/verify_wheelhouse.sh /artifact/*.tar.gz
+            bash /packaging/verify_wheelhouse.sh /artifact
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

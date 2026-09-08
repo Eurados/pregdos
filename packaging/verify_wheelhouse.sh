@@ -13,7 +13,36 @@
 
 set -euo pipefail
 
-TARBALL=$(readlink -f "${1:?usage: verify_wheelhouse.sh <tarball>}")
+TARGET="${1:?usage: verify_wheelhouse.sh <tarball|directory>}"
+
+# A directory is accepted because the caller often has one tarball in a known place but not
+# its exact name (the version is derived by setuptools-scm).  Globbing at the call site does
+# not work when the path only exists inside the container: the host shell expands it against
+# its own filesystem, matches nothing, and passes the pattern through literally.
+if [ -d "$TARGET" ]; then
+    # Shell globbing rather than find(1): this runs in a slim container, and the fewer
+    # utilities it assumes, the fewer ways it has to fail for reasons unrelated to the test.
+    shopt -s nullglob
+    candidates=("$TARGET"/*.tar.gz)
+    shopt -u nullglob
+    if [ ${#candidates[@]} -ne 1 ]; then
+        echo "!! expected exactly one *.tar.gz in $TARGET, found ${#candidates[@]}" >&2
+        exit 2
+    fi
+    TARGET="${candidates[0]}"
+fi
+
+if [ ! -f "$TARGET" ]; then
+    echo "!! not a readable file: $TARGET" >&2
+    case "$TARGET" in
+        *[*?]*) echo "   (it contains a glob character -- the pattern was never expanded;" >&2
+                echo "    pass a directory instead, or expand it where the path exists)" >&2 ;;
+    esac
+    exit 2
+fi
+
+TARBALL=$(readlink -f "$TARGET")
+echo "Verifying $(basename "$TARBALL")"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
