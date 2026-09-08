@@ -10,7 +10,9 @@ authors = [
 ]
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.10"
+# 3.11 for stdlib tomllib, which pregdos/config.py reads the site config with.  CI has only
+# ever tested 3.11, so the previous >=3.10 claim was unverified rather than supported.
+requires-python = ">=3.11"
 dependencies = [
     "pydicom>=2.3.1",
     "numpy",
@@ -48,6 +50,9 @@ pregdos = [
     "data/*.csv",
     "data/spr_tables/*",
     "data/beam_models/*",
+    # Named explicitly: the "data/*.csv" glob above does not match it, and this is the one
+    # copy of the annotated site config (packaging/ installs *this* file to /etc/pregdos/).
+    "data/config.toml.example",
 ]
 
 [tool.pytest.ini_options]

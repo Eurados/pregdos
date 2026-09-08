@@ -10,7 +10,7 @@ from pregdos import versions
 
 def _clear_caches():
     # A test may have monkeypatched these with a plain function, which has no cache.
-    for fn in (versions.topas_version, versions.geant4_version, versions.latest_pregdos_release):
+    for fn in (versions.topas_version, versions.geant4_version, versions._fetch_latest_release):
         if hasattr(fn, "cache_clear"):
             fn.cache_clear()
 
@@ -55,15 +55,15 @@ def test_latest_pregdos_release_reads_github_tag(monkeypatch):
         def json(self):
             return {"tag_name": "v0.5.1"}
 
-    versions.latest_pregdos_release.cache_clear()
+    versions._fetch_latest_release.cache_clear()
     monkeypatch.setattr(versions.requests, "get", lambda *args, **kwargs: FakeResponse())
 
     assert versions.latest_pregdos_release() == "v0.5.1"
-    versions.latest_pregdos_release.cache_clear()
+    versions._fetch_latest_release.cache_clear()
 
 
 def test_latest_pregdos_release_degrades_on_network_error(monkeypatch):
-    versions.latest_pregdos_release.cache_clear()
+    versions._fetch_latest_release.cache_clear()
 
     def boom(*args, **kwargs):
         raise versions.requests.RequestException("offline")
@@ -71,7 +71,7 @@ def test_latest_pregdos_release_degrades_on_network_error(monkeypatch):
     monkeypatch.setattr(versions.requests, "get", boom)
 
     assert versions.latest_pregdos_release() == versions.UNKNOWN
-    versions.latest_pregdos_release.cache_clear()
+    versions._fetch_latest_release.cache_clear()
 
 
 def test_newer_pregdos_release_compares_tags_to_installed_versions():
@@ -417,3 +417,52 @@ def test_a_current_dicomexport_does_not_block_submission(monkeypatch):
     monkeypatch.delenv("TOPAS_G4_DATA_DIR", raising=False)
     monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.0")
     assert versions.submit_blocker() is None
+
+
+# --- [network] update_check: the airgapped switch ---
+
+def test_update_check_disabled_never_touches_the_network(monkeypatch, write_config, mocker):
+    write_config("[network]\nupdate_check = false\n")
+    get = mocker.patch.object(versions.requests, "get")
+
+    assert versions.latest_pregdos_release() == versions.UNKNOWN
+    get.assert_not_called()
+
+
+def test_update_check_enabled_by_default_still_asks(monkeypatch, mocker):
+    versions._fetch_latest_release.cache_clear()
+    mocker.patch.object(
+        versions.requests, "get",
+        return_value=mocker.Mock(raise_for_status=lambda: None, json=lambda: {"tag_name": "v9.9.9"}),
+    )
+    assert versions.latest_pregdos_release() == "v9.9.9"
+    versions._fetch_latest_release.cache_clear()
+
+
+def test_update_check_gate_is_not_pinned_by_the_cache(monkeypatch, write_config, mocker):
+    """The gate sits outside the lru_cache, so a first enabled call cannot pin the answer."""
+    versions._fetch_latest_release.cache_clear()
+    mocker.patch.object(
+        versions.requests, "get",
+        return_value=mocker.Mock(raise_for_status=lambda: None, json=lambda: {"tag_name": "v9.9.9"}),
+    )
+    assert versions.latest_pregdos_release() == "v9.9.9"
+
+    write_config("[network]\nupdate_check = false\n")
+    assert versions.latest_pregdos_release() == versions.UNKNOWN
+    versions._fetch_latest_release.cache_clear()
+
+
+def test_about_page_says_the_update_check_is_disabled(monkeypatch, write_config, mocker):
+    """Without this the airgapped site sees no badge at all and cannot tell it took effect."""
+    from pregdos.webserver import app
+
+    write_config("[network]\nupdate_check = false\n")
+    get = mocker.patch.object(versions.requests, "get")
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        body = c.get("/about").data.decode()
+
+    assert "update check disabled" in body
+    assert "update available" not in body
+    get.assert_not_called()

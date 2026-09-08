@@ -399,7 +399,7 @@ def test_debug_is_off_by_default(monkeypatch, mocker):
     from pregdos import webserver
     monkeypatch.delenv("PREGDOS_DEBUG", raising=False)
     run = mocker.patch.object(webserver.app, "run")
-    webserver.main()
+    webserver.main([])   # explicit argv: main() would otherwise parse pytest's own
     assert run.call_args.kwargs["debug"] is False
 
 
@@ -407,7 +407,7 @@ def test_debug_opt_in_via_env(monkeypatch, mocker):
     from pregdos import webserver
     monkeypatch.setenv("PREGDOS_DEBUG", "1")
     run = mocker.patch.object(webserver.app, "run")
-    webserver.main()
+    webserver.main([])   # explicit argv: main() would otherwise parse pytest's own
     assert run.call_args.kwargs["debug"] is True
 
 
@@ -1674,3 +1674,105 @@ def test_every_run_download_uses_the_same_name_scheme(client, tmp_path):
     assert names["/report.csv"] == f'attachment; filename="alpha__{run_id}_report.csv"'
     assert names["/report.pdf"] == f'attachment; filename="alpha__{run_id}_report.pdf"'
     assert names["/archive"] == f'attachment; filename="alpha__{run_id}.zip"'
+
+
+# --- config file: dicomexport path and timeout, and --config ordering ---
+
+def test_dicomexport_path_comes_from_config(write_config):
+    from pregdos import webserver
+    write_config('[paths]\ndicomexport = "/opt/bin/dicomexport"\n')
+    assert webserver._dicomexport_cmd_prefix() == ["/opt/bin/dicomexport"]
+
+
+def test_dicomexport_autodetect_is_unchanged_when_unconfigured(write_config):
+    from pregdos import webserver
+    write_config("[paths]\n")
+    prefix = webserver._dicomexport_cmd_prefix()
+    assert prefix[0].endswith("dicomexport") or prefix[1:] == ["-m", "dicomexport.main"]
+
+
+def _conversion_params(run_dir):
+    from pregdos.models import ConversionParameters
+
+    return ConversionParameters(
+        study_name="mystudy", run_dir=str(run_dir), dicom_rel="../dicom",
+        beam_model_rel="../bm.csv", spr_table_rel="../spr.txt", output_basename="topas",
+    )
+
+
+def test_dicomexport_timeout_reaches_subprocess(write_config, mocker, tmp_path):
+    from pregdos import webserver
+
+    write_config("[paths]\ndicomexport_timeout = 42\n")
+    run = mocker.patch("pregdos.webserver.subprocess.run",
+                       return_value=mocker.Mock(stdout="", stderr=""))
+    (tmp_path / "topas_field01.txt").write_text("# topas")
+
+    webserver.run_conversion(_conversion_params(tmp_path), [])
+    assert run.call_args.kwargs["timeout"] == 42
+
+
+def test_dicomexport_timeout_zero_means_wait_forever(write_config, mocker, tmp_path):
+    from pregdos import webserver
+
+    write_config("[paths]\ndicomexport_timeout = 0\n")
+    run = mocker.patch("pregdos.webserver.subprocess.run",
+                       return_value=mocker.Mock(stdout="", stderr=""))
+    (tmp_path / "topas_field01.txt").write_text("# topas")
+
+    webserver.run_conversion(_conversion_params(tmp_path), [])
+    assert run.call_args.kwargs["timeout"] is None
+
+
+def test_dicomexport_timeout_becomes_a_flashable_error(write_config, mocker, tmp_path):
+    from pregdos import webserver
+
+    write_config("[paths]\ndicomexport_timeout = 5\n")
+    mocker.patch("pregdos.webserver.subprocess.run",
+                 side_effect=webserver.subprocess.TimeoutExpired(cmd="dicomexport", timeout=5))
+
+    with pytest.raises(RuntimeError, match="did not finish within 5 s"):
+        webserver.run_conversion(_conversion_params(tmp_path), [])
+
+
+def test_unrunnable_dicomexport_is_a_flashable_error_not_a_500(write_config, mocker, tmp_path):
+    from pregdos import webserver
+
+    write_config('[paths]\ndicomexport = "/nope/dicomexport"\n')
+    mocker.patch("pregdos.webserver.subprocess.run",
+                 side_effect=FileNotFoundError(2, "No such file or directory"))
+
+    with pytest.raises(RuntimeError, match="Cannot run dicomexport"):
+        webserver.run_conversion(_conversion_params(tmp_path), [])
+
+
+def test_main_config_flag_is_applied_before_work_dir_is_read(tmp_path, monkeypatch, mocker):
+    """--config is parsed after import, so main() must re-derive WORK_DIR from it."""
+    from pregdos import webserver
+
+    monkeypatch.delenv("PREGDOS_WORK_DIR", raising=False)
+    path = tmp_path / "site.toml"
+    path.write_text('[paths]\nwork_dir = "/srv/from-cli"\n')
+    mocker.patch.object(webserver.app, "run")
+    try:
+        webserver.main(["--config", str(path)])
+        assert webserver.app.config["WORK_DIR"] == "/srv/from-cli"
+    finally:
+        webserver.config.set_config_path(None)
+        webserver._apply_config()
+
+
+def test_main_rejects_a_bad_config_before_binding_a_port(tmp_path, monkeypatch, mocker):
+    from pregdos import webserver
+
+    path = tmp_path / "bad.toml"
+    path.write_text('[paths]\nwork_dr = "/typo"\n')
+    run = mocker.patch.object(webserver.app, "run")
+    try:
+        with pytest.raises(SystemExit) as exc:
+            webserver.main(["--config", str(path)])
+        assert exc.value.code == 2
+        run.assert_not_called()
+    finally:
+        webserver.config.set_config_path(None)
+        webserver._apply_config()

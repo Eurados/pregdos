@@ -29,6 +29,8 @@ from typing import Optional, Tuple
 
 import requests
 
+from . import config
+
 UNKNOWN = "unknown"
 
 # Minimum OpenTOPAS that reports a trustworthy scorer Sum and Standard_Deviation (#49).
@@ -77,7 +79,8 @@ def parse_version(text: str) -> Optional[Tuple[int, ...]]:
 
 
 def topas_bin() -> str:
-    return os.environ.get("TOPAS_BIN", "topas")
+    """``TOPAS_BIN``, else ``[paths] topas_bin``.  Mirrors executor.topas_bin."""
+    return config.env_or("TOPAS_BIN", config.load().paths.topas_bin)
 
 
 @functools.lru_cache(maxsize=1)
@@ -248,11 +251,21 @@ def canonical_package_version(name: str, repo_root: Path | None = None) -> str:
     return f"{version}+{local}"
 
 
-@functools.lru_cache(maxsize=1)
 def latest_pregdos_release() -> str:
     """Latest GitHub release tag for PregDos, or ``"unknown"``.
 
-    This is deliberately best-effort and short-timeout: the About page must not become slow or
+    The ``[network] update_check`` gate lives here, *outside* the cache on
+    :func:`_fetch_latest_release`: inside it, the first call would pin its answer for the
+    lifetime of the process regardless of what the config says afterwards.
+    """
+    if not config.load().network.update_check:
+        return UNKNOWN
+    return _fetch_latest_release()
+
+
+@functools.lru_cache(maxsize=1)
+def _fetch_latest_release() -> str:
+    """Ask GitHub.  Best-effort and short-timeout: the About page must not become slow or
     fail just because GitHub or the network is unavailable.
     """
     try:

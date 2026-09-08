@@ -14,6 +14,7 @@ import importlib.metadata
 import importlib.resources
 import pydicom
 
+import argparse
 import datetime
 import zipfile
 import os
@@ -24,8 +25,8 @@ import subprocess
 import sys
 import shutil
 
-from . import (dicom_intake, executor, report_pdf, reporting, results, rtdose, structure_metrics,
-               studies, versions)
+from . import (config, dicom_intake, executor, report_pdf, reporting, results, rtdose,
+               structure_metrics, studies, versions)
 from .models import ConversionParameters, ConversionResult
 from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
@@ -37,22 +38,27 @@ from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
 # this value in sync with that drop-in's age field.
 RUN_RETENTION_DAYS = 30
 
-# The default studies root: one directory per uploaded study, plus the runs generated from
-# them.  `/var/tmp` (not `/tmp`!) is deliberate: it is persistent disk that survives reboot,
-# and systemd-tmpfiles reaps its contents after ~30 days -- exactly the auto-cleanup we want,
-# since results must be downloaded off the server anyway and stale runs should not pile up.
-# `/tmp` would be wrong: it is usually a RAM-backed tmpfs, wiped on every reboot and stealing
-# memory from the TOPAS workers (issue #71).
-_DEFAULT_WORK_DIR = os.path.join("/var/tmp", "pregdos")
-
-
 def _resolve_work_dir() -> str:
-    """The studies root: ``PREGDOS_WORK_DIR`` if set, else ``/var/tmp/pregdos``."""
-    return os.environ.get("PREGDOS_WORK_DIR") or _DEFAULT_WORK_DIR
+    """The studies root: ``PREGDOS_WORK_DIR`` if set, else ``[paths] work_dir``.
+
+    The default and the reason it is ``/var/tmp`` rather than ``/tmp`` live on
+    :class:`pregdos.config.Paths`.
+    """
+    return os.environ.get("PREGDOS_WORK_DIR") or config.load().paths.work_dir
+
+
+def _apply_config() -> None:
+    """(Re-)derive app state from the config file and the environment.
+
+    ``WORK_DIR`` is the only config-derived value captured at import time; everything else
+    resolves per call.  ``main()`` calls this again after ``--config`` has been parsed, which
+    is necessarily *after* this module was imported to reach ``main`` at all.
+    """
+    app.config["WORK_DIR"] = _resolve_work_dir()
 
 
 app = Flask(__name__)
-app.config["WORK_DIR"] = _resolve_work_dir()
+_apply_config()
 app.secret_key = os.environ.get("PREGDOS_SECRET_KEY") or secrets.token_urlsafe(32)
 
 # Templates render doses with a shared SI prefix (e.g. "3.8 mSv") via this helper.
@@ -196,12 +202,17 @@ def get_structures(root, study_name):
     return [roi.ROIName for roi in ds.StructureSetROISequence]
 
 
-def _dicomexport_cmd_prefix():
+def _dicomexport_cmd_prefix() -> list[str]:
     """Return command prefix to invoke dicomexport.
 
-    Prefer the console script installed alongside the current Python executable
+    ``[paths] dicomexport`` wins when set -- as a plain path, deliberately not shell-split, so
+    a name containing a space still works; a wrapper needing arguments belongs in a script.
+    Otherwise prefer the console script installed alongside the current Python executable
     (e.g., venv/bin/dicomexport). Fall back to `python -m dicomexport.main`.
     """
+    configured = config.load().paths.dicomexport.strip()
+    if configured:
+        return [configured]
     py_bin = os.path.dirname(sys.executable)
     console = os.path.join(py_bin, "dicomexport")
     if os.path.exists(console) and os.access(console, os.X_OK):
@@ -369,16 +380,28 @@ def run_conversion(params: ConversionParameters, selected_structures: list) -> C
         cmd += ["-N", str(params.nstat)]
     cmd += [params.dicom_rel, params.output_basename]
 
+    # Without a timeout a hung conversion wedges this Flask worker for good.  0 means the
+    # site has deliberately asked to wait forever.
+    timeout = config.load().paths.dicomexport_timeout or None
+
     try:
         proc = subprocess.run(
             cmd, check=True, cwd=params.run_dir, env=os.environ.copy(),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
         )
     except subprocess.CalledProcessError as e:
         out = (e.stdout or "").strip()
         err = (e.stderr or str(e)).strip()
         msg = "".join([part for part in (err, out) if part])
         raise RuntimeError(f"Error running dicomexport: {msg}") from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"dicomexport did not finish within {timeout} s and was killed. "
+            f"Raise [paths] dicomexport_timeout if this study is simply large."
+        ) from e
+    except OSError as e:
+        # A mistyped [paths] dicomexport must be a flashed message, not a 500.
+        raise RuntimeError(f"Cannot run dicomexport ({cmd[0]}): {e}") from e
 
     out_files = sorted(p.name for p in Path(params.run_dir).glob(f"{params.output_basename}_field*.txt"))
     if not out_files:
@@ -563,6 +586,7 @@ def about():
     # itself), so the page reports what will actually run, not what was configured.
     env = versions.summary()
     env["pregdos"] = versions.canonical_package_version("pregdos", Path(__file__).resolve().parent.parent)
+    env["update_check"] = config.load().network.update_check
     env["pregdos_latest"] = versions.latest_pregdos_release()
     env["pregdos_update_available"] = versions.newer_pregdos_release(env["pregdos"], env["pregdos_latest"])
     env["dicomexport"] = versions.dicomexport_version()
@@ -1230,7 +1254,32 @@ def _env_flag(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def main():
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(
+        prog="pregdos-web",
+        description="Serve the PregDos web interface.",
+    )
+    parser.add_argument(
+        "--config",
+        metavar="PATH",
+        help="TOML config file. Replaces the /etc/pregdos and ~/.config/pregdos stack "
+             f"rather than merging onto it. See also ${config.CONFIG_ENV}.",
+    )
+    args = parser.parse_args(argv)
+    if args.config:
+        config.set_config_path(args.config)
+
+    # Fail before binding a port: a bad config should be a startup error naming the file and
+    # the key, not a 500 on whichever page first happens to read it.
+    try:
+        config.load()
+    except config.ConfigError as exc:
+        parser.error(str(exc))
+
+    # The module was imported to reach main(), so the import-time read above happened before
+    # --config was known.  Redo it now.
+    _apply_config()
+
     # Debug is OFF by default: the Werkzeug debugger is an interactive console, and the app
     # binds all interfaces, so debug=True on a shared network is remote code execution.
     # Opt in explicitly with PREGDOS_DEBUG=1 for local development only.

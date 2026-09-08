@@ -14,7 +14,8 @@ SLURM is not required: if `sbatch` is unavailable, PregDos uses its local FIFO e
 
 ### Prerequisites
 
-- Python 3.10 or newer.
+- Python 3.11 or newer. (On RHEL 9 the system `python3` is 3.9 — install the `python3.11`
+  AppStream package and build the venv with it.)
 - A working OpenTOPAS 4.2.3+ installation.
 - Geant4 data files available to TOPAS.
 - `git`, because `dicomexport` is installed from a GitHub tag.
@@ -56,9 +57,86 @@ pregdos-web
 
 Open http://localhost:5000.
 
+### Configuration File
+
+For anything beyond a developer laptop, settings belong in a TOML file rather than in
+environment variables. PregDos reads, lowest precedence first:
+
+1. `/etc/pregdos/config.toml`
+2. `$XDG_CONFIG_HOME/pregdos/config.toml` (falling back to `~/.config`)
+3. the environment
+
+Those two files **merge per key**. `pregdos-web --config PATH` or `$PREGDOS_CONFIG` instead
+**replaces** both, so one deliberate file is the whole story; `--config` wins if both are given.
+Environment variables beat every file, so the container and the tables below keep working
+unchanged.
+
+An annotated example with every key, its default, and when to change it ships inside the
+package. Copy it and edit:
+
+```bash
+python -c 'from pregdos import config; print(config.example_text())' \
+    | sudo tee /etc/pregdos/config.toml
+```
+
+An unknown key, an unknown section or a wrong type is a startup error naming the file and the
+key — a typo never silently does nothing. `pregdos-web --config PATH` validates before binding
+a port, so a bad file fails immediately rather than on whichever page first reads it.
+
+> `--config` is a CLI flag, so a WSGI server that imports `pregdos.webserver:app` directly never
+> sees it. Use `PREGDOS_CONFIG` in the unit file for those deployments.
+
+The sections are `[paths]` (`work_dir`, `topas_bin`, `dicomexport`, `dicomexport_timeout`),
+`[scheduler]` (see below), and `[network]` (`update_check`).
+
+#### Airgapped sites
+
+Set `update_check = false` under `[network]`. `/about` otherwise asks api.github.com whether a
+newer PregDos exists, which on an isolated node can only ever time out.
+
+#### Submitting into a site SLURM
+
+When SLURM is already running on the node as a host service, install PregDos natively (not the
+`pregdos-slurm` container, which brings its own scheduler and would double-book the CPUs) and
+point `[scheduler]` at the site's queue:
+
+```toml
+[scheduler]
+partition = "clinical"
+cpus_per_task = 16
+submit_as_user = ""
+prologue = """
+. /etc/profile.d/modules.sh
+module load topas/4.2.3
+"""
+```
+
+- **Every string is optional**, and empty means the `sbatch` flag is omitted entirely — so
+  `partition`, `account`, `qos`, `walltime` and `memory` left unset let SLURM apply its own
+  site defaults. Set one only when this site needs something else.
+- **`cpus_per_task` matters.** Left at `0`, PregDos requests as many CPUs as the machine
+  running the *web* process reports. If the partition offers fewer, SLURM rejects every field
+  job at submit. The single-threaded structure-mask pre-pass always asks for 1 regardless.
+- **`submit_as_user = ""`** stops PregDos dropping privileges to a `slurm` account. The default
+  `"auto"` is for the shipped container, which runs as root; a site install submits as its own
+  service account.
+- **`prologue`** is shell source run before TOPAS, for sites where TOPAS lives behind
+  environment modules — `PATH` alone is not enough, TOPAS also needs its Geant4 data and
+  `LD_LIBRARY_PATH`. It runs under `/bin/sh`, where `module` is undefined, so source the module
+  init first. It applies to **both** backends, because PregDos falls back to local execution
+  whenever `sbatch` is off `PATH`; note that the local backend discards stderr, so a *failing*
+  prologue is visible in `slurm-%j.out` but silent locally.
+
+Because `prologue` is executed by the shell that runs TOPAS, `/etc/pregdos/config.toml` must be
+owned by root and not writable by anyone else (`0644`).
+
+> On a **multi-node** cluster `work_dir` must be on shared storage. `sbatch --chdir` resolves on
+> the compute node, so a node-local path means every field starts in a directory that is empty
+> or absent and dies immediately.
+
 ### Useful Environment Variables
 
-Set these before running `pregdos-web`:
+Environment variables override the config file. Set these before running `pregdos-web`:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

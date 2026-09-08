@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from . import portable
+from . import config, portable
 from .textio import read_text_lenient
 
 # Backend identifiers, also written into run.json.
@@ -62,8 +62,13 @@ LOCAL_SCHEDULER_LOCK = ".pregdos_local_scheduler.lock"
 
 
 def topas_bin() -> str:
-    """Path or name of the TOPAS executable.  Read lazily so tests can patch the env."""
-    return os.environ.get("TOPAS_BIN", "topas")
+    """Path or name of the TOPAS executable.
+
+    ``TOPAS_BIN`` wins over ``[paths] topas_bin``.  Read lazily -- never cached -- so tests
+    can patch the environment and a site can override the config file.  (versions.topas_bin
+    is the same resolver; the duplication predates the config file.)
+    """
+    return config.env_or("TOPAS_BIN", config.load().paths.topas_bin)
 
 
 def _requested_backend() -> str:
@@ -110,6 +115,11 @@ def _cpus_per_task(topas_file: str) -> int:
     """
     if Path(topas_file).name == "structure_mask_prepass.txt":
         return 1
+    # Above the config lookup deliberately: a site setting cpus_per_task=32 must not inflate
+    # a job that rasterises masks on one thread and would hold 31 cores idle.
+    configured = config.load().scheduler.cpus_per_task
+    if configured > 0:
+        return configured
     return os.cpu_count() or 1
 
 
@@ -124,6 +134,24 @@ def field_command(topas_file: str) -> str:
         f"{q(topas_bin())} {q(topas_file)} > {q(log_name(topas_file))} 2>&1; "
         f"echo $? > {q(exit_code_name(topas_file))}"
     )
+
+
+def _with_prologue(script: str) -> str:
+    """Prefix a whole shell script with the site's TOPAS environment setup.
+
+    Applied to the *composed* script, not to :func:`field_command`, and that distinction is
+    the point: the local backend chains one ``field_command`` per field into a single ``sh
+    -c``, so folding the prologue in there would re-run the site's ``module load`` once per
+    field in the same shell -- wasteful for modules, and wrong for anything that is not
+    idempotent.
+
+    Applies to both backends.  ``select_backend`` falls back to local execution whenever
+    ``sbatch`` is off PATH, and a prologue that silently stopped applying exactly then would
+    be a trap.  Not quoted: ``prologue`` is shell *source* by design, which is why the config
+    file has to be root-owned.
+    """
+    prologue = config.load().scheduler.prologue.strip()
+    return f"{prologue}\n{script}" if prologue else script
 
 
 # ---------------------------------------------------------------------------
@@ -201,25 +229,49 @@ def read_run_metadata(run_dir: str | os.PathLike) -> Optional[RunInfo]:
 # Submission
 # ---------------------------------------------------------------------------
 
+def _submit_as_user(configured: str) -> str:
+    """Which account to submit as, or "" to submit as whoever is running.
+
+    ``"auto"`` reproduces the shipped container: SLURM executes jobs as the ``slurm`` user, so
+    when PregDos runs as root we drop privileges to it.  A site SLURM wants ``""`` instead --
+    PregDos has its own service account there and must submit as itself.
+    """
+    configured = configured.strip()
+    return "slurm" if configured == "auto" else configured
+
+
 def _sbatch_argv(run_dir: Path, topas_file: str) -> List[str]:
     """Build the sbatch invocation for one field.
 
-    SLURM executes jobs as the ``slurm`` user, so when we are root (as in the container)
-    we drop privileges with ``runuser``.  Outside the container ``runuser`` is typically
-    absent from PATH and we are not root anyway, so we call ``sbatch`` directly.
+    Every ``[scheduler]`` string is optional: an unset partition, account, QoS, time limit or
+    memory means the flag is left off entirely, so SLURM applies its own site default.  The
+    optional flags go in the middle because both ends are load-bearing -- ``sbatch`` (or the
+    ``runuser`` prefix) must come first, and ``--wrap`` must come last.
     """
+    sched = config.load().scheduler
     argv: List[str] = []
-    runuser = shutil.which("runuser") or "/usr/sbin/runuser"
-    if portable.running_as_root() and os.path.exists(runuser):
-        argv += [runuser, "-u", "slurm", "--"]
+    submit_user = _submit_as_user(sched.submit_as_user)
+    if submit_user and portable.running_as_root():
+        runuser = shutil.which("runuser") or "/usr/sbin/runuser"
+        if os.path.exists(runuser):
+            argv += [runuser, "-u", submit_user, "--"]
     argv += [
         "sbatch",
         "--export=ALL",
         f"--cpus-per-task={_cpus_per_task(topas_file)}",
         f"--chdir={run_dir}",
         f"--output={run_dir}/slurm-%j.out",
-        "--wrap", field_command(topas_file),
     ]
+    for flag, value in (
+        ("partition", sched.partition),
+        ("account", sched.account),
+        ("qos", sched.qos),
+        ("time", sched.walltime),
+        ("mem", sched.memory),
+    ):
+        if value.strip():
+            argv.append(f"--{flag}={value.strip()}")
+    argv += ["--wrap", _with_prologue(field_command(topas_file))]
     return argv
 
 
@@ -283,6 +335,8 @@ def _launch_local_worker(run_dir: Path, studies_root: Path, info: RunInfo) -> No
     """
     script = "; ".join(field_command(f.topas_file) for f in info.fields)
     script = f"{script}; {_scheduler_argv(studies_root)}"
+    # Once for the whole chained script, not once per field -- see _with_prologue.
+    script = _with_prologue(script)
     proc = subprocess.Popen(
         ["sh", "-c", script],
         cwd=str(run_dir),
