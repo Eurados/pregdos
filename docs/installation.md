@@ -180,10 +180,17 @@ Both keys or neither — setting one is a startup error rather than a quiet fall
 HTTP. A self-signed certificate works and is generated in one line:
 
 ```bash
-openssl req -x509 -newkey rsa:4096 -nodes -days 365 \
-    -keyout /etc/pregdos/key.pem -out /etc/pregdos/cert.pem -subj "/CN=$(hostname -f)"
+sudo openssl req -x509 -newkey rsa:4096 -nodes -days 825 \
+    -keyout /etc/pregdos/key.pem -out /etc/pregdos/cert.pem \
+    -subj "/CN=$(hostname -f)" \
+    -addext "subjectAltName=DNS:$(hostname -f),DNS:$(hostname -s),IP:$(hostname -I | awk '{print $1}')"
 sudo chmod 0600 /etc/pregdos/key.pem
 ```
+
+`-addext subjectAltName` is not optional. Browsers have ignored the Common Name since 2017 and
+reject a certificate without a matching SAN outright (`ERR_CERT_COMMON_NAME_INVALID`) rather
+than offering the usual "proceed anyway" — so a CN-only certificate fails in a way that looks
+like a server fault. List every name users will type, including the bare hostname and the IP.
 
 Be clear about what that buys: encryption on the wire, from the **development** server. It is
 not a production WSGI deployment (issue #90) and it is not authentication (issue #64) — anyone
