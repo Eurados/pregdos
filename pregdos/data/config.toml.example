@@ -1,0 +1,133 @@
+## PregDos site configuration.
+##
+## Copy to /etc/pregdos/config.toml and uncomment what you need.  Every key below is shown
+## with its built-in default, so an entirely commented-out file behaves exactly like no file
+## at all.
+##
+## Read from, lowest precedence first:
+##
+##   1. /etc/pregdos/config.toml
+##   2. $XDG_CONFIG_HOME/pregdos/config.toml   (falls back to ~/.config)
+##   3. the environment
+##
+## Those two files merge per key.  `pregdos-web --config PATH` or $PREGDOS_CONFIG instead
+## REPLACES both, so one deliberate file is the whole story.  Environment variables win over
+## every file: TOPAS_BIN, PREGDOS_WORK_DIR, PREGDOS_EXECUTOR, PREGDOS_SECRET_KEY,
+## PREGDOS_DEBUG, TOPAS_VERSION, GEANT4_VERSION, TOPAS_G4_DATA_DIR.
+##
+## An unknown key, an unknown section or a wrong type is a startup error naming this file and
+## the key -- a typo here never silently does nothing.
+##
+## SECURITY: `[scheduler] prologue` is executed by the shell that runs TOPAS.  This file must
+## be owned by root and not writable by anyone else (0644).
+
+[paths]
+
+## Where uploaded studies and their runs are kept.  Must be writable by the user running
+## PregDos, and on a MULTI-NODE cluster must be on shared storage -- sbatch --chdir resolves
+## on the compute node, so a node-local path there means every field starts in a directory
+## that is empty or absent and dies immediately.
+##
+## /var/tmp (not /tmp!) is deliberate: it is persistent disk that survives reboot, and
+## systemd-tmpfiles reaps it after ~30 days -- the auto-cleanup we want, since results must be
+## downloaded off the server anyway.  /tmp is usually a RAM-backed tmpfs, wiped on reboot and
+## stealing memory from the TOPAS workers.
+# work_dir = "/var/tmp/pregdos"
+
+## The TOPAS executable: a name to find on PATH, or an absolute path.  If TOPAS lives behind
+## `module load`, set [scheduler] prologue below as well -- PATH alone is not enough, TOPAS
+## also needs its Geant4 data and LD_LIBRARY_PATH.
+# topas_bin = "topas"
+
+## The dicomexport executable.  Empty means autodetect beside the running interpreter, which
+## is right for a normal venv install.  Set an absolute path only if it lives elsewhere; a
+## wrapper that needs arguments belongs in a shell script, this is not shell-split.
+# dicomexport = ""
+
+## Seconds before a hung DICOM conversion is killed.  0 waits forever, which will eventually
+## wedge a web worker.
+# dicomexport_timeout = 900
+
+[scheduler]
+
+## SLURM submission.  Every string below is EMPTY BY DEFAULT, and empty means the flag is
+## omitted from the sbatch line entirely -- so SLURM applies its own site default.  Set one
+## only when this site needs something other than that default.
+
+## sbatch --partition
+# partition = ""
+
+## sbatch --account
+# account = ""
+
+## sbatch --qos
+# qos = ""
+
+## sbatch --time, e.g. "04:00:00".  A clinical recalculation is hours, not minutes; if the
+## site's default partition limit is short, set this or fields are killed mid-run.
+# walltime = ""
+
+## sbatch --mem, e.g. "16G".  A study too large for the node dies as a bare SIGSEGV, so a
+## limit that fails the job cleanly at submit is friendlier than one that does not.
+# memory = ""
+
+## sbatch --cpus-per-task.  0 means "as many CPUs as the machine running the web process
+## reports", which is wrong whenever that machine is not the compute node, or when the
+## partition offers fewer -- SLURM then rejects every field job at submit.  Set this to what
+## the partition actually allows.  The single-threaded structure-mask pre-pass always asks
+## for 1 regardless.
+# cpus_per_task = 0
+
+## Which user sbatch is invoked as.
+##   "auto"    - drop to the `slurm` account via runuser, but only when running as root.
+##               This is the shipped container's behaviour.
+##   ""        - never drop privileges; submit as whoever runs PregDos.  This is what a site
+##               SLURM wants, where PregDos has its own service account.
+##   "<name>"  - drop to that account (again, only when running as root).
+# submit_as_user = "auto"
+
+## Shell source run before TOPAS, for sites where TOPAS lives behind environment modules.
+##
+## APPLIES TO BOTH BACKENDS -- SLURM and the local one -- because PregDos falls back to local
+## execution whenever sbatch is not on PATH, and a prologue that silently stopped applying
+## there would be a trap.
+##
+## Both backends use /bin/sh, where `module` is not defined, so source the module init first:
+##
+# prologue = """
+# . /etc/profile.d/modules.sh
+# module load topas/4.2.3
+# """
+
+[server]
+
+## Where the web interface listens.
+##
+## The default binds EVERY interface, which is what the shipped container needs to be
+## reachable through `docker run -p`.  PregDos has no authentication, so on a shared network
+## anyone who can reach this port can read every study on the server: if a reverse proxy
+## fronts PregDos, bind the loopback instead and let the proxy be the only way in.
+# host = "0.0.0.0"
+
+## TCP port.  Change it when something else already listens on 5000 -- PregDos binds all
+## interfaces, so a clash is an immediate "Address already in use" at startup.
+# port = 5000
+
+## TLS for the built-in server: PEM certificate and its private key, BOTH or NEITHER.
+## Setting only one is a startup error rather than a silent fall back to plain HTTP.
+##
+## This makes the DEVELOPMENT server speak HTTPS.  It is encryption, not a production
+## deployment, and it is not authentication: a self-signed certificate also trains users to
+## click through browser warnings.  Prefer a certificate from the site's own CA, and put a
+## real WSGI server in front for anything beyond a trial.
+##
+## The key must be readable by the user running PregDos and by nobody else (0600).
+# ssl_cert = ""
+# ssl_key = ""
+
+[network]
+
+## Whether /about may ask api.github.com whether a newer PregDos exists.  Set false on an
+## airgapped site: the request can never succeed and costs a timeout on the first page load
+## of each worker process.
+# update_check = true

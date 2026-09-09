@@ -399,7 +399,7 @@ def test_debug_is_off_by_default(monkeypatch, mocker):
     from pregdos import webserver
     monkeypatch.delenv("PREGDOS_DEBUG", raising=False)
     run = mocker.patch.object(webserver.app, "run")
-    webserver.main()
+    webserver.main([])   # explicit argv: main() would otherwise parse pytest's own
     assert run.call_args.kwargs["debug"] is False
 
 
@@ -407,8 +407,121 @@ def test_debug_opt_in_via_env(monkeypatch, mocker):
     from pregdos import webserver
     monkeypatch.setenv("PREGDOS_DEBUG", "1")
     run = mocker.patch.object(webserver.app, "run")
-    webserver.main()
+    webserver.main([])   # explicit argv: main() would otherwise parse pytest's own
     assert run.call_args.kwargs["debug"] is True
+
+
+# ---------------------------------------------------------------------------
+# Where the server listens: [server] host/port/TLS, and the flags that beat them
+# ---------------------------------------------------------------------------
+
+def test_listen_address_defaults_to_all_interfaces_on_5000(mocker):
+    """The historical hard-coded values are still the defaults -- the container relies on them."""
+    from pregdos import webserver
+    run = mocker.patch.object(webserver.app, "run")
+    webserver.main([])
+    assert run.call_args.kwargs["host"] == "0.0.0.0"
+    assert run.call_args.kwargs["port"] == 5000
+    assert run.call_args.kwargs["ssl_context"] is None
+
+
+def test_config_file_moves_the_listen_address(write_config, mocker):
+    from pregdos import webserver
+    write_config('[server]\nhost = "127.0.0.1"\nport = 8080\n')
+    run = mocker.patch.object(webserver.app, "run")
+    webserver.main([])
+    assert run.call_args.kwargs["host"] == "127.0.0.1"
+    assert run.call_args.kwargs["port"] == 8080
+
+
+def test_flags_beat_the_config_file(write_config, mocker):
+    from pregdos import webserver
+    write_config('[server]\nhost = "127.0.0.1"\nport = 8080\n')
+    run = mocker.patch.object(webserver.app, "run")
+    webserver.main(["--host", "10.0.0.1", "--port", "9999"])
+    assert run.call_args.kwargs["host"] == "10.0.0.1"
+    assert run.call_args.kwargs["port"] == 9999
+
+
+def test_port_zero_stays_expressible_on_the_command_line(mocker):
+    """0 means "bind an ephemeral port", so the override cannot be a truthiness test."""
+    from pregdos import webserver
+    run = mocker.patch.object(webserver.app, "run")
+    webserver.main(["--port", "0"])
+    assert run.call_args.kwargs["port"] == 0
+
+
+def test_out_of_range_port_flag_is_rejected_before_binding(mocker):
+    from pregdos import webserver
+    run = mocker.patch.object(webserver.app, "run")
+    with pytest.raises(SystemExit) as exc:
+        webserver.main(["--port", "70000"])
+    assert exc.value.code == 2
+    run.assert_not_called()
+
+
+def test_tls_pair_is_passed_to_the_server(tmp_path, write_config, mocker):
+    from pregdos import webserver
+    cert, key = tmp_path / "cert.pem", tmp_path / "key.pem"
+    cert.write_text("-----BEGIN CERTIFICATE-----\n")
+    key.write_text("-----BEGIN PRIVATE KEY-----\n")
+    write_config(f'[server]\nssl_cert = "{cert}"\nssl_key = "{key}"\n')
+    run = mocker.patch.object(webserver.app, "run")
+    webserver.main([])
+    assert run.call_args.kwargs["ssl_context"] == (str(cert), str(key))
+
+
+def test_missing_certificate_file_is_named_before_binding(tmp_path, write_config, mocker):
+    """A path typo must not surface as a Werkzeug traceback on the first HTTPS request."""
+    from pregdos import webserver
+    key = tmp_path / "key.pem"
+    key.write_text("-----BEGIN PRIVATE KEY-----\n")
+    write_config(f'[server]\nssl_cert = "{tmp_path / "absent.pem"}"\nssl_key = "{key}"\n')
+    run = mocker.patch.object(webserver.app, "run")
+    with pytest.raises(SystemExit) as exc:
+        webserver.main([])
+    assert exc.value.code == 2
+    run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# The run directory must belong to whoever sbatch will run as
+# ---------------------------------------------------------------------------
+
+def test_run_dir_is_handed_to_the_configured_submit_user(tmp_path, write_config, mocker):
+    """A site submitting as its own account must not have the directory given to `slurm`."""
+    from pregdos import executor, webserver
+    write_config('[scheduler]\nsubmit_as_user = "pregdos"\n')
+    mocker.patch.object(executor, "select_backend", return_value=executor.SLURM)
+    mocker.patch.object(executor, "submit_run",
+                        return_value=executor.RunInfo(backend=executor.SLURM, submitted="now"))
+    chown = mocker.patch.object(webserver.shutil, "chown")
+    run_dir = tmp_path / "run_x"
+    run_dir.mkdir()
+    (run_dir / "topas_field01.txt").write_text("# topas")
+
+    with webserver.app.test_request_context():
+        webserver._submit_topas_files("study", "run_x", run_dir, ["topas_field01.txt"])
+
+    chown.assert_called_once_with(run_dir, user="pregdos", group="pregdos")
+
+
+def test_run_dir_is_left_alone_when_pregdos_submits_as_itself(tmp_path, write_config, mocker):
+    """submit_as_user = "" means no privilege drop, so the ownership is already correct."""
+    from pregdos import executor, webserver
+    write_config('[scheduler]\nsubmit_as_user = ""\n')
+    mocker.patch.object(executor, "select_backend", return_value=executor.SLURM)
+    mocker.patch.object(executor, "submit_run",
+                        return_value=executor.RunInfo(backend=executor.SLURM, submitted="now"))
+    chown = mocker.patch.object(webserver.shutil, "chown")
+    run_dir = tmp_path / "run_x"
+    run_dir.mkdir()
+    (run_dir / "topas_field01.txt").write_text("# topas")
+
+    with webserver.app.test_request_context():
+        webserver._submit_topas_files("study", "run_x", run_dir, ["topas_field01.txt"])
+
+    chown.assert_not_called()
 
 
 def test_secret_key_is_not_insecure_example_value():
@@ -1674,3 +1787,105 @@ def test_every_run_download_uses_the_same_name_scheme(client, tmp_path):
     assert names["/report.csv"] == f'attachment; filename="alpha__{run_id}_report.csv"'
     assert names["/report.pdf"] == f'attachment; filename="alpha__{run_id}_report.pdf"'
     assert names["/archive"] == f'attachment; filename="alpha__{run_id}.zip"'
+
+
+# --- config file: dicomexport path and timeout, and --config ordering ---
+
+def test_dicomexport_path_comes_from_config(write_config):
+    from pregdos import webserver
+    write_config('[paths]\ndicomexport = "/opt/bin/dicomexport"\n')
+    assert webserver._dicomexport_cmd_prefix() == ["/opt/bin/dicomexport"]
+
+
+def test_dicomexport_autodetect_is_unchanged_when_unconfigured(write_config):
+    from pregdos import webserver
+    write_config("[paths]\n")
+    prefix = webserver._dicomexport_cmd_prefix()
+    assert prefix[0].endswith("dicomexport") or prefix[1:] == ["-m", "dicomexport.main"]
+
+
+def _conversion_params(run_dir):
+    from pregdos.models import ConversionParameters
+
+    return ConversionParameters(
+        study_name="mystudy", run_dir=str(run_dir), dicom_rel="../dicom",
+        beam_model_rel="../bm.csv", spr_table_rel="../spr.txt", output_basename="topas",
+    )
+
+
+def test_dicomexport_timeout_reaches_subprocess(write_config, mocker, tmp_path):
+    from pregdos import webserver
+
+    write_config("[paths]\ndicomexport_timeout = 42\n")
+    run = mocker.patch("pregdos.webserver.subprocess.run",
+                       return_value=mocker.Mock(stdout="", stderr=""))
+    (tmp_path / "topas_field01.txt").write_text("# topas")
+
+    webserver.run_conversion(_conversion_params(tmp_path), [])
+    assert run.call_args.kwargs["timeout"] == 42
+
+
+def test_dicomexport_timeout_zero_means_wait_forever(write_config, mocker, tmp_path):
+    from pregdos import webserver
+
+    write_config("[paths]\ndicomexport_timeout = 0\n")
+    run = mocker.patch("pregdos.webserver.subprocess.run",
+                       return_value=mocker.Mock(stdout="", stderr=""))
+    (tmp_path / "topas_field01.txt").write_text("# topas")
+
+    webserver.run_conversion(_conversion_params(tmp_path), [])
+    assert run.call_args.kwargs["timeout"] is None
+
+
+def test_dicomexport_timeout_becomes_a_flashable_error(write_config, mocker, tmp_path):
+    from pregdos import webserver
+
+    write_config("[paths]\ndicomexport_timeout = 5\n")
+    mocker.patch("pregdos.webserver.subprocess.run",
+                 side_effect=webserver.subprocess.TimeoutExpired(cmd="dicomexport", timeout=5))
+
+    with pytest.raises(RuntimeError, match="did not finish within 5 s"):
+        webserver.run_conversion(_conversion_params(tmp_path), [])
+
+
+def test_unrunnable_dicomexport_is_a_flashable_error_not_a_500(write_config, mocker, tmp_path):
+    from pregdos import webserver
+
+    write_config('[paths]\ndicomexport = "/nope/dicomexport"\n')
+    mocker.patch("pregdos.webserver.subprocess.run",
+                 side_effect=FileNotFoundError(2, "No such file or directory"))
+
+    with pytest.raises(RuntimeError, match="Cannot run dicomexport"):
+        webserver.run_conversion(_conversion_params(tmp_path), [])
+
+
+def test_main_config_flag_is_applied_before_work_dir_is_read(tmp_path, monkeypatch, mocker):
+    """--config is parsed after import, so main() must re-derive WORK_DIR from it."""
+    from pregdos import webserver
+
+    monkeypatch.delenv("PREGDOS_WORK_DIR", raising=False)
+    path = tmp_path / "site.toml"
+    path.write_text('[paths]\nwork_dir = "/srv/from-cli"\n')
+    mocker.patch.object(webserver.app, "run")
+    try:
+        webserver.main(["--config", str(path)])
+        assert webserver.app.config["WORK_DIR"] == "/srv/from-cli"
+    finally:
+        webserver.config.set_config_path(None)
+        webserver._apply_config()
+
+
+def test_main_rejects_a_bad_config_before_binding_a_port(tmp_path, monkeypatch, mocker):
+    from pregdos import webserver
+
+    path = tmp_path / "bad.toml"
+    path.write_text('[paths]\nwork_dr = "/typo"\n')
+    run = mocker.patch.object(webserver.app, "run")
+    try:
+        with pytest.raises(SystemExit) as exc:
+            webserver.main(["--config", str(path)])
+        assert exc.value.code == 2
+        run.assert_not_called()
+    finally:
+        webserver.config.set_config_path(None)
+        webserver._apply_config()

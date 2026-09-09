@@ -10,21 +10,28 @@ authors = [
 ]
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.10"
+# 3.11 for stdlib tomllib, which pregdos/config.py reads the site config with.  CI has only
+# ever tested 3.11, so the previous >=3.10 claim was unverified rather than supported.
+requires-python = ">=3.11"
+# Exactly what pregdos imports, and nothing else.  Transitive dependencies are the resolver's
+# job: scipy and pandas arrive because dicomexport declares them, and werkzeug is here only
+# because pregdos imports secure_filename itself rather than reaching through Flask.
 dependencies = [
     "pydicom>=2.3.1",
     "numpy",
-    "scipy",
     "flask>=2.0.0",
+    "werkzeug",
     "requests",
-    "tqdm",
-    "setuptools-scm",
     "fpdf2>=2.8.7",
     # >=1.4.3: emits relative DicomDirectory/CloneRTDoseGridFrom (keeps studies relocatable,
     # pregdos #41), points DicomDirectory at the CT dir (nested-CT #52), sizes the World from
     # the CT + isocenter, and writes DicomOrigin so the patient is placed correctly.
     # >=1.5.0: names field outputs by DICOM BeamNumber and skips beams without BeamMeterset.
-    "dicomexport @ git+https://github.com/nbassler/dicomexport@v1.5.0",
+    # >=1.5.1: corrects two catalogued range shifter thicknesses -- CCB's RS_Block from
+    # 39.936 to a centre-confirmed 36.5 mm, and WPE's RS51 from a guessed 51.0 to a stated
+    # 44.4 mm -- so an older dicomexport computes a different range for those centres.  Also
+    # adds an optional stated density per shifter (dicomexport #92).
+    "dicomexport @ git+https://github.com/nbassler/dicomexport@v1.5.1",
 ]
 dynamic = ["version"]
 
@@ -48,6 +55,9 @@ pregdos = [
     "data/*.csv",
     "data/spr_tables/*",
     "data/beam_models/*",
+    # Named explicitly: the "data/*.csv" glob above does not match it, and this is the one
+    # copy of the annotated site config (packaging/ installs *this* file to /etc/pregdos/).
+    "data/config.toml.example",
 ]
 
 [tool.pytest.ini_options]

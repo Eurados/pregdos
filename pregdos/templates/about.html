@@ -17,7 +17,10 @@
                 <td>PregDos</td>
                 <td>
                     {{ versions.pregdos }}
-                    {% if versions.pregdos_update_available %}
+                    {% if not versions.update_check %}
+                        {# Otherwise "no badge" is ambiguous between "disabled" and "GitHub unreachable". #}
+                        <span class="badge">update check disabled</span>
+                    {% elif versions.pregdos_update_available %}
                         <span class="badge warning">update available</span>
                     {% elif versions.pregdos != 'unknown' and versions.pregdos_latest != 'unknown' %}
                         <span class="badge success">latest</span>

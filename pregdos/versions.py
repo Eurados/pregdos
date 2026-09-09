@@ -22,6 +22,7 @@ import importlib.metadata
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -29,15 +30,21 @@ from typing import Optional, Tuple
 
 import requests
 
+from . import config
+
 UNKNOWN = "unknown"
 
 # Minimum OpenTOPAS that reports a trustworthy scorer Sum and Standard_Deviation (#49).
 MINIMUM_TOPAS = (4, 2, 3)
 
-# Minimum dicomexport whose field-numbering contract PregDos follows: 1.5.0 numbers output
-# fields by DICOM BeamNumber and skips setup beams with no meterset (dicomexport #75), which
-# PregDos relies on for field labels and RTDOSE attribution.
-MINIMUM_DICOMEXPORT = (1, 5, 0)
+# Minimum dicomexport PregDos will compute with.  1.5.0 brought the field-numbering contract
+# -- output fields named by DICOM BeamNumber, setup beams without meterset skipped
+# (dicomexport #75) -- which PregDos relies on for field labels and RTDOSE attribution.
+# 1.5.1 corrected two catalogued range shifter thicknesses (dicomexport #92): an older
+# install computes a different range for CCB and WPE plans, and silently, since nothing in
+# the output says which catalog produced it.  That is a dose error, not an interface
+# mismatch, which is why the floor moves for a patch release.
+MINIMUM_DICOMEXPORT = (1, 5, 1)
 
 MARKER_DIR = Path("/etc/pregdos")
 
@@ -66,6 +73,77 @@ def _explicit(env_name: str) -> Optional[str]:
     return None
 
 
+# Printed by the probe shell between the site prologue and the command being measured, so a
+# `module load` that greets the user -- or a login profile that prints a banner -- cannot have
+# its chatter parsed as a TOPAS version.
+_PROBE_MARKER = "__pregdos_probe__"
+
+
+def _config() -> config.Config:
+    """The site config, or the built-in defaults when it cannot be read.
+
+    Nothing in this module raises (see the module docstring), and that has to hold for the
+    config file too.  ``pregdos-web`` validates it at startup and refuses to run on a bad
+    one, but an import-based deployment (``gunicorn pregdos.webserver:app``) never calls
+    ``main()`` -- and there, a malformed file should degrade the About page to "unknown"
+    rather than turn it into a 500.
+    """
+    try:
+        return config.load()
+    except config.ConfigError:
+        return config.Config()
+
+
+def _update_check_enabled() -> bool:
+    """Whether the About page may ask GitHub for a newer release.
+
+    Unlike everything else here, an unreadable config falls back to *disabled* rather than to
+    the built-in default of enabled: a file PregDos cannot parse is not permission to make an
+    outbound request, and on an airgapped node that request can only ever cost a timeout.
+    """
+    try:
+        return config.load().network.update_check
+    except config.ConfigError:
+        return False
+
+
+def _prologue() -> str:
+    """``[scheduler] prologue``: the shell source that puts TOPAS on PATH at a modules site.
+
+    Kept in step with :func:`executor._with_prologue` on purpose.  The About page is
+    provenance for a clinical report, so it must measure the TOPAS that will actually run,
+    not the one visible to the web process -- at a site where TOPAS lives behind
+    ``module load``, those are different, and the web process sees nothing at all.
+    """
+    return _config().scheduler.prologue.strip()
+
+
+def _shell_probe(command: str, timeout: int = 30) -> Tuple[int, str]:
+    """``(status, output)`` of ``command`` run in the shell that will run TOPAS.
+
+    Only reached when a prologue is configured: without one there is nothing to set up, and
+    the direct call is both cheaper and easier to reason about.
+    """
+    script = f"{_prologue()}\nprintf '%s\\n' {_PROBE_MARKER}\n{command}\n"
+    try:
+        proc = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return 127, ""
+    # No marker means the prologue died before the command ran -- a bad module name, say.
+    # Its own output is not an answer, so report nothing rather than something wrong.
+    if _PROBE_MARKER not in proc.stdout:
+        return proc.returncode or 127, ""
+    return proc.returncode, proc.stdout.split(_PROBE_MARKER, 1)[1].strip()
+
+
+def _resolve(binary: str) -> Optional[str]:
+    """Absolute path of ``binary`` as the shell that runs TOPAS resolves it, or None."""
+    if not _prologue():
+        return shutil.which(binary)
+    status, out = _shell_probe(f"command -v {shlex.quote(binary)}")
+    return out.splitlines()[0].strip() if status == 0 and out.strip() else None
+
+
 def parse_version(text: str) -> Optional[Tuple[int, ...]]:
     """Turn a reported version string into a comparable tuple, or None."""
     if not text:
@@ -77,7 +155,8 @@ def parse_version(text: str) -> Optional[Tuple[int, ...]]:
 
 
 def topas_bin() -> str:
-    return os.environ.get("TOPAS_BIN", "topas")
+    """``TOPAS_BIN``, else ``[paths] topas_bin``.  Mirrors executor.topas_bin."""
+    return config.env_or("TOPAS_BIN", _config().paths.topas_bin)
 
 
 @functools.lru_cache(maxsize=1)
@@ -91,14 +170,20 @@ def topas_version() -> str:
     if explicit:
         return explicit
 
-    binary = topas_bin()
-    if not shutil.which(binary):
+    binary = _resolve(topas_bin())
+    if not binary:
         return UNKNOWN
-    try:
-        proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return UNKNOWN
-    out = (proc.stdout or proc.stderr or "").strip()
+
+    if _prologue():
+        # 2>&1 because TOPAS is not consistent about which stream it prints to, and the
+        # marker has already separated this from anything the prologue said.
+        _, out = _shell_probe(f"{shlex.quote(binary)} --version 2>&1")
+    else:
+        try:
+            proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return UNKNOWN
+        out = (proc.stdout or proc.stderr or "").strip()
     return out.splitlines()[0].strip() if out else UNKNOWN
 
 
@@ -113,13 +198,19 @@ def geant4_version() -> str:
     if explicit:
         return explicit
 
-    if shutil.which("geant4-config"):
-        try:
-            proc = subprocess.run(["geant4-config", "--version"], capture_output=True, text=True, timeout=30)
-            if proc.returncode == 0 and proc.stdout.strip():
-                return proc.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            pass
+    geant4_config = _resolve("geant4-config")
+    if geant4_config:
+        if _prologue():
+            status, out = _shell_probe(f"{shlex.quote(geant4_config)} --version")
+            if status == 0 and out:
+                return out.splitlines()[0].strip()
+        else:
+            try:
+                proc = subprocess.run([geant4_config, "--version"], capture_output=True, text=True, timeout=30)
+                if proc.returncode == 0 and proc.stdout.strip():
+                    return proc.stdout.strip()
+            except (OSError, subprocess.SubprocessError):
+                pass
 
     for lib_dir in _linked_library_dirs():
         for entry in lib_dir.iterdir():
@@ -130,15 +221,21 @@ def geant4_version() -> str:
 
 def _linked_library_dirs():
     """Directories holding the Geant4 libraries TOPAS links against."""
-    binary = shutil.which(topas_bin())
+    binary = _resolve(topas_bin())
     if not binary:
         return
-    try:
-        proc = subprocess.run(["ldd", binary], capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return
+    # ldd resolves against LD_LIBRARY_PATH, which at a modules site is exactly what the
+    # prologue sets -- run it outside and every libG4 line reads "not found".
+    if _prologue():
+        _, output = _shell_probe(f"ldd {shlex.quote(binary)}")
+    else:
+        try:
+            proc = subprocess.run(["ldd", binary], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return
+        output = proc.stdout
     seen = set()
-    for line in proc.stdout.splitlines():
+    for line in output.splitlines():
         if "libG4" not in line or "=>" not in line:
             continue
         path = line.split("=>", 1)[1].strip().split(" ")[0]
@@ -161,6 +258,10 @@ def topas_warning() -> Optional[str]:
     """
     reported = topas_version()
     if reported == UNKNOWN:
+        if _prologue():
+            return ("TOPAS was not found on PATH, even with the [scheduler] prologue applied — "
+                    "simulations cannot run.  Check that the prologue names a module that exists "
+                    "and that it sources the module system's init script first.")
         return "TOPAS was not found on PATH — simulations cannot run."
 
     parsed = parse_version(reported)
@@ -248,11 +349,21 @@ def canonical_package_version(name: str, repo_root: Path | None = None) -> str:
     return f"{version}+{local}"
 
 
-@functools.lru_cache(maxsize=1)
 def latest_pregdos_release() -> str:
     """Latest GitHub release tag for PregDos, or ``"unknown"``.
 
-    This is deliberately best-effort and short-timeout: the About page must not become slow or
+    The ``[network] update_check`` gate lives here, *outside* the cache on
+    :func:`_fetch_latest_release`: inside it, the first call would pin its answer for the
+    lifetime of the process regardless of what the config says afterwards.
+    """
+    if not _update_check_enabled():
+        return UNKNOWN
+    return _fetch_latest_release()
+
+
+@functools.lru_cache(maxsize=1)
+def _fetch_latest_release() -> str:
+    """Ask GitHub.  Best-effort and short-timeout: the About page must not become slow or
     fail just because GitHub or the network is unavailable.
     """
     try:
@@ -288,7 +399,9 @@ def dicomexport_warning() -> Optional[str]:
     if parsed < MINIMUM_DICOMEXPORT:
         return (f"dicomexport {reported} is older than {minimum}: PregDos relies on the "
                 "BeamNumber field-output contract for field labels and RTDOSE attribution "
-                "(dicomexport #75).")
+                "(dicomexport #75), and on the corrected CCB and WPE range shifter "
+                "thicknesses (dicomexport #92) -- an older install computes a different "
+                "range for those centres.")
     return None
 
 

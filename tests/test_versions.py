@@ -10,7 +10,7 @@ from pregdos import versions
 
 def _clear_caches():
     # A test may have monkeypatched these with a plain function, which has no cache.
-    for fn in (versions.topas_version, versions.geant4_version, versions.latest_pregdos_release):
+    for fn in (versions.topas_version, versions.geant4_version, versions._fetch_latest_release):
         if hasattr(fn, "cache_clear"):
             fn.cache_clear()
 
@@ -55,15 +55,15 @@ def test_latest_pregdos_release_reads_github_tag(monkeypatch):
         def json(self):
             return {"tag_name": "v0.5.1"}
 
-    versions.latest_pregdos_release.cache_clear()
+    versions._fetch_latest_release.cache_clear()
     monkeypatch.setattr(versions.requests, "get", lambda *args, **kwargs: FakeResponse())
 
     assert versions.latest_pregdos_release() == "v0.5.1"
-    versions.latest_pregdos_release.cache_clear()
+    versions._fetch_latest_release.cache_clear()
 
 
 def test_latest_pregdos_release_degrades_on_network_error(monkeypatch):
-    versions.latest_pregdos_release.cache_clear()
+    versions._fetch_latest_release.cache_clear()
 
     def boom(*args, **kwargs):
         raise versions.requests.RequestException("offline")
@@ -71,7 +71,7 @@ def test_latest_pregdos_release_degrades_on_network_error(monkeypatch):
     monkeypatch.setattr(versions.requests, "get", boom)
 
     assert versions.latest_pregdos_release() == versions.UNKNOWN
-    versions.latest_pregdos_release.cache_clear()
+    versions._fetch_latest_release.cache_clear()
 
 
 def test_newer_pregdos_release_compares_tags_to_installed_versions():
@@ -109,6 +109,110 @@ def test_topas_version_survives_a_broken_binary(monkeypatch):
 
     monkeypatch.setattr(versions.subprocess, "run", boom)
     assert versions.topas_version() == versions.UNKNOWN     # must not raise
+
+
+# --- TOPAS behind an environment module -------------------------------------
+#
+# These run a real /bin/sh rather than mocking one: the whole point of the prologue path is
+# that the shell resolves TOPAS the way the executor's shell will, so a mocked shell would
+# test nothing.  A stub script on a PATH the prologue sets stands in for `module load`.
+
+def _fake_topas(tmp_path, prints="4.2.p03"):
+    """A stub `topas` that answers --version, reachable only after the prologue runs."""
+    bindir = tmp_path / "opt" / "bin"
+    bindir.mkdir(parents=True)
+    stub = bindir / "topas"
+    stub.write_text(f'#!/bin/sh\necho "{prints}"\n')
+    stub.chmod(0o755)
+    return bindir
+
+
+def test_topas_behind_a_module_is_found_through_the_prologue(tmp_path, write_config):
+    """The About page must report the TOPAS that will run, not the one the web process sees."""
+    bindir = _fake_topas(tmp_path)
+    write_config(f'[scheduler]\nprologue = """\nPATH={bindir}:$PATH\nexport PATH\n"""\n')
+
+    assert versions.topas_version() == "4.2.p03"
+    assert versions.topas_warning() is None      # 4.2.p03 parses to (4, 2, 3): exactly the floor
+
+
+def test_prologue_chatter_is_not_parsed_as_a_version(tmp_path, write_config):
+    """`module load` and login banners print; none of it is a TOPAS version."""
+    bindir = _fake_topas(tmp_path)
+    write_config(
+        f'[scheduler]\nprologue = """\n'
+        f'echo "Loading opentopas/4.2"\necho "warning: banner" >&2\n'
+        f'PATH={bindir}:$PATH\nexport PATH\n"""\n'
+    )
+
+    assert versions.topas_version() == "4.2.p03"
+
+
+def test_a_prologue_that_fails_reports_topas_as_missing(write_config):
+    """A typo'd module name must read as "no TOPAS", not as a version invented from the error.
+
+    `topas_bin` names something absent on purpose: a failing prologue leaves the inherited
+    PATH intact, so on a machine that also has its own TOPAS the probe would legitimately
+    find *that* one -- which is the honest answer, since that is what would run.
+    """
+    write_config('[paths]\ntopas_bin = "topas-definitely-absent"\n'
+                 '[scheduler]\nprologue = """\nmodule load definitely-not-here\n"""\n')
+
+    assert versions.topas_version() == versions.UNKNOWN
+    warning = versions.topas_warning()
+    assert "not found on PATH" in warning
+    assert "prologue" in warning        # says what was tried, so the admin knows where to look
+
+
+def test_no_prologue_keeps_the_direct_probe(monkeypatch):
+    """Sites without a prologue must not pay for, or be exposed to, a shell."""
+    monkeypatch.setattr(versions.shutil, "which", lambda n: "/usr/bin/topas")
+    calls = []
+
+    def record(argv, *a, **k):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "4.2.p3\n", "")
+
+    monkeypatch.setattr(versions.subprocess, "run", record)
+    assert versions.topas_version() == "4.2.p3"
+    assert calls == [["/usr/bin/topas", "--version"]]      # no /bin/sh anywhere
+
+
+# --- a config file this module cannot read -----------------------------------
+#
+# `pregdos-web` validates the config at startup and refuses to run on a bad one, so these
+# only matter for an import-based deployment (gunicorn pregdos.webserver:app), which never
+# calls main().  There, "unknown" is the right answer and a 500 is not.
+
+@pytest.fixture
+def broken_config(tmp_path, monkeypatch):
+    """A config file that exists and does not parse."""
+    path = tmp_path / "broken.toml"
+    path.write_text("[paths\nwork_dir = ")
+    monkeypatch.setenv("PREGDOS_CONFIG", str(path))
+    versions.config.reset_cache()
+    yield path
+    versions.config.reset_cache()
+
+
+def test_unreadable_config_does_not_break_version_discovery(broken_config, monkeypatch):
+    monkeypatch.setattr(versions.shutil, "which", lambda n: None)
+    assert versions.topas_bin() == "topas"            # the built-in default
+    assert versions.topas_version() == versions.UNKNOWN
+    assert versions._prologue() == ""
+
+
+def test_unreadable_config_never_reaches_out_to_github(broken_config, monkeypatch):
+    """A file PregDos cannot parse is not permission to make an outbound request.
+
+    Note this is the opposite of the built-in default, which is enabled: on an airgapped
+    node the request can only cost a timeout, so the safe fallback is off.
+    """
+    def forbidden(*a, **k):
+        raise AssertionError("asked GitHub despite an unreadable config")
+
+    monkeypatch.setattr(versions.requests, "get", forbidden)
+    assert versions.latest_pregdos_release() == versions.UNKNOWN
 
 
 # --- geant4_version ---
@@ -188,13 +292,13 @@ def test_g4_data_dir_missing_is_flagged(monkeypatch, tmp_path):
 
 def test_submit_blocker_none_for_supported_topas(monkeypatch):
     _with_version(monkeypatch, "4.2.p3")
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.0")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
     assert versions.submit_blocker() is None
 
 
 def test_submit_blocker_blocks_unsupported_topas(monkeypatch):
     _with_version(monkeypatch, "4.1.p0")
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.0")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
     assert "#49" in versions.submit_blocker()
 
 
@@ -202,7 +306,7 @@ def test_submit_blocker_does_not_block_unknown_topas(monkeypatch):
     """SLURM runs TOPAS on a compute node, so the webserver not finding it is not a reason
     to refuse -- the version is simply unknown here."""
     _with_version(monkeypatch, versions.UNKNOWN)
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.0")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
     assert versions.submit_blocker() is None
 
 
@@ -218,7 +322,7 @@ def test_about_page_reports_versions(monkeypatch):
     from pregdos.webserver import app
     _with_version(monkeypatch, "4.2.p3")
     monkeypatch.setattr(versions, "geant4_version", lambda: "11.3.2")
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.0")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
     monkeypatch.setattr(versions, "latest_pregdos_release", lambda: "v0.5.0")
     app.config["TESTING"] = True
     with app.test_client() as c:
@@ -383,10 +487,10 @@ def test_about_page_warns_about_missing_g4_data(monkeypatch, tmp_path):
     assert "missing" in body and "restart it" in body
 
 
-# --- dicomexport minimum (dicomexport #75: BeamNumber field output) ---
+# --- dicomexport minimum (#75: BeamNumber field output; #92: corrected RS thicknesses) ---
 
 def test_dicomexport_at_the_minimum_is_accepted(monkeypatch):
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.0")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
     assert versions.dicomexport_warning() is None
 
 
@@ -415,5 +519,54 @@ def test_an_old_dicomexport_blocks_submission(monkeypatch):
 def test_a_current_dicomexport_does_not_block_submission(monkeypatch):
     _with_version(monkeypatch, "4.2.p3")
     monkeypatch.delenv("TOPAS_G4_DATA_DIR", raising=False)
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.0")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
     assert versions.submit_blocker() is None
+
+
+# --- [network] update_check: the airgapped switch ---
+
+def test_update_check_disabled_never_touches_the_network(monkeypatch, write_config, mocker):
+    write_config("[network]\nupdate_check = false\n")
+    get = mocker.patch.object(versions.requests, "get")
+
+    assert versions.latest_pregdos_release() == versions.UNKNOWN
+    get.assert_not_called()
+
+
+def test_update_check_enabled_by_default_still_asks(monkeypatch, mocker):
+    versions._fetch_latest_release.cache_clear()
+    mocker.patch.object(
+        versions.requests, "get",
+        return_value=mocker.Mock(raise_for_status=lambda: None, json=lambda: {"tag_name": "v9.9.9"}),
+    )
+    assert versions.latest_pregdos_release() == "v9.9.9"
+    versions._fetch_latest_release.cache_clear()
+
+
+def test_update_check_gate_is_not_pinned_by_the_cache(monkeypatch, write_config, mocker):
+    """The gate sits outside the lru_cache, so a first enabled call cannot pin the answer."""
+    versions._fetch_latest_release.cache_clear()
+    mocker.patch.object(
+        versions.requests, "get",
+        return_value=mocker.Mock(raise_for_status=lambda: None, json=lambda: {"tag_name": "v9.9.9"}),
+    )
+    assert versions.latest_pregdos_release() == "v9.9.9"
+
+    write_config("[network]\nupdate_check = false\n")
+    assert versions.latest_pregdos_release() == versions.UNKNOWN
+    versions._fetch_latest_release.cache_clear()
+
+
+def test_about_page_says_the_update_check_is_disabled(monkeypatch, write_config, mocker):
+    """Without this the airgapped site sees no badge at all and cannot tell it took effect."""
+    from pregdos.webserver import app
+
+    write_config("[network]\nupdate_check = false\n")
+    get = mocker.patch.object(versions.requests, "get")
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        body = c.get("/about").data.decode()
+
+    assert "update check disabled" in body
+    assert "update available" not in body
+    get.assert_not_called()

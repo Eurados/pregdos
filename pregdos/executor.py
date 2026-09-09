@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from . import portable
+from . import config, portable
 from .textio import read_text_lenient
 
 # Backend identifiers, also written into run.json.
@@ -62,8 +62,13 @@ LOCAL_SCHEDULER_LOCK = ".pregdos_local_scheduler.lock"
 
 
 def topas_bin() -> str:
-    """Path or name of the TOPAS executable.  Read lazily so tests can patch the env."""
-    return os.environ.get("TOPAS_BIN", "topas")
+    """Path or name of the TOPAS executable.
+
+    ``TOPAS_BIN`` wins over ``[paths] topas_bin``.  Read lazily -- never cached -- so tests
+    can patch the environment and a site can override the config file.  (versions.topas_bin
+    is the same resolver; the duplication predates the config file.)
+    """
+    return config.env_or("TOPAS_BIN", config.load().paths.topas_bin)
 
 
 def _requested_backend() -> str:
@@ -110,7 +115,41 @@ def _cpus_per_task(topas_file: str) -> int:
     """
     if Path(topas_file).name == "structure_mask_prepass.txt":
         return 1
+    # Above the config lookup deliberately: a site setting cpus_per_task=32 must not inflate
+    # a job that rasterises masks on one thread and would hold 31 cores idle.
+    configured = config.load().scheduler.cpus_per_task
+    if configured > 0:
+        return configured
     return os.cpu_count() or 1
+
+
+# `i:Ts/NumberOfThreads = N` as dicomexport writes it, with its own spacing.
+_THREADS_RE = re.compile(r"^([ \t]*i:Ts/NumberOfThreads[ \t]*=[ \t]*)(-?\d+)", re.MULTILINE)
+
+
+def set_thread_count(path: str | os.PathLike, threads: int) -> None:
+    """Pin one TOPAS input to ``threads`` worker threads.
+
+    dicomexport writes ``NumberOfThreads = 0``, and 0 means *every core the machine has* --
+    which is not the same as the cores the scheduler gave this job.  Under SLURM the job is
+    confined to its `--cpus-per-task` by cgroup, but `hardware_concurrency` still reports the
+    whole machine, so TOPAS starts one worker per core and they timeshare the allocation.
+    Two fields on one node then run at double subscription, and because Geant4 allocates
+    scoring arrays *per thread*, each also needs twice the memory it should -- which on a
+    large out-of-field grid is how a field dies at its first history rather than slowly.
+
+    Rewritten in place, never appended twice: TOPAS rejects a parameter defined more than
+    once, so a file that already carries the key has it replaced.
+    """
+    path = Path(path)
+    content = read_text_lenient(path)
+    replacement, count = _THREADS_RE.subn(rf"\g<1>{threads}", content, count=1)
+    if count == 0:
+        # dicomexport always writes the key, but a hand-made input may not.  Order does not
+        # matter to TOPAS, so appending is safe -- and still only ever one definition.
+        replacement = content + f"\ni:Ts/NumberOfThreads = {threads}\n"
+    if replacement != content:
+        path.write_text(replacement)
 
 
 def field_command(topas_file: str) -> str:
@@ -124,6 +163,24 @@ def field_command(topas_file: str) -> str:
         f"{q(topas_bin())} {q(topas_file)} > {q(log_name(topas_file))} 2>&1; "
         f"echo $? > {q(exit_code_name(topas_file))}"
     )
+
+
+def _with_prologue(script: str) -> str:
+    """Prefix a whole shell script with the site's TOPAS environment setup.
+
+    Applied to the *composed* script, not to :func:`field_command`, and that distinction is
+    the point: the local backend chains one ``field_command`` per field into a single ``sh
+    -c``, so folding the prologue in there would re-run the site's ``module load`` once per
+    field in the same shell -- wasteful for modules, and wrong for anything that is not
+    idempotent.
+
+    Applies to both backends.  ``select_backend`` falls back to local execution whenever
+    ``sbatch`` is off PATH, and a prologue that silently stopped applying exactly then would
+    be a trap.  Not quoted: ``prologue`` is shell *source* by design, which is why the config
+    file has to be root-owned.
+    """
+    prologue = config.load().scheduler.prologue.strip()
+    return f"{prologue}\n{script}" if prologue else script
 
 
 # ---------------------------------------------------------------------------
@@ -201,25 +258,74 @@ def read_run_metadata(run_dir: str | os.PathLike) -> Optional[RunInfo]:
 # Submission
 # ---------------------------------------------------------------------------
 
+def _submit_as_user(configured: str) -> str:
+    """Which account to submit as, or "" to submit as whoever is running.
+
+    ``"auto"`` reproduces the shipped container: SLURM executes jobs as the ``slurm`` user, so
+    when PregDos runs as root we drop privileges to it.  A site SLURM wants ``""`` instead --
+    PregDos has its own service account there and must submit as itself.
+    """
+    configured = configured.strip()
+    return "slurm" if configured == "auto" else configured
+
+
+def submit_user() -> str:
+    """The account ``sbatch`` will run as, or ``""`` when PregDos submits as itself.
+
+    Public because the caller has to prepare the run directory for that account: the web
+    process creates it, and whoever submits must be able to write TOPAS output into it.
+    """
+    return _submit_as_user(config.load().scheduler.submit_as_user)
+
+
+def _job_name(run_dir: Path, topas_file: str) -> str:
+    """``<study>:<field>``, which is what ``squeue`` shows instead of sbatch's default.
+
+    ``--wrap`` names every job ``wrap``, so a queue holding three fields of two studies is
+    six identical rows -- unreadable exactly when it matters, deciding what to cancel.  The
+    submitting user is already a column, so the name carries only what is not.
+    """
+    study = run_dir.parent.name if run_dir.name.startswith("run_") else run_dir.name
+    stem = Path(topas_file).stem
+    # `structure_mask_prepass` is longer than the rest of the name put together, and squeue
+    # truncates from the right by default.
+    field = "prepass" if topas_file == "structure_mask_prepass.txt" else stem.removeprefix("topas_")
+    return f"{study}:{field}"
+
+
 def _sbatch_argv(run_dir: Path, topas_file: str) -> List[str]:
     """Build the sbatch invocation for one field.
 
-    SLURM executes jobs as the ``slurm`` user, so when we are root (as in the container)
-    we drop privileges with ``runuser``.  Outside the container ``runuser`` is typically
-    absent from PATH and we are not root anyway, so we call ``sbatch`` directly.
+    Every ``[scheduler]`` string is optional: an unset partition, account, QoS, time limit or
+    memory means the flag is left off entirely, so SLURM applies its own site default.  The
+    optional flags go in the middle because both ends are load-bearing -- ``sbatch`` (or the
+    ``runuser`` prefix) must come first, and ``--wrap`` must come last.
     """
+    sched = config.load().scheduler
     argv: List[str] = []
-    runuser = shutil.which("runuser") or "/usr/sbin/runuser"
-    if portable.running_as_root() and os.path.exists(runuser):
-        argv += [runuser, "-u", "slurm", "--"]
+    submit_user = _submit_as_user(sched.submit_as_user)
+    if submit_user and portable.running_as_root():
+        runuser = shutil.which("runuser") or "/usr/sbin/runuser"
+        if os.path.exists(runuser):
+            argv += [runuser, "-u", submit_user, "--"]
     argv += [
         "sbatch",
         "--export=ALL",
         f"--cpus-per-task={_cpus_per_task(topas_file)}",
         f"--chdir={run_dir}",
         f"--output={run_dir}/slurm-%j.out",
-        "--wrap", field_command(topas_file),
+        f"--job-name={_job_name(run_dir, topas_file)}",
     ]
+    for flag, value in (
+        ("partition", sched.partition),
+        ("account", sched.account),
+        ("qos", sched.qos),
+        ("time", sched.walltime),
+        ("mem", sched.memory),
+    ):
+        if value.strip():
+            argv.append(f"--{flag}={value.strip()}")
+    argv += ["--wrap", _with_prologue(field_command(topas_file))]
     return argv
 
 
@@ -283,6 +389,8 @@ def _launch_local_worker(run_dir: Path, studies_root: Path, info: RunInfo) -> No
     """
     script = "; ".join(field_command(f.topas_file) for f in info.fields)
     script = f"{script}; {_scheduler_argv(studies_root)}"
+    # Once for the whole chained script, not once per field -- see _with_prologue.
+    script = _with_prologue(script)
     proc = subprocess.Popen(
         ["sh", "-c", script],
         cwd=str(run_dir),
@@ -396,6 +504,15 @@ def submit_run(run_dir: str | os.PathLike, topas_files: List[str]) -> RunInfo:
     run_dir = Path(run_dir)
     backend = select_backend()
     info = RunInfo(backend=backend, submitted=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    # Do this here rather than at conversion time: the thread count has to match the CPUs
+    # this run is about to be given, and `cpus_per_task` can change between converting a
+    # study and submitting it.
+    for topas_file in topas_files:
+        try:
+            set_thread_count(run_dir / topas_file, _cpus_per_task(topas_file))
+        except OSError as exc:
+            info.errors.append(f"could not set the thread count in {topas_file}: {exc}")
 
     if backend == SLURM:
         _submit_slurm(run_dir, topas_files, info)

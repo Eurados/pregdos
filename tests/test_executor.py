@@ -583,3 +583,222 @@ def test_field_progress_carries_the_failure_reason(tmp_path):
 def test_field_progress_has_no_failure_reason_while_running(tmp_path):
     progress = executor.field_progress(tmp_path, "topas_field01.txt")
     assert progress.status == executor.RUNNING and progress.failure is None
+
+
+# --- site SLURM: the [scheduler] config section (#89, #96) ---
+
+def _sbatch_argv_with(config_text, run_dir, monkeypatch, mocker, write_config, topas_file="topas_field01.txt"):
+    """Submit one field under the given config and return the argv sbatch was called with."""
+    write_config(config_text)
+    monkeypatch.setenv("PREGDOS_EXECUTOR", "slurm")
+    run = mocker.patch("pregdos.executor.subprocess.run",
+                       return_value=mocker.Mock(returncode=0, stdout="Submitted batch job 1\n", stderr=""))
+    mocker.patch("pregdos.executor.os.geteuid", return_value=1000)
+    executor.submit_run(run_dir, [topas_file])
+    return run.call_args[0][0]
+
+
+def test_scheduler_flags_are_omitted_when_unset(run_dir, monkeypatch, mocker, write_config):
+    """An empty partition means SLURM applies its own site default, not --partition=''."""
+    argv = _sbatch_argv_with("[scheduler]\n", run_dir, monkeypatch, mocker, write_config)
+    joined = " ".join(argv)
+    for flag in ("--partition", "--account", "--qos", "--time", "--mem="):
+        assert flag not in joined
+
+
+@pytest.mark.parametrize("key, value, expected", [
+    ("partition", "clinical", "--partition=clinical"),
+    ("account", "radonc", "--account=radonc"),
+    ("qos", "high", "--qos=high"),
+    ("walltime", "04:00:00", "--time=04:00:00"),
+    ("memory", "16G", "--mem=16G"),
+])
+def test_scheduler_flags_reach_sbatch(run_dir, monkeypatch, mocker, write_config, key, value, expected):
+    argv = _sbatch_argv_with(f'[scheduler]\n{key} = "{value}"\n', run_dir, monkeypatch, mocker, write_config)
+    assert expected in argv
+
+
+def test_sbatch_argv_shape_survives_every_optional_flag(run_dir, monkeypatch, mocker, write_config):
+    """sbatch first and --wrap last are both load-bearing; optional flags go between."""
+    argv = _sbatch_argv_with(
+        '[scheduler]\npartition = "clinical"\naccount = "radonc"\nqos = "high"\n'
+        'walltime = "04:00:00"\nmemory = "16G"\n',
+        run_dir, monkeypatch, mocker, write_config,
+    )
+    assert argv[0] == "sbatch"
+    assert argv[-2] == "--wrap"
+    assert argv[-1] == executor.field_command("topas_field01.txt")
+
+
+def test_cpus_per_task_comes_from_config(run_dir, monkeypatch, mocker, write_config):
+    argv = _sbatch_argv_with("[scheduler]\ncpus_per_task = 8\n", run_dir, monkeypatch, mocker, write_config)
+    assert "--cpus-per-task=8" in argv
+
+
+def test_cpus_per_task_zero_falls_back_to_cpu_count(write_config, monkeypatch):
+    write_config("[scheduler]\ncpus_per_task = 0\n")
+    monkeypatch.setattr(executor.os, "cpu_count", lambda: 12)
+    assert executor._cpus_per_task("topas_field01.txt") == 12
+
+
+def test_prepass_stays_single_threaded_whatever_the_site_configures(write_config):
+    """A site asking for 32 CPUs must not inflate a single-threaded mask rasterisation."""
+    write_config("[scheduler]\ncpus_per_task = 32\n")
+    assert executor._cpus_per_task("structure_mask_prepass.txt") == 1
+    assert executor._cpus_per_task("topas_field01.txt") == 32
+
+
+# --- submit identity ---
+
+def test_submit_as_user_empty_never_drops_privileges(run_dir, monkeypatch, mocker, write_config):
+    """The site-SLURM case: PregDos submits as its own service account, even if it is root."""
+    write_config('[scheduler]\nsubmit_as_user = ""\n')
+    monkeypatch.setenv("PREGDOS_EXECUTOR", "slurm")
+    run = mocker.patch("pregdos.executor.subprocess.run",
+                       return_value=mocker.Mock(returncode=0, stdout="Submitted batch job 1\n", stderr=""))
+    mocker.patch("pregdos.executor.os.geteuid", return_value=0)
+    mocker.patch("pregdos.executor.shutil.which", return_value="/usr/sbin/runuser")
+
+    executor.submit_run(run_dir, ["topas_field01.txt"])
+    assert run.call_args[0][0][0] == "sbatch"
+
+
+def test_submit_as_user_names_an_account(run_dir, monkeypatch, mocker, write_config):
+    write_config('[scheduler]\nsubmit_as_user = "pregdos"\n')
+    monkeypatch.setenv("PREGDOS_EXECUTOR", "slurm")
+    run = mocker.patch("pregdos.executor.subprocess.run",
+                       return_value=mocker.Mock(returncode=0, stdout="Submitted batch job 1\n", stderr=""))
+    mocker.patch("pregdos.executor.os.geteuid", return_value=0)
+    mocker.patch("pregdos.executor.shutil.which", return_value="/usr/sbin/runuser")
+
+    executor.submit_run(run_dir, ["topas_field01.txt"])
+    assert run.call_args[0][0][:4] == ["/usr/sbin/runuser", "-u", "pregdos", "--"]
+
+
+# --- the module-load prologue ---
+
+PROLOGUE = '[scheduler]\nprologue = ". /etc/profile.d/modules.sh\\nmodule load topas"\n'
+
+
+def test_prologue_heads_the_sbatch_wrap(run_dir, monkeypatch, mocker, write_config):
+    argv = _sbatch_argv_with(PROLOGUE, run_dir, monkeypatch, mocker, write_config)
+    assert argv[-1].startswith(". /etc/profile.d/modules.sh\nmodule load topas\n")
+    assert argv[-1].endswith(executor.field_command("topas_field01.txt"))
+
+
+def test_prologue_runs_once_per_local_run_not_once_per_field(run_dir, monkeypatch, mocker, write_config):
+    """The property that motivated _with_prologue: the local backend chains fields into one sh -c."""
+    write_config(PROLOGUE)
+    monkeypatch.setenv("PREGDOS_EXECUTOR", "local")
+    popen = mocker.patch("pregdos.executor.subprocess.Popen",
+                         return_value=mocker.Mock(pid=4242))
+
+    executor.submit_run(run_dir, ["topas_field01.txt", "topas_field02.txt"])
+
+    script = popen.call_args[0][0][2]      # ["sh", "-c", script]
+    assert script.count("module load topas") == 1
+    assert script.startswith(". /etc/profile.d/modules.sh\nmodule load topas\n")
+    assert "topas_field01.txt" in script and "topas_field02.txt" in script
+
+
+def test_no_prologue_leaves_the_command_byte_identical(run_dir, monkeypatch, mocker, write_config):
+    argv = _sbatch_argv_with("[scheduler]\n", run_dir, monkeypatch, mocker, write_config)
+    assert argv[-1] == executor.field_command("topas_field01.txt")
+    assert executor._with_prologue("anything") == "anything"
+
+
+# ---------------------------------------------------------------------------
+# Thread count: what the file asks for must match what the scheduler granted
+# ---------------------------------------------------------------------------
+
+DICOMEXPORT_SETUP = """\
+i:Ts/ShowHistoryCountAtInterval          = 100000
+i:Ts/NumberOfThreads                     = 0
+b:Ts/ShowCPUTime                         = "True"
+"""
+
+
+def test_zero_threads_becomes_the_granted_cpu_count(tmp_path):
+    """0 means "every core on the machine", which is not what SLURM allocated."""
+    path = tmp_path / "topas_field01.txt"
+    path.write_text(DICOMEXPORT_SETUP)
+
+    executor.set_thread_count(path, 16)
+
+    assert "i:Ts/NumberOfThreads                     = 16" in path.read_text()
+    assert "= 0" not in path.read_text()
+
+
+def test_thread_count_is_replaced_not_duplicated(tmp_path):
+    """TOPAS rejects a parameter defined twice, so the key must be rewritten in place."""
+    path = tmp_path / "topas_field01.txt"
+    path.write_text(DICOMEXPORT_SETUP)
+
+    executor.set_thread_count(path, 16)
+    executor.set_thread_count(path, 30)
+
+    assert path.read_text().count("i:Ts/NumberOfThreads") == 1
+    assert "= 30" in path.read_text()
+
+
+def test_thread_count_is_appended_when_the_key_is_absent(tmp_path):
+    path = tmp_path / "hand_written.txt"
+    path.write_text("d:Ge/World/HLX = 1.0 m\n")
+
+    executor.set_thread_count(path, 8)
+
+    text = path.read_text()
+    assert text.count("i:Ts/NumberOfThreads") == 1
+    assert "d:Ge/World/HLX" in text            # the original content survives
+
+
+def test_submit_pins_each_field_to_its_own_allocation(run_dir, monkeypatch, write_config):
+    """The pre-pass is single-threaded; the fields get what cpus_per_task grants."""
+    monkeypatch.setenv("PREGDOS_EXECUTOR", "local")
+    monkeypatch.setenv("TOPAS_BIN", "true")
+    write_config("[scheduler]\ncpus_per_task = 16\n")
+    prepass = run_dir / "structure_mask_prepass.txt"
+    prepass.write_text(DICOMEXPORT_SETUP)
+    (run_dir / "topas_field01.txt").write_text(DICOMEXPORT_SETUP)
+
+    executor.submit_run(run_dir, ["structure_mask_prepass.txt", "topas_field01.txt"])
+
+    assert "NumberOfThreads                     = 1\n" in prepass.read_text()
+    assert "NumberOfThreads                     = 16\n" in (run_dir / "topas_field01.txt").read_text()
+
+
+def test_thread_count_follows_the_config_at_submit_time(run_dir, monkeypatch, write_config):
+    """cpus_per_task can change between converting a study and submitting it."""
+    monkeypatch.setenv("PREGDOS_EXECUTOR", "local")
+    monkeypatch.setenv("TOPAS_BIN", "true")
+    (run_dir / "topas_field01.txt").write_text(DICOMEXPORT_SETUP)
+    write_config("[scheduler]\ncpus_per_task = 30\n")
+
+    executor.submit_run(run_dir, ["topas_field01.txt"])
+
+    assert "= 30" in (run_dir / "topas_field01.txt").read_text()
+
+
+# ---------------------------------------------------------------------------
+# Job names: `squeue` has to be readable with more than one run queued
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("topas_file, expected", [
+    ("topas_field02.txt", "DCPT_headphantom:field02"),
+    ("structure_mask_prepass.txt", "DCPT_headphantom:prepass"),
+])
+def test_job_name_identifies_the_study_and_the_field(tmp_path, topas_file, expected):
+    run_dir = tmp_path / "DCPT_headphantom" / "run_20260909_195717"
+    assert executor._job_name(run_dir, topas_file) == expected
+
+
+def test_job_name_falls_back_to_the_directory_itself(tmp_path):
+    """A run directory that is not under a study dir still names something useful."""
+    assert executor._job_name(tmp_path / "loose_run", "topas_field01.txt") == "loose_run:field01"
+
+
+def test_sbatch_is_given_the_job_name(tmp_path):
+    run_dir = tmp_path / "study" / "run_1"
+    argv = executor._sbatch_argv(run_dir, "topas_field01.txt")
+    assert "--job-name=study:field01" in argv
+    assert argv[-2] == "--wrap"          # --wrap stays last
