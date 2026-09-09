@@ -1297,7 +1297,7 @@ def main(argv: list[str] | None = None):
 
     # Read the certificate before binding, for the same reason the config is validated first:
     # a missing file should name itself, not surface as a Werkzeug traceback on the first
-    # HTTPS request.  config._validate_combinations has already refused half a pair.
+    # HTTPS request.  config._validate_values has already refused half a pair.
     ssl_context = None
     if cfg.server.ssl_cert:
         for role, value in (("ssl_cert", cfg.server.ssl_cert), ("ssl_key", cfg.server.ssl_key)):

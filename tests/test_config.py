@@ -252,6 +252,30 @@ def test_a_tls_pair_split_across_the_two_files_is_accepted(tmp_path, monkeypatch
     assert config.load().server.ssl_key == "/etc/pregdos/key.pem"
 
 
+@pytest.mark.parametrize("body, key", [
+    ("[paths]\ndicomexport_timeout = -5\n", "dicomexport_timeout"),
+    ("[scheduler]\ncpus_per_task = -1\n", "cpus_per_task"),
+])
+def test_negative_counts_are_rejected_with_what_zero_means(write_config, body, key):
+    """The type check passes -- these are integers -- but the value degrades silently.
+
+    A negative timeout makes every conversion die at once claiming it "did not finish within
+    -5 s"; a negative CPU count is simply ignored in favour of every core on the machine.
+    """
+    write_config(body)
+    with pytest.raises(config.ConfigError, match=f"{key}: -"):
+        config.load()
+
+
+@pytest.mark.parametrize("body", [
+    "[paths]\ndicomexport_timeout = 0\n",       # documented: wait forever
+    "[scheduler]\ncpus_per_task = 0\n",         # documented: as many as the host reports
+])
+def test_zero_stays_meaningful(write_config, body):
+    write_config(body)
+    config.load()      # raises if zero was caught up in the negativity check
+
+
 @pytest.mark.parametrize("port", [0, -1, 65536])
 def test_port_outside_the_valid_range_is_an_error(write_config, port):
     write_config(f"[server]\nport = {port}\n")

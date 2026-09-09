@@ -224,17 +224,33 @@ def _read_file(path: Path, must_exist: bool) -> Dict[str, Dict[str, Any]]:
     return parsed
 
 
-def _validate_combinations(cfg: Config, sources: List[Path]) -> None:
-    """Checks that span more than one key, and so cannot live in the per-key validator above.
+def _validate_values(cfg: Config, sources: List[Path]) -> None:
+    """Checks the per-key validator cannot express: ranges, and pairs of keys.
 
-    Named separately from :func:`_read_file` because the two halves of a pair may legitimately
+    Runs on the merged result rather than per file.  The two halves of a pair may legitimately
     arrive from different files -- the system file and the user one merge per key -- so this
-    can only run on the merged result, and can only name the files as a set.
+    can only name the files as a set.
+
+    The per-key validator above enforces *types*, which is what catches a typo.  It cannot
+    catch a value of the right type that is meaningless, and every one of those below reaches
+    somewhere it degrades badly rather than loudly: a negative timeout kills each conversion
+    at once claiming it "did not finish within -5 s", and a negative CPU count quietly means
+    "every core on the machine".
     """
     where = ", ".join(str(p) for p in sources)
 
     if not 1 <= cfg.server.port <= 65535:
         raise ConfigError(f"{where}: [server] port: {cfg.server.port} is not a valid port (1-65535)")
+
+    for section, key, value, meaning_of_zero in (
+        ("paths", "dicomexport_timeout", cfg.paths.dicomexport_timeout, "wait forever"),
+        ("scheduler", "cpus_per_task", cfg.scheduler.cpus_per_task, "use every core this machine reports"),
+    ):
+        if value < 0:
+            raise ConfigError(
+                f"{where}: [{section}] {key}: {value} is negative. Use a positive value, "
+                f"or 0 to {meaning_of_zero}."
+            )
 
     # Half a TLS pair is the dangerous case: Flask would fall back to plain HTTP, and the
     # admin who wrote one line of two would have no reason to look.  Refuse instead.
@@ -259,7 +275,7 @@ def load() -> Config:
         for section, values in _read_file(path, must_exist).items():
             merged.setdefault(section, {}).update(values)
     cfg = Config(**{name: cls(**merged.get(name, {})) for name, cls in _SECTIONS.items()})
-    _validate_combinations(cfg, [path for path, _ in config_files()])
+    _validate_values(cfg, [path for path, _ in config_files()])
     return cfg
 
 

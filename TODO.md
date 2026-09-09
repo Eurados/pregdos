@@ -49,6 +49,12 @@ OpenTOPAS behind `module load opentopas/4.2`).  This branch stays open until the
   (`gunicorn pregdos.webserver:app`) never calls `main()`, and there `/about` would 500
   instead of degrading to "unknown".  Pre-existing, surfaced by this branch putting
   `config.load()` on that path.  Not a merge blocker; fix with #90 if not before.
+- [ ] **A bad config under `$PREGDOS_CONFIG` fails as a traceback, not as a message.**
+  `main()` catches `ConfigError` and turns it into a clean `parser.error`, but only for
+  `--config`: with the environment variable set, the import-time `_apply_config()` has
+  already failed by the time `main()` runs, so the site sees a stack trace whose last line
+  happens to carry the real message.  The systemd unit sets `PREGDOS_CONFIG`, so this is the
+  path a real deployment takes.  Same root as the item above -- config is read at import.
 - [x] **The listen address is hard-coded** — `webserver.main` ends in
   `app.run(host="0.0.0.0", port=5000)` with no flag and no config key.  The DCPT host already
   runs an unrelated Flask app on 5000, so PregDos cannot start there at all; the workaround is
