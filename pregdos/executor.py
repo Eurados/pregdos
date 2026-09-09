@@ -278,6 +278,21 @@ def submit_user() -> str:
     return _submit_as_user(config.load().scheduler.submit_as_user)
 
 
+def _job_name(run_dir: Path, topas_file: str) -> str:
+    """``<study>:<field>``, which is what ``squeue`` shows instead of sbatch's default.
+
+    ``--wrap`` names every job ``wrap``, so a queue holding three fields of two studies is
+    six identical rows -- unreadable exactly when it matters, deciding what to cancel.  The
+    submitting user is already a column, so the name carries only what is not.
+    """
+    study = run_dir.parent.name if run_dir.name.startswith("run_") else run_dir.name
+    stem = Path(topas_file).stem
+    # `structure_mask_prepass` is longer than the rest of the name put together, and squeue
+    # truncates from the right by default.
+    field = "prepass" if topas_file == "structure_mask_prepass.txt" else stem.removeprefix("topas_")
+    return f"{study}:{field}"
+
+
 def _sbatch_argv(run_dir: Path, topas_file: str) -> List[str]:
     """Build the sbatch invocation for one field.
 
@@ -299,6 +314,7 @@ def _sbatch_argv(run_dir: Path, topas_file: str) -> List[str]:
         f"--cpus-per-task={_cpus_per_task(topas_file)}",
         f"--chdir={run_dir}",
         f"--output={run_dir}/slurm-%j.out",
+        f"--job-name={_job_name(run_dir, topas_file)}",
     ]
     for flag, value in (
         ("partition", sched.partition),

@@ -777,3 +777,28 @@ def test_thread_count_follows_the_config_at_submit_time(run_dir, monkeypatch, wr
     executor.submit_run(run_dir, ["topas_field01.txt"])
 
     assert "= 30" in (run_dir / "topas_field01.txt").read_text()
+
+
+# ---------------------------------------------------------------------------
+# Job names: `squeue` has to be readable with more than one run queued
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("topas_file, expected", [
+    ("topas_field02.txt", "DCPT_headphantom:field02"),
+    ("structure_mask_prepass.txt", "DCPT_headphantom:prepass"),
+])
+def test_job_name_identifies_the_study_and_the_field(tmp_path, topas_file, expected):
+    run_dir = tmp_path / "DCPT_headphantom" / "run_20260909_195717"
+    assert executor._job_name(run_dir, topas_file) == expected
+
+
+def test_job_name_falls_back_to_the_directory_itself(tmp_path):
+    """A run directory that is not under a study dir still names something useful."""
+    assert executor._job_name(tmp_path / "loose_run", "topas_field01.txt") == "loose_run:field01"
+
+
+def test_sbatch_is_given_the_job_name(tmp_path):
+    run_dir = tmp_path / "study" / "run_1"
+    argv = executor._sbatch_argv(run_dir, "topas_field01.txt")
+    assert "--job-name=study:field01" in argv
+    assert argv[-2] == "--wrap"          # --wrap stays last
