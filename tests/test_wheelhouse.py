@@ -16,6 +16,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "packaging" / "build_wheelhouse.py"
+VERIFIER = REPO_ROOT / "packaging" / "verify_offline_install.py"
 
 
 def _load_builder():
@@ -26,7 +27,15 @@ def _load_builder():
     return module
 
 
+def _load_verifier():
+    spec = importlib.util.spec_from_file_location("verify_offline_install", VERIFIER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 builder = _load_builder()
+verifier = _load_verifier()
 
 
 METADATA = """\
@@ -127,3 +136,34 @@ def test_dicomexport_pin_matches_pyproject():
     pin = builder.dicomexport_pin()
     assert pin.startswith("git+https://github.com/nbassler/dicomexport@")
     assert (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8").count(pin) == 1
+
+
+# ---------------------------------------------------------------------------
+# The verifier must check the version it is describing
+# ---------------------------------------------------------------------------
+
+def test_bundled_version_is_read_from_the_wheel_beside_the_verifier(tmp_path, monkeypatch):
+    """`pip install pregdos` over an existing venv is a no-op, so the check has to notice."""
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    (wheelhouse / "pregdos-0.5.2.post33+g58a296f7f-py3-none-any.whl").touch()
+    (wheelhouse / "numpy-2.4.6-cp311-cp311-manylinux_2_28_x86_64.whl").touch()
+    monkeypatch.setattr(verifier, "__file__", str(tmp_path / "verify_offline_install.py"))
+
+    assert verifier._bundled_version() == "0.5.2.post33+g58a296f7f"
+
+
+def test_bundled_version_is_none_without_a_wheelhouse(tmp_path, monkeypatch):
+    """Run from a source checkout there is nothing to compare against; that is not a failure."""
+    monkeypatch.setattr(verifier, "__file__", str(tmp_path / "verify_offline_install.py"))
+    assert verifier._bundled_version() is None
+
+
+@pytest.mark.parametrize("a, b, same", [
+    ("0.5.2.post33+g58a296f7f", "0.5.2.post33+g58a296f7f", True),
+    ("0.5.2.post33+g58a296f7f", "0.5.2.post30+gbaa564881", False),   # the stale-install case
+    ("1.0.0", "1.0.0", True),
+    ("1.0.0.dev1+ab_cd", "1.0.0.dev1+ab-cd", True),                  # pip normalises _ and -
+])
+def test_version_comparison_matches_pip_normalisation(a, b, same):
+    assert verifier._same_version(a, b) is same

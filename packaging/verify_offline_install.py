@@ -28,6 +28,19 @@ def check(label: str, condition: bool, detail: str = "") -> None:
         FAILURES.append(label)
 
 
+def _bundled_version() -> str | None:
+    """Version of the ``pregdos`` wheel sitting in ``wheelhouse/`` beside this script."""
+    wheels = sorted((Path(__file__).resolve().parent / "wheelhouse").glob("pregdos-*.whl"))
+    if len(wheels) != 1:
+        return None
+    return wheels[0].name.split("-")[1]
+
+
+def _same_version(a: str, b: str) -> bool:
+    """Compare as pip would: case-insensitively, with ``_`` and ``-`` equivalent."""
+    return a.lower().replace("_", "-") == b.lower().replace("_", "-")
+
+
 def main() -> int:
     # An airgapped site's config, exercised for real: this both switches off the update check
     # (which would otherwise wait on a DNS lookup that cannot succeed) and proves the config
@@ -46,7 +59,24 @@ def main() -> int:
 
     from pregdos import config, report_pdf, topas_scorer, webserver
 
-    check("pregdos imports", True, importlib.metadata.version("pregdos"))
+    installed = importlib.metadata.version("pregdos")
+    check("pregdos imports", True, installed)
+
+    # The version installed must be the version in this tarball.  `pip install pregdos`
+    # treats an already-installed copy as satisfied and never compares versions, so
+    # reinstalling over an existing venv without --upgrade leaves the old code in place --
+    # and every check below would then pass while describing the wrong build.
+    bundled = _bundled_version()
+    if bundled is None:
+        print("  --    no wheelhouse/ beside this script; skipping the version match")
+    else:
+        check("installed pregdos is the one in this wheelhouse",
+              _same_version(installed, bundled),
+              installed if _same_version(installed, bundled)
+              else f"installed {installed}, wheelhouse has {bundled} "
+                   f"-- reinstall with: pip install --no-index --find-links=wheelhouse "
+                   f"--upgrade pregdos")
+
     check("dicomexport is installed", bool(importlib.metadata.version("dicomexport")),
           importlib.metadata.version("dicomexport"))
     check("config.toml.example ships", "[scheduler]" in config.example_text())

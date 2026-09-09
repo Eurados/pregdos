@@ -117,9 +117,20 @@ python packaging/build_wheelhouse.py            # defaults to cp311 / manylinux_
 python packaging/build_wheelhouse.py --python-version 313 --platform manylinux_2_28_x86_64
 ```
 
-Upgrades follow the same route: rebuild the tarball on the networked machine, copy it over,
-and install into a fresh venv. A site with no path to PyPI has no other way in, so this is the
-permanent procedure rather than a first-install special case.
+Upgrades follow the same route: rebuild the tarball on the networked machine and copy it over.
+Into the existing venv, `--upgrade` is required — `pip install pregdos` treats an
+already-installed copy as satisfied and never compares versions, so without it the command
+reports "Requirement already satisfied" and leaves the old build running:
+
+```bash
+/opt/pregdos/venv/bin/pip install --no-index --find-links=wheelhouse --upgrade pregdos
+/opt/pregdos/venv/bin/python verify_offline_install.py
+```
+
+`verify_offline_install.py` compares the installed version against the wheel in the tarball,
+so a missed upgrade fails the check instead of passing every other one while describing the
+wrong build. A site with no path to PyPI has no other way in, so this is the permanent
+procedure rather than a first-install special case.
 
 #### TOPAS behind environment modules
 

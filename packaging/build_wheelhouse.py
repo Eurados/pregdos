@@ -65,6 +65,17 @@ environment without pip and install it from this wheelhouse instead:
     /opt/pregdos/venv/bin/python wheelhouse/{pip_wheel}/pip install \\
         --no-index --find-links=wheelhouse pip setuptools wheel
 
+## Upgrading an existing install
+
+`pip install pregdos` treats an already-installed copy as satisfied and never compares
+versions, so over an existing venv it silently does nothing.  Pass `--upgrade`:
+
+    /opt/pregdos/venv/bin/pip install --no-index --find-links=wheelhouse --upgrade pregdos
+
+`verify_offline_install.py` below checks that what is installed is what this tarball
+contains, so a missed upgrade is caught rather than passing every other check while
+describing the wrong build.
+
 ## Check the contents arrived intact
 
     sha256sum -c sha256sums
