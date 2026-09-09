@@ -66,8 +66,26 @@ echo "== checksums =="
 sha256sum -c sha256sums --quiet
 echo "   all files match sha256sums"
 
+# The tarball name records the interpreter it was built for (cp311 -> 3.11).  Check it
+# before installing: on RHEL 9 `python3` is 3.9, and pip's failure for a cp311-only wheel is
+# "No matching distribution found for numpy", which reads like a missing wheel rather than
+# the wrong interpreter.  $PYTHON overrides the interpreter used.
+PYTHON="${PYTHON:-python3}"
+case "$(basename "$TARBALL")" in
+    *-cp3*) tag=$(basename "$TARBALL" | sed -n 's/.*-cp3\([0-9]*\)-.*/3.\1/p') ;;
+    *)      tag="" ;;
+esac
+if [ -n "$tag" ]; then
+    have=$("$PYTHON" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+    if [ "$have" != "$tag" ]; then
+        echo "!! this wheelhouse is for Python $tag, but $PYTHON is $have" >&2
+        echo "   install python$tag and re-run as:  PYTHON=python$tag $0 $TARGET" >&2
+        exit 2
+    fi
+fi
+
 echo "== installing offline =="
-python3 -m venv "$WORK/venv"
+"$PYTHON" -m venv "$WORK/venv"
 "$WORK/venv/bin/pip" install --no-index --find-links=wheelhouse pregdos
 "$WORK/venv/bin/pip" check
 

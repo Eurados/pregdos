@@ -62,13 +62,20 @@ Open http://localhost:5000.
 Releases carry an **offline wheelhouse**: one tarball with PregDos, `dicomexport`, and every
 dependency, plus `pip`/`setuptools`/`wheel` so a venv can be bootstrapped with no index.
 
+Copy the tarball to the target with `scp` (an "airgapped" host usually still accepts inbound
+SSH — it is *outbound* access that is missing), then:
+
 ```bash
+sha256sum pregdos-<version>-wheelhouse-cp311-manylinux_2_28_x86_64.tar.gz   # vs the release
 tar xzf pregdos-<version>-wheelhouse-cp311-manylinux_2_28_x86_64.tar.gz
 cd pregdos-<version>-wheelhouse-cp311-manylinux_2_28_x86_64
 sha256sum -c sha256sums
 
-python3.11 -m venv /opt/pregdos/venv
-/opt/pregdos/venv/bin/pip install --no-index --find-links=wheelhouse pregdos
+sudo python3.11 -m venv /opt/pregdos/venv
+sudo /opt/pregdos/venv/bin/pip install --no-index --find-links=wheelhouse \
+    --upgrade pip setuptools wheel
+sudo /opt/pregdos/venv/bin/pip install --no-index --find-links=wheelhouse pregdos
+/opt/pregdos/venv/bin/pip check
 /opt/pregdos/venv/bin/python verify_offline_install.py
 ```
 
@@ -77,10 +84,28 @@ templates, beam models and SPR tables resolve at runtime, so a packaging gap sho
 broken page, not an import error. CI runs the same script against the same tarball, in a
 container with no network, before the release is published.
 
-**The tarball is target-specific.** Its wheels carry Python ABI and platform tags, so the name
-records what it was built for. On RHEL 9 the system `python3` is 3.9 — install the `python3.11`
-AppStream package and build the venv with that, not with `python3`. Using the wrong interpreter
-fails with "no matching distribution", which is the intended outcome.
+Three things reliably go wrong here, all of them cheap to avoid:
+
+- **`--find-links=wheelhouse` is a relative path.** Run the `pip` commands from inside the
+  unpacked directory, or pass an absolute path. From anywhere else pip prints
+  `Location 'wheelhouse' is ignored: it is either a non-existing path or lacks a specific
+  scheme` — a *warning*, several lines above the error it eventually causes — and then fails
+  with "No matching distribution found" for whichever package it happened to need first.
+- **Upgrade `pip` before installing PregDos.** On RHEL 9, `python3.11 -m venv` bootstraps
+  pip 22.3.1 from the `python3.11-pip-wheel` RPM. The wheelhouse ships a current pip; the
+  upgrade line above is why the second command can be trusted. Check it really says
+  `Successfully installed pip-<new version>` and not `Requirement already satisfied` — the
+  latter means the find-links path was wrong and you are still on the RPM's pip.
+- **The tarball is target-specific.** Its wheels carry Python ABI and platform tags, so the
+  name records what it was built for. On RHEL 9 the system `python3` is 3.9 — install the
+  `python3.11` AppStream package and build the venv with that interpreter, not with `python3`.
+  It installs *alongside* 3.9 and changes neither `/usr/bin/python3` nor the alternatives
+  link, so other services on the host are unaffected. Using the wrong interpreter fails with
+  "no matching distribution", which is the intended outcome.
+
+A successful run ends with `pip check` reporting no broken requirements and
+`verify_offline_install.py` printing `All checks passed`. Anything less is worth resolving
+before configuring the site, because every later symptom looks like a configuration problem.
 
 TOPAS is not included (separate licensing; the site supplies it). Point `topas_bin` at the
 local installation via the config file below.
@@ -91,6 +116,48 @@ To build the artifact yourself, on a machine that *does* have a network:
 python packaging/build_wheelhouse.py            # defaults to cp311 / manylinux_2_28_x86_64
 python packaging/build_wheelhouse.py --python-version 313 --platform manylinux_2_28_x86_64
 ```
+
+Upgrades follow the same route: rebuild the tarball on the networked machine, copy it over,
+and install into a fresh venv. A site with no path to PyPI has no other way in, so this is the
+permanent procedure rather than a first-install special case.
+
+#### TOPAS behind environment modules
+
+Where the site keeps several TOPAS builds and selects one with `module load`, leave
+`topas_bin = "topas"` and put the module load in `[scheduler] prologue` (see below). The
+prologue runs under `/bin/sh`, where `module` is undefined, so source the module system's init
+script first — `/etc/profile.d/modules.sh` for environment-modules, `$MODULESHOME/init/sh`
+for Lmod:
+
+```toml
+[scheduler]
+prologue = """
+. /etc/profile.d/modules.sh
+module load opentopas/4.2
+"""
+```
+
+Give the *web process* the same module load as well — in the systemd unit or a wrapper script.
+The prologue covers the shell that runs TOPAS, but the About page probes the binary from the
+web process itself, and without the module it reports TOPAS and Geant4 as unknown even though
+simulations run correctly.
+
+#### Choosing a port
+
+PregDos currently listens on `0.0.0.0:5000`. If the host already runs something there, start
+it through the Flask CLI until a configurable listen address lands:
+
+```bash
+PREGDOS_CONFIG=/etc/pregdos/config.toml \
+    /opt/pregdos/venv/bin/flask --app pregdos.webserver:app run --host 0.0.0.0 --port 8080
+```
+
+Remember the host firewall: `sudo firewall-cmd --add-port=8080/tcp` (add `--permanent`, then
+`--reload`, once the port is settled).
+
+PregDos serves plain HTTP and has no authentication. On a shared network, terminate TLS in
+front of it and restrict who can reach the port. The development server is not a production
+WSGI server, with or without a certificate.
 
 ### Configuration File
 
