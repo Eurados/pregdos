@@ -255,6 +255,14 @@ module load topas/4.2.3
 - **`cpus_per_task` matters.** Left at `0`, PregDos requests as many CPUs as the machine
   running the *web* process reports. If the partition offers fewer, SLURM rejects every field
   job at submit. The single-threaded structure-mask pre-pass always asks for 1 regardless.
+  On a single-node cluster, note that it also decides how many fields run at once: with
+  `OverSubscribe=NO`, half the cores per task means two fields in parallel and a machine that
+  stays responsive for the web process, which is not itself under SLURM's control.
+- **Check what the node reports before setting `memory`.** A SLURM whose `RealMemory` was
+  never configured advertises 1 MB (`scontrol show partition` shows `TRES=...,mem=1M`), and
+  then *any* `--mem` is rejected at submit as "Requested node configuration is not available"
+  — on a host with 128 GB free. Leave `memory` empty there; `DefMemPerNode=UNLIMITED` means
+  nothing is enforced anyway, so nothing is lost.
 - **`submit_as_user = ""`** stops PregDos dropping privileges to a `slurm` account. The default
   `"auto"` is for the shipped container, which runs as root; a site install submits as its own
   service account.
