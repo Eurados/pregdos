@@ -269,6 +269,15 @@ def _submit_as_user(configured: str) -> str:
     return "slurm" if configured == "auto" else configured
 
 
+def submit_user() -> str:
+    """The account ``sbatch`` will run as, or ``""`` when PregDos submits as itself.
+
+    Public because the caller has to prepare the run directory for that account: the web
+    process creates it, and whoever submits must be able to write TOPAS output into it.
+    """
+    return _submit_as_user(config.load().scheduler.submit_as_user)
+
+
 def _sbatch_argv(run_dir: Path, topas_file: str) -> List[str]:
     """Build the sbatch invocation for one field.
 

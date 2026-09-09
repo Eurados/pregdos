@@ -484,6 +484,46 @@ def test_missing_certificate_file_is_named_before_binding(tmp_path, write_config
     run.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# The run directory must belong to whoever sbatch will run as
+# ---------------------------------------------------------------------------
+
+def test_run_dir_is_handed_to_the_configured_submit_user(tmp_path, write_config, mocker):
+    """A site submitting as its own account must not have the directory given to `slurm`."""
+    from pregdos import executor, webserver
+    write_config('[scheduler]\nsubmit_as_user = "pregdos"\n')
+    mocker.patch.object(executor, "select_backend", return_value=executor.SLURM)
+    mocker.patch.object(executor, "submit_run",
+                        return_value=executor.RunInfo(backend=executor.SLURM, submitted="now"))
+    chown = mocker.patch.object(webserver.shutil, "chown")
+    run_dir = tmp_path / "run_x"
+    run_dir.mkdir()
+    (run_dir / "topas_field01.txt").write_text("# topas")
+
+    with webserver.app.test_request_context():
+        webserver._submit_topas_files("study", "run_x", run_dir, ["topas_field01.txt"])
+
+    chown.assert_called_once_with(run_dir, user="pregdos", group="pregdos")
+
+
+def test_run_dir_is_left_alone_when_pregdos_submits_as_itself(tmp_path, write_config, mocker):
+    """submit_as_user = "" means no privilege drop, so the ownership is already correct."""
+    from pregdos import executor, webserver
+    write_config('[scheduler]\nsubmit_as_user = ""\n')
+    mocker.patch.object(executor, "select_backend", return_value=executor.SLURM)
+    mocker.patch.object(executor, "submit_run",
+                        return_value=executor.RunInfo(backend=executor.SLURM, submitted="now"))
+    chown = mocker.patch.object(webserver.shutil, "chown")
+    run_dir = tmp_path / "run_x"
+    run_dir.mkdir()
+    (run_dir / "topas_field01.txt").write_text("# topas")
+
+    with webserver.app.test_request_context():
+        webserver._submit_topas_files("study", "run_x", run_dir, ["topas_field01.txt"])
+
+    chown.assert_not_called()
+
+
 def test_secret_key_is_not_insecure_example_value():
     assert app.secret_key
     assert app.secret_key != "pregdos_secret_key"

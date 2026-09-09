@@ -979,11 +979,16 @@ def _submit_topas_files(study_name: str, run_id: str, run_dir: Path, out_files: 
         flash("Error: Nothing to submit.")
         return redirect(url_for("run_detail", study=study_name, run_id=run_id))
 
-    if executor.select_backend() == executor.SLURM:
+    # Whoever sbatch runs as must be able to write TOPAS output into a directory this
+    # process created.  Follow the configured account rather than assuming `slurm`: a site
+    # that submits as its own service account would otherwise have every field fail
+    # immediately, unable to write into a directory handed to a different user.
+    # An empty submit user means PregDos submits as itself, so the ownership is already right.
+    if executor.select_backend() == executor.SLURM and (owner := executor.submit_user()):
         try:
-            shutil.chown(run_dir, user="slurm", group="slurm")
+            shutil.chown(run_dir, user=owner, group=owner)
         except (LookupError, PermissionError, OSError):
-            pass  # slurm user not present outside the container
+            pass  # not root, or no such account -- submitting as ourselves still works
 
     info = executor.submit_run(run_dir, topas_files)
 
