@@ -22,6 +22,7 @@ import importlib.metadata
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -68,6 +69,52 @@ def _explicit(env_name: str) -> Optional[str]:
     return None
 
 
+# Printed by the probe shell between the site prologue and the command being measured, so a
+# `module load` that greets the user -- or a login profile that prints a banner -- cannot have
+# its chatter parsed as a TOPAS version.
+_PROBE_MARKER = "__pregdos_probe__"
+
+
+def _prologue() -> str:
+    """``[scheduler] prologue``: the shell source that puts TOPAS on PATH at a modules site.
+
+    Kept in step with :func:`executor._with_prologue` on purpose.  The About page is
+    provenance for a clinical report, so it must measure the TOPAS that will actually run,
+    not the one visible to the web process -- at a site where TOPAS lives behind
+    ``module load``, those are different, and the web process sees nothing at all.
+    """
+    try:
+        return config.load().scheduler.prologue.strip()
+    except config.ConfigError:
+        return ""     # nothing here raises; an unusable config is the caller's problem
+
+
+def _shell_probe(command: str, timeout: int = 30) -> Tuple[int, str]:
+    """``(status, output)`` of ``command`` run in the shell that will run TOPAS.
+
+    Only reached when a prologue is configured: without one there is nothing to set up, and
+    the direct call is both cheaper and easier to reason about.
+    """
+    script = f"{_prologue()}\nprintf '%s\\n' {_PROBE_MARKER}\n{command}\n"
+    try:
+        proc = subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return 127, ""
+    # No marker means the prologue died before the command ran -- a bad module name, say.
+    # Its own output is not an answer, so report nothing rather than something wrong.
+    if _PROBE_MARKER not in proc.stdout:
+        return proc.returncode or 127, ""
+    return proc.returncode, proc.stdout.split(_PROBE_MARKER, 1)[1].strip()
+
+
+def _resolve(binary: str) -> Optional[str]:
+    """Absolute path of ``binary`` as the shell that runs TOPAS resolves it, or None."""
+    if not _prologue():
+        return shutil.which(binary)
+    status, out = _shell_probe(f"command -v {shlex.quote(binary)}")
+    return out.splitlines()[0].strip() if status == 0 and out.strip() else None
+
+
 def parse_version(text: str) -> Optional[Tuple[int, ...]]:
     """Turn a reported version string into a comparable tuple, or None."""
     if not text:
@@ -94,14 +141,20 @@ def topas_version() -> str:
     if explicit:
         return explicit
 
-    binary = topas_bin()
-    if not shutil.which(binary):
+    binary = _resolve(topas_bin())
+    if not binary:
         return UNKNOWN
-    try:
-        proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return UNKNOWN
-    out = (proc.stdout or proc.stderr or "").strip()
+
+    if _prologue():
+        # 2>&1 because TOPAS is not consistent about which stream it prints to, and the
+        # marker has already separated this from anything the prologue said.
+        _, out = _shell_probe(f"{shlex.quote(binary)} --version 2>&1")
+    else:
+        try:
+            proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return UNKNOWN
+        out = (proc.stdout or proc.stderr or "").strip()
     return out.splitlines()[0].strip() if out else UNKNOWN
 
 
@@ -116,13 +169,19 @@ def geant4_version() -> str:
     if explicit:
         return explicit
 
-    if shutil.which("geant4-config"):
-        try:
-            proc = subprocess.run(["geant4-config", "--version"], capture_output=True, text=True, timeout=30)
-            if proc.returncode == 0 and proc.stdout.strip():
-                return proc.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            pass
+    geant4_config = _resolve("geant4-config")
+    if geant4_config:
+        if _prologue():
+            status, out = _shell_probe(f"{shlex.quote(geant4_config)} --version")
+            if status == 0 and out:
+                return out.splitlines()[0].strip()
+        else:
+            try:
+                proc = subprocess.run([geant4_config, "--version"], capture_output=True, text=True, timeout=30)
+                if proc.returncode == 0 and proc.stdout.strip():
+                    return proc.stdout.strip()
+            except (OSError, subprocess.SubprocessError):
+                pass
 
     for lib_dir in _linked_library_dirs():
         for entry in lib_dir.iterdir():
@@ -133,15 +192,21 @@ def geant4_version() -> str:
 
 def _linked_library_dirs():
     """Directories holding the Geant4 libraries TOPAS links against."""
-    binary = shutil.which(topas_bin())
+    binary = _resolve(topas_bin())
     if not binary:
         return
-    try:
-        proc = subprocess.run(["ldd", binary], capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return
+    # ldd resolves against LD_LIBRARY_PATH, which at a modules site is exactly what the
+    # prologue sets -- run it outside and every libG4 line reads "not found".
+    if _prologue():
+        _, output = _shell_probe(f"ldd {shlex.quote(binary)}")
+    else:
+        try:
+            proc = subprocess.run(["ldd", binary], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return
+        output = proc.stdout
     seen = set()
-    for line in proc.stdout.splitlines():
+    for line in output.splitlines():
         if "libG4" not in line or "=>" not in line:
             continue
         path = line.split("=>", 1)[1].strip().split(" ")[0]
@@ -164,6 +229,10 @@ def topas_warning() -> Optional[str]:
     """
     reported = topas_version()
     if reported == UNKNOWN:
+        if _prologue():
+            return ("TOPAS was not found on PATH, even with the [scheduler] prologue applied — "
+                    "simulations cannot run.  Check that the prologue names a module that exists "
+                    "and that it sources the module system's init script first.")
         return "TOPAS was not found on PATH — simulations cannot run."
 
     parsed = parse_version(reported)

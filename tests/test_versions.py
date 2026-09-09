@@ -111,6 +111,73 @@ def test_topas_version_survives_a_broken_binary(monkeypatch):
     assert versions.topas_version() == versions.UNKNOWN     # must not raise
 
 
+# --- TOPAS behind an environment module -------------------------------------
+#
+# These run a real /bin/sh rather than mocking one: the whole point of the prologue path is
+# that the shell resolves TOPAS the way the executor's shell will, so a mocked shell would
+# test nothing.  A stub script on a PATH the prologue sets stands in for `module load`.
+
+def _fake_topas(tmp_path, prints="4.2.p03"):
+    """A stub `topas` that answers --version, reachable only after the prologue runs."""
+    bindir = tmp_path / "opt" / "bin"
+    bindir.mkdir(parents=True)
+    stub = bindir / "topas"
+    stub.write_text(f'#!/bin/sh\necho "{prints}"\n')
+    stub.chmod(0o755)
+    return bindir
+
+
+def test_topas_behind_a_module_is_found_through_the_prologue(tmp_path, write_config):
+    """The About page must report the TOPAS that will run, not the one the web process sees."""
+    bindir = _fake_topas(tmp_path)
+    write_config(f'[scheduler]\nprologue = """\nPATH={bindir}:$PATH\nexport PATH\n"""\n')
+
+    assert versions.topas_version() == "4.2.p03"
+    assert versions.topas_warning() is None      # 4.2.p03 parses to (4, 2, 3): exactly the floor
+
+
+def test_prologue_chatter_is_not_parsed_as_a_version(tmp_path, write_config):
+    """`module load` and login banners print; none of it is a TOPAS version."""
+    bindir = _fake_topas(tmp_path)
+    write_config(
+        f'[scheduler]\nprologue = """\n'
+        f'echo "Loading opentopas/4.2"\necho "warning: banner" >&2\n'
+        f'PATH={bindir}:$PATH\nexport PATH\n"""\n'
+    )
+
+    assert versions.topas_version() == "4.2.p03"
+
+
+def test_a_prologue_that_fails_reports_topas_as_missing(write_config):
+    """A typo'd module name must read as "no TOPAS", not as a version invented from the error.
+
+    `topas_bin` names something absent on purpose: a failing prologue leaves the inherited
+    PATH intact, so on a machine that also has its own TOPAS the probe would legitimately
+    find *that* one -- which is the honest answer, since that is what would run.
+    """
+    write_config('[paths]\ntopas_bin = "topas-definitely-absent"\n'
+                 '[scheduler]\nprologue = """\nmodule load definitely-not-here\n"""\n')
+
+    assert versions.topas_version() == versions.UNKNOWN
+    warning = versions.topas_warning()
+    assert "not found on PATH" in warning
+    assert "prologue" in warning        # says what was tried, so the admin knows where to look
+
+
+def test_no_prologue_keeps_the_direct_probe(monkeypatch):
+    """Sites without a prologue must not pay for, or be exposed to, a shell."""
+    monkeypatch.setattr(versions.shutil, "which", lambda n: "/usr/bin/topas")
+    calls = []
+
+    def record(argv, *a, **k):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "4.2.p3\n", "")
+
+    monkeypatch.setattr(versions.subprocess, "run", record)
+    assert versions.topas_version() == "4.2.p3"
+    assert calls == [["/usr/bin/topas", "--version"]]      # no /bin/sh anywhere
+
+
 # --- geant4_version ---
 
 def test_geant4_version_from_linked_library_dir(monkeypatch, tmp_path):

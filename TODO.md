@@ -5,7 +5,7 @@
 Found while doing the first real deployment onto the DCPT host (exrhel0583, RHEL 9.8,
 OpenTOPAS behind `module load opentopas/4.2`).  This branch stays open until they are done.
 
-- [ ] **`/about` cries wolf when TOPAS lives behind an environment module.**  Runs are fine —
+- [x] **`/about` cries wolf when TOPAS lives behind an environment module.**  Runs are fine —
   `executor._with_prologue` puts `module load` in front of the TOPAS command.  But
   `versions.topas_version` / `geant4_version` probe from the *web* process with a bare
   `shutil.which(topas_bin())`, which never sees `[scheduler] prologue`.  On a modules site the
@@ -18,6 +18,17 @@ OpenTOPAS behind `module load opentopas/4.2`).  This branch stays open until the
   environment, stand in for the probe.  (b) is the honest fix — one shell per probe, cached by
   `lru_cache` — but it makes a config value shell-executed in one more place, so decide
   deliberately.
+  Done: (b).  The probe runs in `/bin/sh` with the prologue applied whenever one is
+  configured, and takes the direct path when none is — so a site without a prologue is
+  unchanged, and one with a prologue is measured in the shell its jobs will run in.  `ldd`
+  runs there too, or every libG4 line reads "not found" and Geant4 stays unknown.  A marker
+  line separates the prologue's own chatter from the command's output.
+- [ ] **`versions` can raise `ConfigError` after all** — its docstring promises it never
+  raises, but `topas_bin()` calls `config.load()`, which does on a malformed file.
+  `pregdos-web` validates at startup so the CLI is safe; a WSGI import
+  (`gunicorn pregdos.webserver:app`) never calls `main()`, and there `/about` would 500
+  instead of degrading to "unknown".  Pre-existing, surfaced by this branch putting
+  `config.load()` on that path.  Not a merge blocker; fix with #90 if not before.
 - [x] **The listen address is hard-coded** — `webserver.main` ends in
   `app.run(host="0.0.0.0", port=5000)` with no flag and no config key.  The DCPT host already
   runs an unrelated Flask app on 5000, so PregDos cannot start there at all; the workaround is
