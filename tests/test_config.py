@@ -224,6 +224,42 @@ def test_load_is_cached_until_reset(write_config):
 
 
 # ---------------------------------------------------------------------------
+# [server]: checks that span two keys, so they run on the merged result
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("body, missing", [
+    ('[server]\nssl_cert = "/etc/pregdos/cert.pem"\n', "ssl_key"),
+    ('[server]\nssl_key = "/etc/pregdos/key.pem"\n', "ssl_cert"),
+])
+def test_half_a_tls_pair_is_an_error(write_config, body, missing):
+    """Silently serving plain HTTP when TLS was intended is the failure nobody would notice."""
+    write_config(body)
+    with pytest.raises(config.ConfigError, match=missing):
+        config.load()
+
+
+def test_a_tls_pair_split_across_the_two_files_is_accepted(tmp_path, monkeypatch):
+    """The pair is validated after merging, so /etc may hold one half and the user file the other."""
+    system = tmp_path / "etc.toml"
+    system.write_text('[server]\nssl_cert = "/etc/pregdos/cert.pem"\n')
+    monkeypatch.setattr(config, "SYSTEM_CONFIG_PATH", system)
+    user = tmp_path / "xdg" / "pregdos"
+    user.mkdir(parents=True)
+    (user / "config.toml").write_text('[server]\nssl_key = "/etc/pregdos/key.pem"\n')
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    config.reset_cache()
+
+    assert config.load().server.ssl_key == "/etc/pregdos/key.pem"
+
+
+@pytest.mark.parametrize("port", [0, -1, 65536])
+def test_port_outside_the_valid_range_is_an_error(write_config, port):
+    write_config(f"[server]\nport = {port}\n")
+    with pytest.raises(config.ConfigError, match="not a valid port"):
+        config.load()
+
+
+# ---------------------------------------------------------------------------
 # The shipped example must not drift from the dataclasses
 # ---------------------------------------------------------------------------
 

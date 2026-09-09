@@ -99,6 +99,32 @@
 # module load topas/4.2.3
 # """
 
+[server]
+
+## Where the web interface listens.
+##
+## The default binds EVERY interface, which is what the shipped container needs to be
+## reachable through `docker run -p`.  PregDos has no authentication, so on a shared network
+## anyone who can reach this port can read every study on the server: if a reverse proxy
+## fronts PregDos, bind the loopback instead and let the proxy be the only way in.
+# host = "0.0.0.0"
+
+## TCP port.  Change it when something else already listens on 5000 -- PregDos binds all
+## interfaces, so a clash is an immediate "Address already in use" at startup.
+# port = 5000
+
+## TLS for the built-in server: PEM certificate and its private key, BOTH or NEITHER.
+## Setting only one is a startup error rather than a silent fall back to plain HTTP.
+##
+## This makes the DEVELOPMENT server speak HTTPS.  It is encryption, not a production
+## deployment, and it is not authentication: a self-signed certificate also trains users to
+## click through browser warnings.  Prefer a certificate from the site's own CA, and put a
+## real WSGI server in front for anything beyond a trial.
+##
+## The key must be readable by the user running PregDos and by nobody else (0600).
+# ssl_cert = ""
+# ssl_key = ""
+
 [network]
 
 ## Whether /about may ask api.github.com whether a newer PregDos exists.  Set false on an

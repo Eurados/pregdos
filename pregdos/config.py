@@ -98,6 +98,25 @@ class Scheduler:
 
 
 @dataclass(frozen=True)
+class Server:
+    """Where the web interface listens, and whether it terminates TLS itself.
+
+    The default binds every interface, which is what the shipped container needs to be
+    reachable through ``-p``.  A site that fronts PregDos with a reverse proxy should set
+    ``host = "127.0.0.1"`` instead: there is no authentication (issue #64), so anyone who can
+    reach the port can read every study on the server.
+
+    ``ssl_cert``/``ssl_key`` make the *development* server speak HTTPS.  That is encryption,
+    not a production deployment -- see issue #90.  Both or neither.
+    """
+
+    host: str = "0.0.0.0"
+    port: int = 5000
+    ssl_cert: str = ""
+    ssl_key: str = ""
+
+
+@dataclass(frozen=True)
 class Network:
     """Outbound network PregDos may attempt.  All of it is optional by design."""
 
@@ -108,12 +127,13 @@ class Network:
 class Config:
     paths: Paths = field(default_factory=Paths)
     scheduler: Scheduler = field(default_factory=Scheduler)
+    server: Server = field(default_factory=Server)
     network: Network = field(default_factory=Network)
 
 
 # The whole schema.  Both the validator and the anti-drift test derive from this, so adding a
 # section is a one-line change here plus a dataclass.
-_SECTIONS: Dict[str, type] = {"paths": Paths, "scheduler": Scheduler, "network": Network}
+_SECTIONS: Dict[str, type] = {"paths": Paths, "scheduler": Scheduler, "server": Server, "network": Network}
 
 # Set by `pregdos-web --config PATH`.  Beats $PREGDOS_CONFIG: the flag is the more explicit,
 # per-invocation signal.
@@ -204,6 +224,28 @@ def _read_file(path: Path, must_exist: bool) -> Dict[str, Dict[str, Any]]:
     return parsed
 
 
+def _validate_combinations(cfg: Config, sources: List[Path]) -> None:
+    """Checks that span more than one key, and so cannot live in the per-key validator above.
+
+    Named separately from :func:`_read_file` because the two halves of a pair may legitimately
+    arrive from different files -- the system file and the user one merge per key -- so this
+    can only run on the merged result, and can only name the files as a set.
+    """
+    where = ", ".join(str(p) for p in sources)
+
+    if not 1 <= cfg.server.port <= 65535:
+        raise ConfigError(f"{where}: [server] port: {cfg.server.port} is not a valid port (1-65535)")
+
+    # Half a TLS pair is the dangerous case: Flask would fall back to plain HTTP, and the
+    # admin who wrote one line of two would have no reason to look.  Refuse instead.
+    if bool(cfg.server.ssl_cert) != bool(cfg.server.ssl_key):
+        missing = "ssl_key" if cfg.server.ssl_cert else "ssl_cert"
+        raise ConfigError(
+            f"{where}: [server] ssl_cert and ssl_key must be set together -- {missing} is "
+            f"missing, and PregDos will not silently serve plain HTTP when TLS was intended"
+        )
+
+
 @functools.lru_cache(maxsize=1)
 def load() -> Config:
     """The merged configuration.  Parsed once per process; call :func:`reset_cache` to reread.
@@ -216,7 +258,9 @@ def load() -> Config:
     for path, must_exist in config_files():
         for section, values in _read_file(path, must_exist).items():
             merged.setdefault(section, {}).update(values)
-    return Config(**{name: cls(**merged.get(name, {})) for name, cls in _SECTIONS.items()})
+    cfg = Config(**{name: cls(**merged.get(name, {})) for name, cls in _SECTIONS.items()})
+    _validate_combinations(cfg, [path for path, _ in config_files()])
+    return cfg
 
 
 def example_text() -> str:
@@ -236,6 +280,7 @@ __all__ = [
     "Paths",
     "SYSTEM_CONFIG_PATH",
     "Scheduler",
+    "Server",
     "config_files",
     "env_or",
     "example_text",

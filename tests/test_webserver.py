@@ -411,6 +411,79 @@ def test_debug_opt_in_via_env(monkeypatch, mocker):
     assert run.call_args.kwargs["debug"] is True
 
 
+# ---------------------------------------------------------------------------
+# Where the server listens: [server] host/port/TLS, and the flags that beat them
+# ---------------------------------------------------------------------------
+
+def test_listen_address_defaults_to_all_interfaces_on_5000(mocker):
+    """The historical hard-coded values are still the defaults -- the container relies on them."""
+    from pregdos import webserver
+    run = mocker.patch.object(webserver.app, "run")
+    webserver.main([])
+    assert run.call_args.kwargs["host"] == "0.0.0.0"
+    assert run.call_args.kwargs["port"] == 5000
+    assert run.call_args.kwargs["ssl_context"] is None
+
+
+def test_config_file_moves_the_listen_address(write_config, mocker):
+    from pregdos import webserver
+    write_config('[server]\nhost = "127.0.0.1"\nport = 8080\n')
+    run = mocker.patch.object(webserver.app, "run")
+    webserver.main([])
+    assert run.call_args.kwargs["host"] == "127.0.0.1"
+    assert run.call_args.kwargs["port"] == 8080
+
+
+def test_flags_beat_the_config_file(write_config, mocker):
+    from pregdos import webserver
+    write_config('[server]\nhost = "127.0.0.1"\nport = 8080\n')
+    run = mocker.patch.object(webserver.app, "run")
+    webserver.main(["--host", "10.0.0.1", "--port", "9999"])
+    assert run.call_args.kwargs["host"] == "10.0.0.1"
+    assert run.call_args.kwargs["port"] == 9999
+
+
+def test_port_zero_stays_expressible_on_the_command_line(mocker):
+    """0 means "bind an ephemeral port", so the override cannot be a truthiness test."""
+    from pregdos import webserver
+    run = mocker.patch.object(webserver.app, "run")
+    webserver.main(["--port", "0"])
+    assert run.call_args.kwargs["port"] == 0
+
+
+def test_out_of_range_port_flag_is_rejected_before_binding(mocker):
+    from pregdos import webserver
+    run = mocker.patch.object(webserver.app, "run")
+    with pytest.raises(SystemExit) as exc:
+        webserver.main(["--port", "70000"])
+    assert exc.value.code == 2
+    run.assert_not_called()
+
+
+def test_tls_pair_is_passed_to_the_server(tmp_path, write_config, mocker):
+    from pregdos import webserver
+    cert, key = tmp_path / "cert.pem", tmp_path / "key.pem"
+    cert.write_text("-----BEGIN CERTIFICATE-----\n")
+    key.write_text("-----BEGIN PRIVATE KEY-----\n")
+    write_config(f'[server]\nssl_cert = "{cert}"\nssl_key = "{key}"\n')
+    run = mocker.patch.object(webserver.app, "run")
+    webserver.main([])
+    assert run.call_args.kwargs["ssl_context"] == (str(cert), str(key))
+
+
+def test_missing_certificate_file_is_named_before_binding(tmp_path, write_config, mocker):
+    """A path typo must not surface as a Werkzeug traceback on the first HTTPS request."""
+    from pregdos import webserver
+    key = tmp_path / "key.pem"
+    key.write_text("-----BEGIN PRIVATE KEY-----\n")
+    write_config(f'[server]\nssl_cert = "{tmp_path / "absent.pem"}"\nssl_key = "{key}"\n')
+    run = mocker.patch.object(webserver.app, "run")
+    with pytest.raises(SystemExit) as exc:
+        webserver.main([])
+    assert exc.value.code == 2
+    run.assert_not_called()
+
+
 def test_secret_key_is_not_insecure_example_value():
     assert app.secret_key
     assert app.secret_key != "pregdos_secret_key"

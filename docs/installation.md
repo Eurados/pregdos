@@ -142,22 +142,46 @@ The prologue covers the shell that runs TOPAS, but the About page probes the bin
 web process itself, and without the module it reports TOPAS and Geant4 as unknown even though
 simulations run correctly.
 
-#### Choosing a port
+#### Choosing a port, and TLS
 
-PregDos currently listens on `0.0.0.0:5000`. If the host already runs something there, start
-it through the Flask CLI until a configurable listen address lands:
+PregDos listens on `0.0.0.0:5000` by default. Where the host already runs something there —
+or where a reverse proxy should be the only way in — set it in the config file:
+
+```toml
+[server]
+host = "127.0.0.1"
+port = 8080
+```
+
+`pregdos-web --host ADDR --port N` overrides the file for one invocation, the same way
+`--config` overrides `$PREGDOS_CONFIG`.
+
+The built-in server can also terminate TLS, which is worth doing even for a trial on a shared
+network:
+
+```toml
+[server]
+ssl_cert = "/etc/pregdos/cert.pem"
+ssl_key  = "/etc/pregdos/key.pem"
+```
+
+Both keys or neither — setting one is a startup error rather than a quiet fall back to plain
+HTTP. A self-signed certificate works and is generated in one line:
 
 ```bash
-PREGDOS_CONFIG=/etc/pregdos/config.toml \
-    /opt/pregdos/venv/bin/flask --app pregdos.webserver:app run --host 0.0.0.0 --port 8080
+openssl req -x509 -newkey rsa:4096 -nodes -days 365 \
+    -keyout /etc/pregdos/key.pem -out /etc/pregdos/cert.pem -subj "/CN=$(hostname -f)"
+sudo chmod 0600 /etc/pregdos/key.pem
 ```
+
+Be clear about what that buys: encryption on the wire, from the **development** server. It is
+not a production WSGI deployment (issue #90) and it is not authentication (issue #64) — anyone
+who can reach the port can read every study on the server. A self-signed certificate also
+shows every user a browser warning, which trains exactly the wrong reflex for a clinical tool;
+if the site has its own CA, a certificate from it costs the same to install and avoids that.
 
 Remember the host firewall: `sudo firewall-cmd --add-port=8080/tcp` (add `--permanent`, then
 `--reload`, once the port is settled).
-
-PregDos serves plain HTTP and has no authentication. On a shared network, terminate TLS in
-front of it and restrict who can reach the port. The development server is not a production
-WSGI server, with or without a certificate.
 
 ### Configuration File
 
@@ -189,7 +213,8 @@ a port, so a bad file fails immediately rather than on whichever page first read
 > sees it. Use `PREGDOS_CONFIG` in the unit file for those deployments.
 
 The sections are `[paths]` (`work_dir`, `topas_bin`, `dicomexport`, `dicomexport_timeout`),
-`[scheduler]` (see below), and `[network]` (`update_check`).
+`[scheduler]` (see below), `[server]` (`host`, `port`, `ssl_cert`, `ssl_key`), and
+`[network]` (`update_check`).
 
 #### Airgapped sites
 

@@ -1265,6 +1265,8 @@ def main(argv: list[str] | None = None):
         help="TOML config file. Replaces the /etc/pregdos and ~/.config/pregdos stack "
              f"rather than merging onto it. See also ${config.CONFIG_ENV}.",
     )
+    parser.add_argument("--host", metavar="ADDR", help="Interface to bind. Overrides [server] host.")
+    parser.add_argument("--port", type=int, metavar="N", help="TCP port to listen on. Overrides [server] port.")
     args = parser.parse_args(argv)
     if args.config:
         config.set_config_path(args.config)
@@ -1272,7 +1274,7 @@ def main(argv: list[str] | None = None):
     # Fail before binding a port: a bad config should be a startup error naming the file and
     # the key, not a 500 on whichever page first happens to read it.
     try:
-        config.load()
+        cfg = config.load()
     except config.ConfigError as exc:
         parser.error(str(exc))
 
@@ -1280,10 +1282,28 @@ def main(argv: list[str] | None = None):
     # --config was known.  Redo it now.
     _apply_config()
 
+    # A flag beats the file: it is the more explicit, per-invocation signal, exactly as
+    # --config beats $PREGDOS_CONFIG.  `is not None` rather than `or`, so --port 0 (bind an
+    # ephemeral port) stays expressible even though the config file rejects it.
+    host = args.host if args.host is not None else cfg.server.host
+    port = args.port if args.port is not None else cfg.server.port
+    if not 0 <= port <= 65535:
+        parser.error(f"--port {port} is not a valid port (0-65535)")
+
+    # Read the certificate before binding, for the same reason the config is validated first:
+    # a missing file should name itself, not surface as a Werkzeug traceback on the first
+    # HTTPS request.  config._validate_combinations has already refused half a pair.
+    ssl_context = None
+    if cfg.server.ssl_cert:
+        for role, value in (("ssl_cert", cfg.server.ssl_cert), ("ssl_key", cfg.server.ssl_key)):
+            if not Path(value).is_file():
+                parser.error(f"[server] {role}: {value} does not exist or is not a file")
+        ssl_context = (cfg.server.ssl_cert, cfg.server.ssl_key)
+
     # Debug is OFF by default: the Werkzeug debugger is an interactive console, and the app
-    # binds all interfaces, so debug=True on a shared network is remote code execution.
-    # Opt in explicitly with PREGDOS_DEBUG=1 for local development only.
-    app.run(debug=_env_flag("PREGDOS_DEBUG"), host="0.0.0.0", port=5000)
+    # binds all interfaces by default, so debug=True on a shared network is remote code
+    # execution.  Opt in explicitly with PREGDOS_DEBUG=1 for local development only.
+    app.run(debug=_env_flag("PREGDOS_DEBUG"), host=host, port=port, ssl_context=ssl_context)
 
 
 if __name__ == "__main__":

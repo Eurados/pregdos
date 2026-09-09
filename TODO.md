@@ -18,7 +18,7 @@ OpenTOPAS behind `module load opentopas/4.2`).  This branch stays open until the
   environment, stand in for the probe.  (b) is the honest fix — one shell per probe, cached by
   `lru_cache` — but it makes a config value shell-executed in one more place, so decide
   deliberately.
-- [ ] **The listen address is hard-coded** — `webserver.main` ends in
+- [x] **The listen address is hard-coded** — `webserver.main` ends in
   `app.run(host="0.0.0.0", port=5000)` with no flag and no config key.  The DCPT host already
   runs an unrelated Flask app on 5000, so PregDos cannot start there at all; the workaround is
   to bypass `main()` via `flask --app pregdos.webserver:app run --port ...`, which is not
@@ -27,6 +27,9 @@ OpenTOPAS behind `module load opentopas/4.2`).  This branch stays open until the
   so it belongs here: a `[server]` section with `host` and `port`, plus matching `--host` /
   `--port` flags.  Note `0.0.0.0` as the default deserves a second look while in there — the
   service has no authentication (deliberately, see #64) and TLS is #90.
+  Done: `[server]` carries `host`, `port`, `ssl_cert`, `ssl_key`; flags override the file.
+  The default stayed `0.0.0.0:5000` because the container depends on it, and the example
+  config now says plainly what that exposes.
 - [ ] **`4.2.p03` sits exactly on the `MINIMUM_TOPAS = (4, 2, 3)` floor.**  It parses correctly
   and passes, with zero margin.  Confirm this is really the build we want validated against
   before the branch merges.
