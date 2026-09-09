@@ -705,3 +705,75 @@ def test_no_prologue_leaves_the_command_byte_identical(run_dir, monkeypatch, moc
     argv = _sbatch_argv_with("[scheduler]\n", run_dir, monkeypatch, mocker, write_config)
     assert argv[-1] == executor.field_command("topas_field01.txt")
     assert executor._with_prologue("anything") == "anything"
+
+
+# ---------------------------------------------------------------------------
+# Thread count: what the file asks for must match what the scheduler granted
+# ---------------------------------------------------------------------------
+
+DICOMEXPORT_SETUP = """\
+i:Ts/ShowHistoryCountAtInterval          = 100000
+i:Ts/NumberOfThreads                     = 0
+b:Ts/ShowCPUTime                         = "True"
+"""
+
+
+def test_zero_threads_becomes_the_granted_cpu_count(tmp_path):
+    """0 means "every core on the machine", which is not what SLURM allocated."""
+    path = tmp_path / "topas_field01.txt"
+    path.write_text(DICOMEXPORT_SETUP)
+
+    executor.set_thread_count(path, 16)
+
+    assert "i:Ts/NumberOfThreads                     = 16" in path.read_text()
+    assert "= 0" not in path.read_text()
+
+
+def test_thread_count_is_replaced_not_duplicated(tmp_path):
+    """TOPAS rejects a parameter defined twice, so the key must be rewritten in place."""
+    path = tmp_path / "topas_field01.txt"
+    path.write_text(DICOMEXPORT_SETUP)
+
+    executor.set_thread_count(path, 16)
+    executor.set_thread_count(path, 30)
+
+    assert path.read_text().count("i:Ts/NumberOfThreads") == 1
+    assert "= 30" in path.read_text()
+
+
+def test_thread_count_is_appended_when_the_key_is_absent(tmp_path):
+    path = tmp_path / "hand_written.txt"
+    path.write_text("d:Ge/World/HLX = 1.0 m\n")
+
+    executor.set_thread_count(path, 8)
+
+    text = path.read_text()
+    assert text.count("i:Ts/NumberOfThreads") == 1
+    assert "d:Ge/World/HLX" in text            # the original content survives
+
+
+def test_submit_pins_each_field_to_its_own_allocation(run_dir, monkeypatch, write_config):
+    """The pre-pass is single-threaded; the fields get what cpus_per_task grants."""
+    monkeypatch.setenv("PREGDOS_EXECUTOR", "local")
+    monkeypatch.setenv("TOPAS_BIN", "true")
+    write_config("[scheduler]\ncpus_per_task = 16\n")
+    prepass = run_dir / "structure_mask_prepass.txt"
+    prepass.write_text(DICOMEXPORT_SETUP)
+    (run_dir / "topas_field01.txt").write_text(DICOMEXPORT_SETUP)
+
+    executor.submit_run(run_dir, ["structure_mask_prepass.txt", "topas_field01.txt"])
+
+    assert "NumberOfThreads                     = 1\n" in prepass.read_text()
+    assert "NumberOfThreads                     = 16\n" in (run_dir / "topas_field01.txt").read_text()
+
+
+def test_thread_count_follows_the_config_at_submit_time(run_dir, monkeypatch, write_config):
+    """cpus_per_task can change between converting a study and submitting it."""
+    monkeypatch.setenv("PREGDOS_EXECUTOR", "local")
+    monkeypatch.setenv("TOPAS_BIN", "true")
+    (run_dir / "topas_field01.txt").write_text(DICOMEXPORT_SETUP)
+    write_config("[scheduler]\ncpus_per_task = 30\n")
+
+    executor.submit_run(run_dir, ["topas_field01.txt"])
+
+    assert "= 30" in (run_dir / "topas_field01.txt").read_text()

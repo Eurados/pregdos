@@ -123,6 +123,35 @@ def _cpus_per_task(topas_file: str) -> int:
     return os.cpu_count() or 1
 
 
+# `i:Ts/NumberOfThreads = N` as dicomexport writes it, with its own spacing.
+_THREADS_RE = re.compile(r"^([ \t]*i:Ts/NumberOfThreads[ \t]*=[ \t]*)(-?\d+)", re.MULTILINE)
+
+
+def set_thread_count(path: str | os.PathLike, threads: int) -> None:
+    """Pin one TOPAS input to ``threads`` worker threads.
+
+    dicomexport writes ``NumberOfThreads = 0``, and 0 means *every core the machine has* --
+    which is not the same as the cores the scheduler gave this job.  Under SLURM the job is
+    confined to its `--cpus-per-task` by cgroup, but `hardware_concurrency` still reports the
+    whole machine, so TOPAS starts one worker per core and they timeshare the allocation.
+    Two fields on one node then run at double subscription, and because Geant4 allocates
+    scoring arrays *per thread*, each also needs twice the memory it should -- which on a
+    large out-of-field grid is how a field dies at its first history rather than slowly.
+
+    Rewritten in place, never appended twice: TOPAS rejects a parameter defined more than
+    once, so a file that already carries the key has it replaced.
+    """
+    path = Path(path)
+    content = read_text_lenient(path)
+    replacement, count = _THREADS_RE.subn(rf"\g<1>{threads}", content, count=1)
+    if count == 0:
+        # dicomexport always writes the key, but a hand-made input may not.  Order does not
+        # matter to TOPAS, so appending is safe -- and still only ever one definition.
+        replacement = content + f"\ni:Ts/NumberOfThreads = {threads}\n"
+    if replacement != content:
+        path.write_text(replacement)
+
+
 def field_command(topas_file: str) -> str:
     """Shell command running one field and recording its exit code next to its log.
 
@@ -450,6 +479,15 @@ def submit_run(run_dir: str | os.PathLike, topas_files: List[str]) -> RunInfo:
     run_dir = Path(run_dir)
     backend = select_backend()
     info = RunInfo(backend=backend, submitted=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    # Do this here rather than at conversion time: the thread count has to match the CPUs
+    # this run is about to be given, and `cpus_per_task` can change between converting a
+    # study and submitting it.
+    for topas_file in topas_files:
+        try:
+            set_thread_count(run_dir / topas_file, _cpus_per_task(topas_file))
+        except OSError as exc:
+            info.errors.append(f"could not set the thread count in {topas_file}: {exc}")
 
     if backend == SLURM:
         _submit_slurm(run_dir, topas_files, info)

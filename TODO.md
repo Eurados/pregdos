@@ -23,6 +23,18 @@ OpenTOPAS behind `module load opentopas/4.2`).  This branch stays open until the
   unchanged, and one with a prologue is measured in the shell its jobs will run in.  `ldd`
   runs there too, or every libG4 line reads "not found" and Geant4 stays unknown.  A marker
   line separates the prologue's own chatter from the command's output.
+- [x] **TOPAS ignored the SLURM allocation and started one thread per machine core.**
+  dicomexport writes `i:Ts/NumberOfThreads = 0` and 0 means "every core"; PregDos asked
+  SLURM for `cpus_per_task` and never told TOPAS.  On the site's 32-core node with
+  `cpus_per_task = 16`, each of two concurrent fields started 32 workers -- 64 threads on 32
+  cores, and *twice* the scoring memory each, since Geant4 allocates scorer arrays per
+  thread.  One field then died with SIGSEGV inside libG4processes at its very first history
+  (log showed `G4WT25`, i.e. worker 25, with only 16 CPUs granted).  Fixed:
+  `executor.set_thread_count` rewrites the key at submit time to match `_cpus_per_task`,
+  which also keeps the single-threaded mask pre-pass at 1.
+  Worth upstreaming a `--threads` flag to dicomexport so the file is right when written;
+  until then PregDos rewrites it, which is also more correct — `cpus_per_task` can change
+  between converting a study and submitting it.
 - [ ] **The Geant4 data pre-flight is vacuous at a modules site.**  Same blind spot as the
   About-page probe, found the same day: `g4_data_dir_problem()` reads `TOPAS_G4_DATA_DIR`
   from the *web process* environment, but at a modules site the module sets it inside the
