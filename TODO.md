@@ -41,9 +41,14 @@ OpenTOPAS behind `module load opentopas/4.2`).  This branch stays open until the
   Done: `[server]` carries `host`, `port`, `ssl_cert`, `ssl_key`; flags override the file.
   The default stayed `0.0.0.0:5000` because the container depends on it, and the example
   config now says plainly what that exposes.
-- [ ] **`4.2.p03` sits exactly on the `MINIMUM_TOPAS = (4, 2, 3)` floor.**  It parses correctly
+- [x] **`4.2.p3` sits exactly on the `MINIMUM_TOPAS = (4, 2, 3)` floor.**  It parses correctly
   and passes, with zero margin.  Confirm this is really the build we want validated against
   before the branch merges.
+  Confirmed at the site 2026-09-09: `module load opentopas/4.2` gives
+  `/TopasDCPT/topas/opentopas_4.2.p3/bin/topas`, whose `--version` prints exactly `4.2.p3`
+  on stdout, which parses to (4, 2, 3) and clears the floor.  Zero margin is a deliberate
+  acceptance, not an oversight: 4.2.p3 IS the fixed build for #49.  Any site running an
+  older module fails the check, which is the intent.
 - [x] **Document the two airgapped-install traps** in `docs/installation.md`, both of which cost
   a round trip on the real host: `python3.11 -m venv` on RHEL 9 bootstraps pip 22.3.1 from
   `python3.11-pip-wheel` and should be upgraded from the wheelhouse first; and
