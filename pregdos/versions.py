@@ -37,10 +37,14 @@ UNKNOWN = "unknown"
 # Minimum OpenTOPAS that reports a trustworthy scorer Sum and Standard_Deviation (#49).
 MINIMUM_TOPAS = (4, 2, 3)
 
-# Minimum dicomexport whose field-numbering contract PregDos follows: 1.5.0 numbers output
-# fields by DICOM BeamNumber and skips setup beams with no meterset (dicomexport #75), which
-# PregDos relies on for field labels and RTDOSE attribution.
-MINIMUM_DICOMEXPORT = (1, 5, 0)
+# Minimum dicomexport PregDos will compute with.  1.5.0 brought the field-numbering contract
+# -- output fields named by DICOM BeamNumber, setup beams without meterset skipped
+# (dicomexport #75) -- which PregDos relies on for field labels and RTDOSE attribution.
+# 1.5.1 corrected two catalogued range shifter thicknesses (dicomexport #92): an older
+# install computes a different range for CCB and WPE plans, and silently, since nothing in
+# the output says which catalog produced it.  That is a dose error, not an interface
+# mismatch, which is why the floor moves for a patch release.
+MINIMUM_DICOMEXPORT = (1, 5, 1)
 
 MARKER_DIR = Path("/etc/pregdos")
 
@@ -395,7 +399,9 @@ def dicomexport_warning() -> Optional[str]:
     if parsed < MINIMUM_DICOMEXPORT:
         return (f"dicomexport {reported} is older than {minimum}: PregDos relies on the "
                 "BeamNumber field-output contract for field labels and RTDOSE attribution "
-                "(dicomexport #75).")
+                "(dicomexport #75), and on the corrected CCB and WPE range shifter "
+                "thicknesses (dicomexport #92) -- an older install computes a different "
+                "range for those centres.")
     return None
 
 

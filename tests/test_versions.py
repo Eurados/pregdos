@@ -292,13 +292,13 @@ def test_g4_data_dir_missing_is_flagged(monkeypatch, tmp_path):
 
 def test_submit_blocker_none_for_supported_topas(monkeypatch):
     _with_version(monkeypatch, "4.2.p3")
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.0")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
     assert versions.submit_blocker() is None
 
 
 def test_submit_blocker_blocks_unsupported_topas(monkeypatch):
     _with_version(monkeypatch, "4.1.p0")
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.0")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
     assert "#49" in versions.submit_blocker()
 
 
@@ -306,7 +306,7 @@ def test_submit_blocker_does_not_block_unknown_topas(monkeypatch):
     """SLURM runs TOPAS on a compute node, so the webserver not finding it is not a reason
     to refuse -- the version is simply unknown here."""
     _with_version(monkeypatch, versions.UNKNOWN)
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.0")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
     assert versions.submit_blocker() is None
 
 
@@ -322,7 +322,7 @@ def test_about_page_reports_versions(monkeypatch):
     from pregdos.webserver import app
     _with_version(monkeypatch, "4.2.p3")
     monkeypatch.setattr(versions, "geant4_version", lambda: "11.3.2")
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.0")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
     monkeypatch.setattr(versions, "latest_pregdos_release", lambda: "v0.5.0")
     app.config["TESTING"] = True
     with app.test_client() as c:
@@ -487,10 +487,10 @@ def test_about_page_warns_about_missing_g4_data(monkeypatch, tmp_path):
     assert "missing" in body and "restart it" in body
 
 
-# --- dicomexport minimum (dicomexport #75: BeamNumber field output) ---
+# --- dicomexport minimum (#75: BeamNumber field output; #92: corrected RS thicknesses) ---
 
 def test_dicomexport_at_the_minimum_is_accepted(monkeypatch):
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.0")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
     assert versions.dicomexport_warning() is None
 
 
@@ -519,7 +519,7 @@ def test_an_old_dicomexport_blocks_submission(monkeypatch):
 def test_a_current_dicomexport_does_not_block_submission(monkeypatch):
     _with_version(monkeypatch, "4.2.p3")
     monkeypatch.delenv("TOPAS_G4_DATA_DIR", raising=False)
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.0")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
     assert versions.submit_blocker() is None
 
 
