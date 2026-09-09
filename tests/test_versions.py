@@ -178,6 +178,43 @@ def test_no_prologue_keeps_the_direct_probe(monkeypatch):
     assert calls == [["/usr/bin/topas", "--version"]]      # no /bin/sh anywhere
 
 
+# --- a config file this module cannot read -----------------------------------
+#
+# `pregdos-web` validates the config at startup and refuses to run on a bad one, so these
+# only matter for an import-based deployment (gunicorn pregdos.webserver:app), which never
+# calls main().  There, "unknown" is the right answer and a 500 is not.
+
+@pytest.fixture
+def broken_config(tmp_path, monkeypatch):
+    """A config file that exists and does not parse."""
+    path = tmp_path / "broken.toml"
+    path.write_text("[paths\nwork_dir = ")
+    monkeypatch.setenv("PREGDOS_CONFIG", str(path))
+    versions.config.reset_cache()
+    yield path
+    versions.config.reset_cache()
+
+
+def test_unreadable_config_does_not_break_version_discovery(broken_config, monkeypatch):
+    monkeypatch.setattr(versions.shutil, "which", lambda n: None)
+    assert versions.topas_bin() == "topas"            # the built-in default
+    assert versions.topas_version() == versions.UNKNOWN
+    assert versions._prologue() == ""
+
+
+def test_unreadable_config_never_reaches_out_to_github(broken_config, monkeypatch):
+    """A file PregDos cannot parse is not permission to make an outbound request.
+
+    Note this is the opposite of the built-in default, which is enabled: on an airgapped
+    node the request can only cost a timeout, so the safe fallback is off.
+    """
+    def forbidden(*a, **k):
+        raise AssertionError("asked GitHub despite an unreadable config")
+
+    monkeypatch.setattr(versions.requests, "get", forbidden)
+    assert versions.latest_pregdos_release() == versions.UNKNOWN
+
+
 # --- geant4_version ---
 
 def test_geant4_version_from_linked_library_dir(monkeypatch, tmp_path):

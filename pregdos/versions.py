@@ -75,6 +75,34 @@ def _explicit(env_name: str) -> Optional[str]:
 _PROBE_MARKER = "__pregdos_probe__"
 
 
+def _config() -> config.Config:
+    """The site config, or the built-in defaults when it cannot be read.
+
+    Nothing in this module raises (see the module docstring), and that has to hold for the
+    config file too.  ``pregdos-web`` validates it at startup and refuses to run on a bad
+    one, but an import-based deployment (``gunicorn pregdos.webserver:app``) never calls
+    ``main()`` -- and there, a malformed file should degrade the About page to "unknown"
+    rather than turn it into a 500.
+    """
+    try:
+        return config.load()
+    except config.ConfigError:
+        return config.Config()
+
+
+def _update_check_enabled() -> bool:
+    """Whether the About page may ask GitHub for a newer release.
+
+    Unlike everything else here, an unreadable config falls back to *disabled* rather than to
+    the built-in default of enabled: a file PregDos cannot parse is not permission to make an
+    outbound request, and on an airgapped node that request can only ever cost a timeout.
+    """
+    try:
+        return config.load().network.update_check
+    except config.ConfigError:
+        return False
+
+
 def _prologue() -> str:
     """``[scheduler] prologue``: the shell source that puts TOPAS on PATH at a modules site.
 
@@ -83,10 +111,7 @@ def _prologue() -> str:
     not the one visible to the web process -- at a site where TOPAS lives behind
     ``module load``, those are different, and the web process sees nothing at all.
     """
-    try:
-        return config.load().scheduler.prologue.strip()
-    except config.ConfigError:
-        return ""     # nothing here raises; an unusable config is the caller's problem
+    return _config().scheduler.prologue.strip()
 
 
 def _shell_probe(command: str, timeout: int = 30) -> Tuple[int, str]:
@@ -127,7 +152,7 @@ def parse_version(text: str) -> Optional[Tuple[int, ...]]:
 
 def topas_bin() -> str:
     """``TOPAS_BIN``, else ``[paths] topas_bin``.  Mirrors executor.topas_bin."""
-    return config.env_or("TOPAS_BIN", config.load().paths.topas_bin)
+    return config.env_or("TOPAS_BIN", _config().paths.topas_bin)
 
 
 @functools.lru_cache(maxsize=1)
@@ -327,7 +352,7 @@ def latest_pregdos_release() -> str:
     :func:`_fetch_latest_release`: inside it, the first call would pin its answer for the
     lifetime of the process regardless of what the config says afterwards.
     """
-    if not config.load().network.update_check:
+    if not _update_check_enabled():
         return UNKNOWN
     return _fetch_latest_release()
 

@@ -148,10 +148,18 @@ module load opentopas/4.2
 """
 ```
 
-Give the *web process* the same module load as well — in the systemd unit or a wrapper script.
-The prologue covers the shell that runs TOPAS, but the About page probes the binary from the
-web process itself, and without the module it reports TOPAS and Geant4 as unknown even though
-simulations run correctly.
+The prologue covers the About page too: the TOPAS and Geant4 versions shown there are
+measured by running the binary in `/bin/sh` with the prologue applied, so what the provenance
+table reports is the toolchain the jobs will actually use. `ldd` runs in that shell as well,
+which is what lets Geant4 be identified at all — it resolves against the `LD_LIBRARY_PATH` the
+module sets.
+
+One check is not covered, and it is worth knowing about: the `TOPAS_G4_DATA_DIR` pre-flight
+reads the *web process's* environment directly. At a modules site that variable is set inside
+the prologue shell, so the pre-flight sees nothing and silently never fires — it cannot raise
+a false alarm, but it cannot catch a broken Geant4 data directory either. Until that is fixed,
+loading the module in the service environment as well (in the systemd unit or a wrapper) is
+what makes that particular check meaningful.
 
 #### Choosing a port, and TLS
 

@@ -43,12 +43,16 @@ OpenTOPAS behind `module load opentopas/4.2`).  This branch stays open until the
   produce a false alarm — it simply cannot fire at all — which is why it survived the probe
   fix.  Read the variable through the prologue shell, the way `versions._shell_probe` now
   does, and check the `G4*DATA` directories the module actually sets while there.
-- [ ] **`versions` can raise `ConfigError` after all** — its docstring promises it never
+- [x] **`versions` can raise `ConfigError` after all** — its docstring promises it never
   raises, but `topas_bin()` calls `config.load()`, which does on a malformed file.
   `pregdos-web` validates at startup so the CLI is safe; a WSGI import
   (`gunicorn pregdos.webserver:app`) never calls `main()`, and there `/about` would 500
   instead of degrading to "unknown".  Pre-existing, surfaced by this branch putting
-  `config.load()` on that path.  Not a merge blocker; fix with #90 if not before.
+  `config.load()` on that path.
+  Done: `_config()` falls back to the built-in defaults, and every read in the module goes
+  through it.  `_update_check_enabled()` is the deliberate exception — it falls back to
+  *disabled* rather than to the default of enabled, because a file PregDos cannot parse is
+  not permission to make an outbound request.
 - [ ] **A bad config under `$PREGDOS_CONFIG` fails as a traceback, not as a message.**
   `main()` catches `ConfigError` and turns it into a clean `parser.error`, but only for
   `--config`: with the environment variable set, the import-time `_apply_config()` has
