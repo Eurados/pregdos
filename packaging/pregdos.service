@@ -2,13 +2,20 @@
 #
 #     sudo useradd --system --home-dir /var/lib/pregdos --create-home \
 #         --shell /sbin/nologin --comment "PregDos service account" pregdos
-#     sudo install -m 0644 packaging/pregdos.service /etc/systemd/system/pregdos.service
+#     sudo install -m 0644 systemd/pregdos.service /etc/systemd/system/pregdos.service
 #     sudo chown -R pregdos:pregdos /var/tmp/pregdos      # if runs already exist
 #     sudo systemctl daemon-reload && sudo systemctl enable --now pregdos
+#     sudo journalctl -u pregdos -f
 #
-# With `[scheduler] submit_as_user = ""` PregDos submits as this account, so the account
-# must be able to reach SLURM (munge) and, at a modules site, must be able to source the
-# module init named in `[scheduler] prologue`.
+# THE SERVICE ACCOUNT AND `submit_as_user` MUST AGREE.  This unit runs PregDos *as* the
+# pregdos account, so `[scheduler] submit_as_user` must be "" -- there is nothing to drop
+# privileges to, and `runuser` is root-only, so any other value fails every submission.
+# (`submit_as_user = "pregdos"` is for running the web process as root instead.)
+#
+# The account also needs, on its own:
+#   * access to SLURM -- `sudo -u pregdos sbatch --wrap true` must work (munge);
+#   * permission to read `[scheduler] prologue`'s module init at a modules site;
+#   * ownership of the studies root, and read access to the TLS key if one is configured.
 
 [Unit]
 Description=PregDos pregnancy dosimetry web interface
@@ -26,6 +33,8 @@ Group=pregdos
 Environment=PREGDOS_CONFIG=/etc/pregdos/config.toml
 ExecStart=/opt/pregdos/venv/bin/pregdos-web
 
+# The config file is read once per process: a change to /etc/pregdos/config.toml needs
+# `systemctl restart pregdos`, not just a reload.
 Restart=on-failure
 RestartSec=5
 

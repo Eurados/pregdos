@@ -113,6 +113,16 @@ update check that an airgapped site wants turned off:
         | sudo tee /etc/pregdos/config.toml
 
 `requirements.txt` records the exact pinned set this tarball contains.
+
+## Running it as a service
+
+`systemd/pregdos.service` and `tmpfiles.d/pregdos.conf` are here so a site with no git
+checkout can install them.  Read the comments at the top of the unit first: it runs PregDos
+as a `pregdos` account, which has to agree with `[scheduler] submit_as_user`.
+
+    sudo install -m 0644 systemd/pregdos.service /etc/systemd/system/pregdos.service
+    sudo install -m 0644 tmpfiles.d/pregdos.conf /etc/tmpfiles.d/pregdos.conf
+    sudo systemctl daemon-reload && sudo systemctl enable --now pregdos
 """
 
 
@@ -266,7 +276,15 @@ def build(python_version: str, platform: str, dest: Path, keep_tree: bool = Fals
     #    with no way to fetch anything.
     shutil.copy2(Path(__file__).with_name("verify_offline_install.py"), staging)
 
-    # 4. The paperwork that makes the tarball self-explanatory on a machine with no internet.
+    # 4. Deployment files.  They live in the git repo, which an airgapped site does not have
+    #    -- so without this the documented `install systemd/pregdos.service` step names a
+    #    path that exists nowhere on the target.
+    for source, subdir in (("pregdos.service", "systemd"), ("tmpfiles.d/pregdos.conf", "tmpfiles.d")):
+        target = staging / subdir
+        target.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(Path(__file__).parent / source, target)
+
+    # 5. The paperwork that makes the tarball self-explanatory on a machine with no internet.
     pinned = sorted(
         f"{w.name.split('-')[0].replace('_', '-')}=={w.name.split('-')[1]}"
         for w in wheels.glob("*.whl")
@@ -294,7 +312,7 @@ def build(python_version: str, platform: str, dest: Path, keep_tree: bool = Fals
             sums.append(f"{digest}  {path.relative_to(staging)}")
     (staging / "sha256sums").write_text("\n".join(sums) + "\n", encoding="utf-8")
 
-    # 5. One tarball, named after its target -- someone will eventually carry the wrong one to
+    # 6. One tarball, named after its target -- someone will eventually carry the wrong one to
     #    a machine where they cannot investigate why it fails.
     stem = f"pregdos-{version}-wheelhouse-cp{python_version}-{platform}"
     dest.mkdir(parents=True, exist_ok=True)
