@@ -23,6 +23,14 @@ OpenTOPAS behind `module load opentopas/4.2`).  This branch stays open until the
   unchanged, and one with a prologue is measured in the shell its jobs will run in.  `ldd`
   runs there too, or every libG4 line reads "not found" and Geant4 stays unknown.  A marker
   line separates the prologue's own chatter from the command's output.
+- [ ] **The Geant4 data pre-flight is vacuous at a modules site.**  Same blind spot as the
+  About-page probe, found the same day: `g4_data_dir_problem()` reads `TOPAS_G4_DATA_DIR`
+  from the *web process* environment, but at a modules site the module sets it inside the
+  prologue shell.  The web process sees nothing, the check returns None, and the one
+  pre-flight meant to catch "Geant4 aborts seconds after submission" never fires.  It cannot
+  produce a false alarm — it simply cannot fire at all — which is why it survived the probe
+  fix.  Read the variable through the prologue shell, the way `versions._shell_probe` now
+  does, and check the `G4*DATA` directories the module actually sets while there.
 - [ ] **`versions` can raise `ConfigError` after all** — its docstring promises it never
   raises, but `topas_bin()` calls `config.load()`, which does on a malformed file.
   `pregdos-web` validates at startup so the CLI is safe; a WSGI import

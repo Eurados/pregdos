@@ -1,0 +1,42 @@
+# PregDos web interface, as a system service.
+#
+#     sudo useradd --system --home-dir /var/lib/pregdos --create-home \
+#         --shell /sbin/nologin --comment "PregDos service account" pregdos
+#     sudo install -m 0644 packaging/pregdos.service /etc/systemd/system/pregdos.service
+#     sudo chown -R pregdos:pregdos /var/tmp/pregdos      # if runs already exist
+#     sudo systemctl daemon-reload && sudo systemctl enable --now pregdos
+#
+# With `[scheduler] submit_as_user = ""` PregDos submits as this account, so the account
+# must be able to reach SLURM (munge) and, at a modules site, must be able to source the
+# module init named in `[scheduler] prologue`.
+
+[Unit]
+Description=PregDos pregnancy dosimetry web interface
+Documentation=https://github.com/Eurados/pregdos
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pregdos
+Group=pregdos
+
+# --config is a CLI flag, so a future WSGI server importing pregdos.webserver:app would not
+# see it.  The environment variable works for both.
+Environment=PREGDOS_CONFIG=/etc/pregdos/config.toml
+ExecStart=/opt/pregdos/venv/bin/pregdos-web
+
+Restart=on-failure
+RestartSec=5
+
+# Modest hardening.  Deliberately NOT PrivateTmp=yes: that gives the unit a private /tmp AND
+# a private /var/tmp, which would hide the studies root (/var/tmp/pregdos by default) from
+# everything else and discard every run on restart.  If work_dir is moved off /var/tmp,
+# PrivateTmp=yes becomes safe and worth adding.
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=/var/tmp/pregdos
+
+[Install]
+WantedBy=multi-user.target
