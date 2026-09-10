@@ -117,7 +117,7 @@ jobs:
           fi
 
       - name: Attach the wheelhouse to the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*.tar.gz
           fail_on_unmatched_files: true
