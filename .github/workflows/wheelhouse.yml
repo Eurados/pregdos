@@ -76,7 +76,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7        # for packaging/verify_wheelhouse.sh
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: wheelhouse
           path: /tmp/artifact
@@ -96,7 +96,7 @@ jobs:
     needs: verify-offline
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: wheelhouse
           path: dist
