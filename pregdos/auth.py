@@ -30,6 +30,7 @@ in the login view, and the backing store's own lockout policy.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import logging
@@ -38,11 +39,12 @@ import re
 import secrets
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
 
-from . import config
+from . import config, portable
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +56,25 @@ _SCRYPT_R = 8
 _SCRYPT_P = 1
 _SCRYPT_DKLEN = 32
 _SALT_BYTES = 16
+
+
+# Characters that must never reach a credential store's on-disk or on-pipe format.
+#
+# Both formats PregDos writes are LINE-ORIENTED -- smbclient's `-A` file is `key = value` per
+# line, and the password file is `user:hash` per line -- so a newline inside a value does not
+# escape a quoting layer, it creates a new record.  In smbclient's case a later `username =`
+# overrides the earlier one, which would let someone holding any valid account authenticate as
+# themselves while PregDos issues the session under whatever name they typed: `allow_users`
+# bypassed, and the audit log naming the wrong person.
+#
+# NUL is here for a different reason: it terminates a C string, so a password carrying one
+# could be silently truncated by the tooling and checked in part rather than in full.
+_FORBIDDEN_IN_CREDENTIALS = ("\r", "\n", "\x00")
+
+
+def has_forbidden_characters(*values: str) -> bool:
+    """True if any value carries a character that could forge a record.  See above."""
+    return any(bad in value for value in values for bad in _FORBIDDEN_IN_CREDENTIALS)
 
 
 class AuthError(Exception):
@@ -168,7 +189,11 @@ def verify_password(password: str, stored: str) -> bool:
             password.encode("utf-8"), salt=base64.b64decode(salt_b64),
             n=int(n), r=int(r), p=int(p), dklen=len(expected),
         )
-    except (ValueError, TypeError, MemoryError):
+    except (ValueError, TypeError, MemoryError, OverflowError):
+        # The exact type varies by Python and OpenSSL build -- an out-of-range `n` raises
+        # TypeError on 3.13 here and OverflowError on other versions -- so all four are caught
+        # rather than the one this machine happens to produce.  The contract is what matters:
+        # one corrupt line locks out one account, it never 500s the login page.
         log.error("password file: entry is malformed and will never verify")
         return False
     return hmac.compare_digest(actual, expected)
@@ -182,16 +207,33 @@ def read_password_file(path: Path) -> Dict[str, str]:
     """
     try:
         mode = path.stat().st_mode
-    except OSError as exc:
-        raise AuthError(f"{path}: password file cannot be read ({exc.strerror}). "
+    except FileNotFoundError as exc:
+        raise AuthError(f"{path}: password file does not exist. "
                         f"Create it with `pregdos-passwd add <user>`.") from exc
+    except OSError as exc:
+        raise AuthError(f"{path}: password file cannot be read ({exc.strerror}).") from exc
     if mode & 0o077:
         raise AuthError(
             f"{path}: mode {mode & 0o777:04o} lets other accounts read the password hashes. "
             f"chmod 0600."
         )
+
+    # Reading is a second syscall and can fail on its own: permissions can change between the
+    # stat and the read, the path can be a directory, the disk can fault.  Both failures have
+    # to arrive as AuthError, because preflight() reports only that -- anything else escapes
+    # main() as a traceback at startup rather than a message naming the file.
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise AuthError(
+            f"{path}: password file is not valid UTF-8, so it is probably not a PregDos "
+            f"password file at all. Check the path, or recreate it with `pregdos-passwd`."
+        ) from exc
+    except OSError as exc:
+        raise AuthError(f"{path}: password file cannot be read ({exc.strerror}).") from exc
+
     users: Dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in lines:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -201,21 +243,51 @@ def read_password_file(path: Path) -> Dict[str, str]:
     return users
 
 
+@contextlib.contextmanager
+def password_file_lock(path: Path):
+    """Serialize read-modify-write of the password file across processes.
+
+    ``os.replace`` makes each *write* atomic for readers, which is not the same thing: adding
+    an account is read, modify, write, and two ``pregdos-passwd`` runs that interleave there
+    would each write a set computed before the other's change, silently discarding one of
+    them.  The admin sees "Added alice", and alice cannot sign in.
+
+    The lock is a sibling file rather than the password file itself, because ``os.replace``
+    swaps that file out from under any lock held on it -- the two processes would end up
+    holding locks on different inodes and both proceed.
+
+    Uses :func:`pregdos.portable.exclusive_lock`, the same helper the local scheduler uses.
+    """
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as handle:
+        with portable.exclusive_lock(handle):
+            yield
+
+
 def write_password_file(path: Path, users: Dict[str, str]) -> None:
     """Replace the file atomically, 0600.
 
     tmp-file + ``os.replace`` so a crash or a full disk cannot leave a half-written file that
     locks everyone out -- readers see either the old set of accounts or the new one.
+
+    The temporary name is UNIQUE, not a fixed ``.tmp``.  Two writers sharing one temp path can
+    interleave their writes into it and then publish the mixture, which is worse than losing an
+    update: it is a corrupt file nobody can sign in against.  Callers doing read-modify-write
+    should also hold :func:`password_file_lock`; this is the second lock on that door, and it
+    is the one that protects a caller who forgets.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
     body = "".join(f"{user}:{stored}\n" for user, stored in sorted(users.items()))
-    fd = os.open(tmp, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    tmp = Path(tmp_name)
     try:
+        os.fchmod(fd, 0o600)        # mkstemp gives 0600 already; explicit, since it matters
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(body)
         os.replace(tmp, path)
     finally:
+        # On success os.replace consumed it; this is the failure path only.
         if tmp.exists():
             tmp.unlink()
 
@@ -354,6 +426,11 @@ class SmbBackend(Backend):
         # the second lock on the same door.
         if not username or not password:
             return AuthResult(reason="bad-credentials", detail="empty username or password")
+        # login() checks this too; this is the lock on the door it actually guards, since the
+        # `-A` format is what a newline would forge a record in.
+        if has_forbidden_characters(username, password, self.domain):
+            return AuthResult(reason="bad-credentials",
+                              detail="credential contains a newline or NUL")
 
         credentials = f"username = {username}\npassword = {password}\n"
         if self.domain:
@@ -464,12 +541,27 @@ def login(username: str, password: str, cfg: config.Config | None = None) -> Aut
     username = (username or "").strip()
     if not username or not password:
         return AuthResult(reason="bad-credentials", detail="empty username or password")
+    # Checked here, before any backend runs, because this function decides the name that ends
+    # up in the session cookie and in every audit line.  A value that could forge a record in a
+    # backend's line-oriented format could make those two disagree about who signed in.
+    if has_forbidden_characters(username, password):
+        log.warning("rejected a sign-in whose credentials contained a newline or NUL")
+        return AuthResult(reason="bad-credentials",
+                          detail="credential contains a newline or NUL")
 
     try:
         authenticated = get_backend(cfg).check_password(username, password)
     except AuthError as exc:
         log.error("authentication backend unavailable: %s", exc)
         return AuthResult(reason="backend-unavailable", detail=str(exc))
+    except Exception:
+        # A backend raising something unforeseen must not become a 500 with a traceback on the
+        # login page.  Report it the same way as any other backend outage -- the user is told
+        # to try later, and the operator gets the traceback in the journal, which is where it
+        # is useful.  Deliberately broad: the point is that no future backend can break this
+        # page by raising something this module has not thought of.
+        log.exception("authentication backend raised an unexpected error")
+        return AuthResult(reason="backend-unavailable", detail="unexpected backend error")
     if not authenticated.ok:
         return authenticated
 
@@ -505,10 +597,12 @@ __all__ = [
     "authorize",
     "describe_policy",
     "get_backend",
+    "has_forbidden_characters",
     "hash_password",
     "is_enabled",
     "login",
     "login_hint",
+    "password_file_lock",
     "password_file_path",
     "read_password_file",
     "verify_password",

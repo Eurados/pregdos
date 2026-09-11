@@ -4,6 +4,8 @@ No Flask here -- this is the layer that decides whether a password belongs to a 
 whether that username may use PregDos at all.  The gate that consumes it is test_auth_gate.py.
 """
 
+import pathlib
+
 import pytest
 
 from pregdos import auth, config
@@ -399,3 +401,311 @@ def test_smb_refuses_an_empty_password_without_calling_smbclient(monkeypatch):
     monkeypatch.setattr(auth.subprocess, "run", explode)
 
     assert _smb().check_password("adminniebas", "").reason == "bad-credentials"
+
+
+# ---------------------------------------------------------------------------
+# Concurrent account edits
+#
+# os.replace makes each WRITE atomic for readers; that is not the same as making
+# read-modify-write safe.  Two `pregdos-passwd add` runs interleaving would each write a set
+# computed before the other's change, and one account would vanish with the admin told it was
+# added.  Rare, and exactly the kind of failure nobody would notice.
+# ---------------------------------------------------------------------------
+
+def test_write_uses_a_unique_temp_name_not_a_shared_one(tmp_path):
+    """A shared `.tmp` lets two writers interleave into one file and publish the mixture --
+    a corrupt password file, which is worse than losing one update."""
+    seen = []
+    real_mkstemp = auth.tempfile.mkstemp
+
+    def spy(**kwargs):
+        fd, name = real_mkstemp(**kwargs)
+        seen.append(name)
+        return fd, name
+
+    auth.tempfile.mkstemp, original = spy, auth.tempfile.mkstemp
+    try:
+        auth.write_password_file(tmp_path / "users", {"a": auth.hash_password("x")})
+        auth.write_password_file(tmp_path / "users", {"b": auth.hash_password("x")})
+    finally:
+        auth.tempfile.mkstemp = original
+
+    assert len(set(seen)) == 2, "both writes used the same temp path"
+    assert not list(tmp_path.glob("*.tmp")), "a temp file was left behind"
+
+
+def test_write_survives_a_leftover_temp_from_a_crashed_writer(tmp_path):
+    path = tmp_path / "users"
+    (tmp_path / "users.tmp").write_text("junk from a previous crash")
+
+    auth.write_password_file(path, {"alice": auth.hash_password("x")})
+
+    assert list(auth.read_password_file(path)) == ["alice"]
+
+
+def test_the_lock_is_a_sibling_file_not_the_password_file(tmp_path):
+    """os.replace swaps the password file's inode out from under any lock held on it, so the
+    two processes would hold locks on different inodes and both proceed."""
+    path = tmp_path / "users"
+    with auth.password_file_lock(path):
+        pass
+
+    assert (tmp_path / "users.lock").exists()
+
+
+def test_concurrent_adds_do_not_lose_an_account(tmp_path):
+    """The real thing, in two processes -- flock is per-process, so threads would prove nothing.
+
+    Each child adds a different account with a deliberate pause between load and write, which
+    is the window the lock has to close.  Without it, one account is lost.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    path = tmp_path / "users"
+    auth.write_password_file(path, {"seed": auth.hash_password("x")})
+
+    child = textwrap.dedent(f"""
+        import sys, time
+        sys.path.insert(0, {str(pathlib.Path(__file__).resolve().parent.parent)!r})
+        from pathlib import Path
+        from pregdos import auth
+        path = Path({str(path)!r})
+        with auth.password_file_lock(path):
+            users = auth.read_password_file(path)
+            time.sleep(0.4)                      # the read-modify-write window
+            users[sys.argv[1]] = auth.hash_password("pw")
+            auth.write_password_file(path, users)
+    """)
+    script = tmp_path / "child.py"
+    script.write_text(child)
+
+    running = [subprocess.Popen([sys.executable, str(script), name])
+               for name in ("alice", "bob")]
+    for process in running:
+        assert process.wait(timeout=60) == 0
+
+    assert sorted(auth.read_password_file(path)) == ["alice", "bob", "seed"]
+
+
+# ---------------------------------------------------------------------------
+# Record forging
+#
+# Both credential formats PregDos writes are line-oriented, so a newline inside a value does
+# not escape a quoting layer -- it creates a new record.  For smbclient's `-A` input a later
+# `username =` overrides the earlier one, which would let someone holding any valid account
+# authenticate as themselves while PregDos issued the session under the name they typed.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("username, password", [
+    ("alice", "x\nusername = adminniebas\npassword = theirs"),   # the injection itself
+    ("alice\nusername = root", "x"),
+    ("alice", "x\rusername = root"),
+    ("alice", "x\x00truncate-me"),                               # NUL truncates a C string
+])
+def test_smb_refuses_a_credential_that_could_forge_a_record(username, password, monkeypatch):
+    def explode(*_args, **_kwargs):
+        raise AssertionError("smbclient must never be handed a forged credential file")
+
+    monkeypatch.setattr(auth.subprocess, "run", explode)
+
+    result = auth.SmbBackend("localhost", "users").check_password(username, password)
+
+    assert result.reason == "bad-credentials"
+
+
+def test_login_rejects_a_forged_credential_before_any_backend_runs(write_config, users_file):
+    """Checked in login() because that is what decides the name reaching the session cookie
+    and every audit line -- the two must never disagree about who signed in."""
+    cfg = _cfg(write_config, users_file)
+
+    result = auth.login("alice", "correct horse\nusername = root", cfg)
+
+    assert result.reason == "bad-credentials"
+    assert not result.ok
+
+
+def test_a_legitimate_password_with_punctuation_still_works(write_config, tmp_path):
+    """The check must not reject ordinary strong passwords."""
+    path = tmp_path / "users"
+    tricky = "a b:c=d$e#f\\g'h\"i"
+    auth.write_password_file(path, {"alice": auth.hash_password(tricky)})
+    write_config('[server]\nhost = "127.0.0.1"\n\n'
+                 f'[auth]\nmethod = "file"\npassword_file = "{path}"\n')
+
+    assert auth.login("alice", tricky, config.load()).ok
+
+
+@pytest.mark.parametrize("username", ["a:b", "a\nb", "a\x00b", " alice", ""])
+def test_passwd_refuses_a_username_the_file_format_cannot_hold(username, tmp_path,
+                                                               write_config, monkeypatch, capsys):
+    from pregdos import passwd
+
+    monkeypatch.delenv("STATE_DIRECTORY", raising=False)
+    target = tmp_path / "users"
+    path = write_config(
+        f'[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "file"\npassword_file = "{target}"\n')
+
+    with pytest.raises(SystemExit):
+        passwd.main(["--config", str(path), "add", username])
+
+    assert not target.exists(), "a malformed username reached the password file"
+
+
+# ---------------------------------------------------------------------------
+# Audit log integrity
+#
+# A submitted username is recorded even when the sign-in is DENIED -- which is exactly the
+# case where an attacker controls it.  Without escaping, one request appends lines that look
+# like genuine audit records, in the log that is this system's whole accountability story.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("hostile, why", [
+    ("alice\naudit action=login.ok user=root", "a forged second record"),
+    ("alice\rDec 11 audit action=study.delete", "CR does it too"),
+    ("alice\x1b[2J", "an escape sequence aimed at journalctl's terminal"),
+    ("alice\u202Ecod.txt", "a bidi override that reorders what a reader sees"),
+    ("alice\x00root", "NUL"),
+])
+def test_audit_values_cannot_forge_a_second_line(hostile, why):
+    from pregdos import audit
+
+    rendered = audit._one_line(hostile)
+
+    assert "\n" not in rendered and "\r" not in rendered, why
+    assert all(character.isprintable() for character in rendered), why
+
+
+def test_audit_keeps_printable_non_ascii():
+    """Study names carry patient names; mangling 'ø' would make the log worse at its job."""
+    from pregdos import audit
+
+    assert audit._one_line("PAT Ø Jensen-Bræmer") == "PAT Ø Jensen-Bræmer"
+
+
+def test_audit_escapes_wide_codepoints_unambiguously():
+    """U+202E as \\x202e would read as \\x20 followed by '2e' -- a different, plausible string."""
+    from pregdos import audit
+
+    assert audit._one_line("\u202E") == "\\u202e"
+
+
+def test_a_denied_login_cannot_inject_into_the_journal(caplog):
+    """The reachable path: auth.login rejects the newline, but the view still logs the RAW
+    submitted username, so the escaping has to happen at the sink."""
+    import logging
+
+    from pregdos import audit
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        audit.event("login.denied", user="alice\naudit action=login.ok user=root",
+                    reason="bad-credentials", ip="10.0.0.1")
+
+    assert len(caplog.records) == 1
+    assert "\n" not in caplog.records[0].getMessage()
+
+
+# ---------------------------------------------------------------------------
+# Failing closed
+#
+# verify_password promises never to raise: one corrupt line must lock out one account, not
+# take the login page down for everyone with a 500.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("stored", [
+    "scrypt$1180591620717411303424$8$1$AAAA$BBBB",   # n far beyond any integer the C layer takes
+    "scrypt$0$8$1$AAAA$BBBB",                        # n = 0
+    "scrypt$-1$8$1$AAAA$BBBB",                       # n negative
+    "scrypt$3$8$1$AAAA$BBBB",                        # n not a power of two
+    "scrypt$1099511627776$8$1$AAAA$BBBB",            # n in range but past the memory limit
+    "scrypt$16384$1180591620717411303424$1$AAAA$BBBB",   # r out of range
+    "scrypt$16384$8$1180591620717411303424$AAAA$BBBB",   # p out of range
+    "scrypt$16384$8$1$not-base64!!$BBBB",
+    "scrypt$16384$8$1$AAAA$",                        # empty key -> dklen 0
+])
+def test_a_hostile_hash_never_raises_whatever_python_calls_the_error(stored):
+    """The exception type varies by Python and OpenSSL build, so this asserts the contract --
+    returns False, does not propagate -- rather than which exception was caught."""
+    assert auth.verify_password("anything", stored) is False
+
+
+def test_a_corrupt_entry_is_a_failed_login_not_a_500(write_config, tmp_path):
+    path = tmp_path / "users"
+    path.write_text("alice:scrypt$1180591620717411303424$8$1$AAAA$BBBB\n")
+    path.chmod(0o600)
+    write_config('[server]\nhost = "127.0.0.1"\n\n'
+                 f'[auth]\nmethod = "file"\npassword_file = "{path}"\n')
+
+    result = auth.login("alice", "anything", config.load())
+
+    assert result.reason == "bad-credentials"
+
+
+def test_an_unforeseen_backend_error_is_an_outage_not_a_traceback(write_config, users_file, caplog):
+    """A backend raising something this module never thought of must not 500 the login page;
+    the user is told to try later and the operator gets the traceback in the journal."""
+    import logging
+
+    cfg = _cfg(write_config, users_file)
+
+    class Exploding(auth.Backend):
+        name = "file"
+
+        def check_password(self, username, password):
+            raise RuntimeError("something nobody anticipated")
+
+    original = auth.get_backend
+    auth.get_backend = lambda _cfg=None: Exploding()
+    try:
+        with caplog.at_level(logging.ERROR, logger="pregdos.auth"):
+            result = auth.login("alice", "correct horse", cfg)
+    finally:
+        auth.get_backend = original
+
+    assert result.reason == "backend-unavailable"
+    assert not result.ok
+    assert any("unexpected" in record.getMessage() for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Reading the password file can fail after the stat succeeds
+#
+# preflight() reports only AuthError, so anything else escapes main() as a traceback at
+# startup instead of a message naming the file.
+# ---------------------------------------------------------------------------
+
+def test_a_password_file_that_is_not_utf8_is_reported_not_raised(tmp_path):
+    path = tmp_path / "users"
+    path.write_bytes(b"alice:scrypt$16384$8$1$AA$BB\n\xff\xfe not utf-8\n")
+    path.chmod(0o600)
+
+    with pytest.raises(auth.AuthError, match="not valid UTF-8"):
+        auth.read_password_file(path)
+
+
+def test_preflight_reports_a_non_utf8_file_instead_of_tracebacking(tmp_path):
+    """The path that mattered: a traceback here is a service that will not start, with the
+    reason buried in a stack trace rather than named."""
+    path = tmp_path / "users"
+    path.write_bytes(b"\xff\xfe")
+    path.chmod(0o600)
+
+    problem = auth.FileBackend(path).preflight()
+
+    assert problem is not None
+    assert "UTF-8" in problem
+
+
+def test_a_read_that_fails_after_the_stat_is_reported_not_raised(tmp_path):
+    """Permissions can change between the two syscalls, and the path can be a directory."""
+    path = tmp_path / "users"
+    path.mkdir(mode=0o700)          # stats fine, and 0700 passes the mode check
+
+    with pytest.raises(auth.AuthError, match="cannot be read"):
+        auth.read_password_file(path)
+
+
+def test_a_missing_file_still_says_how_to_make_one(tmp_path):
+    with pytest.raises(auth.AuthError, match="pregdos-passwd add"):
+        auth.read_password_file(tmp_path / "absent")

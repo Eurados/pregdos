@@ -32,8 +32,12 @@ Type=simple
 User=pregdos
 Group=pregdos
 
-# --config is a CLI flag, so a future WSGI server importing pregdos.webserver:app would not
-# see it.  The environment variable works for both.
+# --config is a CLI flag, so a WSGI server, which imports rather than running this entry
+# point, would not see it.  The environment variable works for both.
+#
+# Under a WSGI server, serve `pregdos.wsgi:app` and NOT `pregdos.webserver:app`: the latter
+# cannot provision the session signing key, so on a fresh deployment each worker would invent
+# its own and reject the others' cookies.
 Environment=PREGDOS_CONFIG=/etc/pregdos/config.toml
 ExecStart=/opt/pregdos/venv/bin/pregdos-web
 

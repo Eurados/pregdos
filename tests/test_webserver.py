@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import os
 import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -2013,3 +2014,127 @@ def test_main_rejects_a_bad_config_before_binding_a_port(tmp_path, monkeypatch, 
     finally:
         webserver.config.set_config_path(None)
         webserver._apply_config()
+
+
+# ---------------------------------------------------------------------------
+# The audit log must not claim something that did not happen
+#
+# With non-anonymized data the study name IS a patient name, so a premature record does not
+# merely miscount -- it asserts in the journal that a patient's study was uploaded when the
+# server refused it and deleted the directory again.
+# ---------------------------------------------------------------------------
+
+def _audit_actions(caplog):
+    return [record.getMessage().split("action=")[1].split(" ")[0]
+            for record in caplog.records if record.name == "pregdos.audit"]
+
+
+def test_a_rejected_upload_is_not_recorded_as_an_upload(client, tmp_path, caplog):
+    import logging
+
+    data = {
+        "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
+        "spr_table": (io.BytesIO(b"data"), "spr.txt"),
+        "study_dir": (io.BytesIO(b"data"), "study/CT.1.dcm"),
+    }
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        client.post("/upload", data=data, content_type="multipart/form-data",
+                    follow_redirects=True)
+
+    assert studies.list_studies(tmp_path) == [], "the study directory was left behind"
+    actions = _audit_actions(caplog)
+    assert "study.upload" not in actions, "a deleted study was recorded as uploaded"
+    assert "study.upload.rejected" in actions, "the attempt should still leave a record"
+
+
+def test_a_successful_upload_is_recorded_once_it_has_survived_validation(client, tmp_path, caplog):
+    import logging
+
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        response = client.post("/upload", data=_upload_data(source),
+                               content_type="multipart/form-data", follow_redirects=True)
+
+    assert b"CTV" in response.data                      # the setup page rendered
+    actions = _audit_actions(caplog)
+    assert "study.upload" in actions
+    assert "study.upload.rejected" not in actions
+
+
+def test_an_upload_missing_a_modality_is_recorded_as_rejected(client, tmp_path, caplog):
+    """The realistic rejection: a real DICOM study that is incomplete, not junk bytes."""
+    import logging
+
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+    for found in dicom_intake.scan(source).by_modality("RTDOSE"):
+        found.path.unlink()
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        client.post("/upload", data=_upload_data(source),
+                    content_type="multipart/form-data", follow_redirects=True)
+
+    assert studies.list_studies(tmp_path) == []
+    assert _audit_actions(caplog) == ["study.upload.rejected"]
+
+
+# ---------------------------------------------------------------------------
+# The WSGI entry point
+#
+# `pregdos-web` provisions the session key in main(); a WSGI server imports the module and
+# never calls it.  On a FRESH deployment every worker would then pick its own random key, and
+# a cookie signed by one worker is rejected by the next -- a login that works or does not
+# depending on which worker answers, with nothing in the log to say why.
+# ---------------------------------------------------------------------------
+
+def _worker_key(state_dir, module):
+    """The secret key a freshly-imported worker ends up with, in its own process."""
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(f"""
+        import sys
+        sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
+        import {module} as entry
+        from pregdos.webserver import app
+        print(app.secret_key)
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True,
+        env={"STATE_DIRECTORY": str(state_dir), "PATH": os.environ.get("PATH", ""),
+             "HOME": str(state_dir)},
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def test_two_wsgi_workers_agree_on_the_session_key(tmp_path):
+    """The fix: pregdos.wsgi provisions before serving, and O_EXCL makes the second worker
+    read what the first wrote rather than write its own."""
+    first = _worker_key(tmp_path, "pregdos.wsgi")
+    second = _worker_key(tmp_path, "pregdos.wsgi")
+
+    assert first == second
+    assert first == (tmp_path / "secret_key").read_text().strip()
+
+
+def test_importing_the_app_directly_still_cannot_provision(tmp_path):
+    """Documents why pregdos.wsgi exists: this is the path that breaks, and it is the one the
+    systemd unit used to name."""
+    first = _worker_key(tmp_path, "pregdos.webserver")
+    second = _worker_key(tmp_path, "pregdos.webserver")
+
+    assert first != second, "two workers agreeing here would mean the fixture proves nothing"
+    assert not (tmp_path / "secret_key").exists()
+
+
+def test_a_key_already_on_disk_is_shared_even_by_a_direct_import(tmp_path):
+    """The narrow case Copilot identified: only a FRESH deployment diverges.  Once the file
+    exists, every import reads it."""
+    (tmp_path / "secret_key").write_text("a-key-written-earlier\n")
+    (tmp_path / "secret_key").chmod(0o600)
+
+    assert _worker_key(tmp_path, "pregdos.webserver") == "a-key-written-earlier"

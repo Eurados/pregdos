@@ -84,7 +84,7 @@ def _config() -> config.Config:
 
     Nothing in this module raises (see the module docstring), and that has to hold for the
     config file too.  ``pregdos-web`` validates it at startup and refuses to run on a bad
-    one, but an import-based deployment (``gunicorn pregdos.webserver:app``) never calls
+    one, but an import-based deployment (``gunicorn pregdos.wsgi:app``) never calls
     ``main()`` -- and there, a malformed file should degrade the About page to "unknown"
     rather than turn it into a 500.
     """

@@ -163,14 +163,39 @@ def ensure_secret_key() -> str:
     return f"session key {'created at' if created else 'read from'} {path}"
 
 
+def _import_time_secret_key() -> str:
+    """The best key available without writing anything.  See :func:`ensure_secret_key`.
+
+    A per-process random key is the fallback, not the goal: it invalidates every signed cookie
+    on restart, and -- worse -- gives each worker of a multi-process WSGI server a *different*
+    one, so a cookie signed by one is rejected by the next.  ``pregdos-web`` upgrades this in
+    ``main()``; :mod:`pregdos.wsgi` does it at import for a WSGI server.
+
+    Importing ``pregdos.webserver:app`` directly reaches neither, so this says so rather than
+    letting a fresh deployment fail as an intermittent, unexplained sign-out.
+    """
+    if key := os.environ.get("PREGDOS_SECRET_KEY"):
+        return key
+    if key := _stored_secret_key():
+        return key
+
+    try:
+        needs_a_stable_key = auth.is_enabled(config.load())
+    except config.ConfigError:
+        needs_a_stable_key = False      # main() reports the bad config; do not shout twice
+    if needs_a_stable_key:
+        logging.getLogger(__name__).error(
+            "[auth] is enabled but no persistent session key was found, and importing this "
+            "module cannot create one. Sessions will break across a restart, and across the "
+            "workers of a WSGI server. Serve `pregdos.wsgi:app` rather than "
+            "`pregdos.webserver:app`, or set $PREGDOS_SECRET_KEY."
+        )
+    return secrets.token_urlsafe(32)
+
+
 app = Flask(__name__)
 _apply_config()
-# A per-process random key is the fallback, not the goal: it invalidates every signed cookie
-# on restart, so flash messages vanish and -- once there is a login -- everyone is signed out.
-# main() upgrades this to the persistent file above.
-app.secret_key = (
-    os.environ.get("PREGDOS_SECRET_KEY") or _stored_secret_key() or secrets.token_urlsafe(32)
-)
+app.secret_key = _import_time_secret_key()
 
 # Templates render doses with a shared SI prefix (e.g. "3.8 mSv") via this helper.
 app.jinja_env.globals["fmt_dose"] = results.humanize_dose
@@ -636,7 +661,6 @@ def upload_files():
         root = studies_root()
         try:
             study_name, study_path = studies.create_study(root, _upload_study_name(study_zip, study_dir_files))
-            audit.event("study.upload", study=study_name)
         except (StudyError, ValueError) as e:
             flash(str(e))
             return redirect(request.url)
@@ -677,13 +701,22 @@ def upload_files():
                 raise ValueError("No RS-file or structures found!")
         except UploadRejected as e:
             shutil.rmtree(study_path, ignore_errors=True)
+            audit.event("study.upload.rejected", study=study_name, reason="; ".join(e.problems))
             for problem in e.problems:
                 flash(problem)
             return redirect(request.url)
         except Exception as e:
             shutil.rmtree(study_path, ignore_errors=True)
+            audit.event("study.upload.rejected", study=study_name,
+                        reason=str(e) or e.__class__.__name__)
             flash(str(e) if str(e) else "Upload failed.")
             return redirect(request.url)
+
+        # Only now is there a study on disk that survived extraction, DICOM validation and the
+        # structure check.  Recording it any earlier -- as this did -- meant a rejected upload
+        # left an audit line claiming a study had been uploaded, naming a patient, for a
+        # directory that had just been deleted again.
+        audit.event("study.upload", study=study_name, structures=len(structures))
 
         for note in notes:
             flash(note)
@@ -798,6 +831,8 @@ def convert():
     except StudyError as e:
         flash(str(e))
         return redirect(url_for("upload_files"))
+    audit.event("run.convert", study=study_name, run=run_id,
+                structures=len(selected_structures), histories=nstat)
 
     params = ConversionParameters(
         study_name=study_name,
@@ -1390,6 +1425,7 @@ def rerun_run(study, run_id):
         flash(f"Cannot submit — {blocker}")
         return redirect(url_for("run_detail", study=study, run_id=run_id))
 
+    audit.event("run.rerun", study=study, run=run_id, fields=len(out_files))
     _clear_run_outputs(run_dir)
     return _submit_topas_files(study, run_id, run_dir, out_files)
 

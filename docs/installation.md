@@ -413,8 +413,11 @@ An unknown key, an unknown section or a wrong type is a startup error naming the
 key — a typo never silently does nothing. `pregdos-web --config PATH` validates before binding
 a port, so a bad file fails immediately rather than on whichever page first reads it.
 
-> `--config` is a CLI flag, so a WSGI server that imports `pregdos.webserver:app` directly never
-> sees it. Use `PREGDOS_CONFIG` in the unit file for those deployments.
+> `--config` is a CLI flag, so a WSGI server, which imports the app rather than running the
+> `pregdos-web` entry point, never sees it. Use `PREGDOS_CONFIG` in the unit file for those
+> deployments — and serve **`pregdos.wsgi:app`**, not `pregdos.webserver:app`. Only the former
+> provisions the persistent session key; the latter leaves each worker on a fresh deployment to
+> invent its own, so cookies signed by one worker are rejected by the next.
 
 The sections are `[paths]` (`work_dir`, `topas_bin`, `dicomexport`, `dicomexport_timeout`),
 `[scheduler]` (see below), `[server]` (`host`, `port`, `ssl_cert`, `ssl_key`), `[auth]` (see

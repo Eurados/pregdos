@@ -35,6 +35,24 @@ def _prompt_for_password(username: str) -> str:
     return first
 
 
+def _check_username(username: str, parser: argparse.ArgumentParser) -> None:
+    """Refuse a name the password file's format cannot represent.
+
+    The file is `user:hash`, one per line, so a name carrying `:` or a newline would not be
+    escaped -- it would split into a different record, or forge an extra one.  Nothing reaches
+    this from the web, only argv, so this is about an admin's typo or a copy-paste rather than
+    an attacker; it still corrupts the file silently, which is reason enough.
+    """
+    if not username.strip():
+        parser.error("username is empty")
+    if ":" in username:
+        parser.error(f"{username!r} contains ':', which separates the name from the hash in "
+                     f"the password file. Pick a name without one.")
+    if auth.has_forbidden_characters(username) or username != username.strip():
+        parser.error(f"{username!r} contains a newline, a NUL or surrounding whitespace, none "
+                     f"of which the password file can represent.")
+
+
 def _load(path: Path) -> dict[str, str]:
     """The current accounts, treating a missing file as an empty set.
 
@@ -108,12 +126,13 @@ def main(argv: list[str] | None = None) -> int:
 
     path = _resolve_password_file(cfg, parser)
 
-    try:
-        users = _load(path)
-    except auth.AuthError as exc:
-        parser.error(str(exc))
-
+    # `list` only reads, and os.replace makes every published file complete, so a reader never
+    # needs the lock -- and taking it would mean creating a lock file just to print names.
     if args.command == "list":
+        try:
+            users = _load(path)
+        except auth.AuthError as exc:
+            parser.error(str(exc))
         if not users:
             print(f"{path}: no accounts")
             return 0
@@ -121,26 +140,47 @@ def main(argv: list[str] | None = None) -> int:
             print(username)
         return 0
 
-    if args.command == "delete":
-        if args.username not in users:
-            parser.error(f"{args.username!r} is not in {path}")
-        # Refuse to empty the file rather than silently locking everyone out of a running
-        # server.  Removing the last account is a deliberate act: turn [auth] off instead.
-        if len(users) == 1:
-            parser.error(
-                f"{args.username!r} is the only account in {path}. Removing it would leave "
-                f'nobody able to sign in. Set [auth] method = "none" instead, or add another '
-                f"account first."
-            )
-        del users[args.username]
-        auth.write_password_file(path, users)
-        print(f"Removed {args.username} from {path}")
-        return 0
+    _check_username(args.username, parser)
 
-    # add, which doubles as "change the password of"
-    existing = args.username in users
-    users[args.username] = auth.hash_password(_prompt_for_password(args.username))
-    auth.write_password_file(path, users)
+    # add and delete are read-modify-write.  Without the lock, two runs interleaving here each
+    # write a set computed before the other's change, and one account silently vanishes -- the
+    # admin sees "Added alice" and alice cannot sign in.  Held across BOTH the load and the
+    # write; locking only the write would protect nothing.
+    with auth.password_file_lock(path):
+        try:
+            users = _load(path)
+        except auth.AuthError as exc:
+            parser.error(str(exc))
+
+        if args.command == "delete":
+            if args.username not in users:
+                parser.error(f"{args.username!r} is not in {path}")
+            # Refuse to empty the file rather than silently locking everyone out of a running
+            # server.  Removing the last account is deliberate: turn [auth] off instead.
+            if len(users) == 1:
+                parser.error(
+                    f"{args.username!r} is the only account in {path}. Removing it would leave "
+                    f'nobody able to sign in. Set [auth] method = "none" instead, or add '
+                    f"another account first."
+                )
+            del users[args.username]
+            try:
+                auth.write_password_file(path, users)
+            except OSError as exc:
+                parser.error(f"{path}: could not be written ({exc.strerror})")
+            print(f"Removed {args.username} from {path}")
+            return 0
+
+        # add, which doubles as "change the password of".  The prompt happens inside the lock:
+        # it is the slow part (a person typing, then ~100 ms of scrypt), so leaving it outside
+        # would leave the window this lock exists to close.
+        existing = args.username in users
+        users[args.username] = auth.hash_password(_prompt_for_password(args.username))
+        try:
+            auth.write_password_file(path, users)
+        except OSError as exc:
+            parser.error(f"{path}: could not be written ({exc.strerror})")
+
     print(f"{'Updated' if existing else 'Added'} {args.username} in {path}")
     if not existing and len(users) == 1:
         print('Remember to set [auth] method = "file" in the config, and restart pregdos-web.')
