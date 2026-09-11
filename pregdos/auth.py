@@ -282,7 +282,8 @@ def write_password_file(path: Path, users: Dict[str, str]) -> None:
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     tmp = Path(tmp_name)
     try:
-        os.fchmod(fd, 0o600)        # mkstemp gives 0600 already; explicit, since it matters
+        # No chmod: mkstemp already creates 0600, which is what this file must be.  (The
+        # explicit os.fchmod that used to be here was both redundant and Unix-only.)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(body)
         os.replace(tmp, path)

@@ -38,6 +38,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -205,12 +206,40 @@ class RunInfo:
 
 
 def _write_run_metadata(run_dir: Path, info: RunInfo) -> None:
+    """Publish ``run.json`` so a reader can never catch it half-written.
+
+    ``write_text`` was not safe here, and the consequence was worse than a stale read.
+    :func:`read_run_metadata` deliberately tolerates a torn file by returning None -- and
+    :func:`start_next_local_run` reads None as "not submitted" and ``continue``s, which skips
+    the ``_worker_alive`` check along with everything else.  So a torn read of a *running*
+    run makes it invisible, the scheduler concludes the local slot is free, and launches a
+    second worker: two TOPAS runs on a machine sized for one, which is the oversubscription
+    :func:`_launch_local_worker` exists to avoid.
+
+    Both the web process and the detached worker write this file -- the worker calls
+    ``start_next_local_run`` when it finishes -- so the temporary name is unique rather than
+    fixed: a shared one would let two writers interleave into it and publish the mixture.
+    """
     payload = {
         "backend": info.backend,
         "submitted": info.submitted,
         "fields": [{"topas_file": f.topas_file, "ident": f.ident} for f in info.fields],
     }
-    (run_dir / RUN_METADATA).write_text(json.dumps(payload, indent=2) + "\n")
+    fd, tmp_name = tempfile.mkstemp(dir=str(run_dir), prefix=RUN_METADATA + ".", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        # mkstemp gives 0600; this file is not secret (backend, timestamp, TOPAS filenames,
+        # job ids) and a SLURM job running as another account may read it, so keep the 0644
+        # that write_text used to produce.  The studies root is 0700, so the directory is what
+        # gates access either way.  os.chmod rather than os.fchmod: the latter is Unix-only.
+        os.chmod(tmp, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2) + "\n")
+        os.replace(tmp, run_dir / RUN_METADATA)
+    finally:
+        # On success os.replace consumed it; this is the failure path only.
+        if tmp.exists():
+            tmp.unlink()
 
 
 def _cancel_marker(run_dir: str | os.PathLike) -> Path:
