@@ -30,16 +30,21 @@ The main navigation has:
 Most installations have no login at all and go straight to the dashboard. Where the site has
 turned authentication on, PregDos shows a sign-in form first.
 
-**Which password?** The one your administrator issued **for PregDos**. It is not necessarily
-the password you use to log into the PC — ask if you are unsure rather than guessing, because
-repeated failures are recorded and, depending on the site, can lock an account.
+**Which password?** The sign-in form says, under the password box — read that line, because
+the answer differs between sites. It is commonly the **file-share (Samba) password**, and it
+is usually *not* the password you use to log into the PC. Ask rather than guessing: repeated
+failures are recorded and, depending on the site, can lock the account you share with the file
+server.
 
 Two messages are worth telling apart:
 
 - *"Incorrect username or password"* — retype it. Note that usernames are case-sensitive.
 - *"That password is correct, but this account is not authorised to use PregDos"* — the
-  password was right and nothing is wrong with your typing. The account simply has not been
-  granted access; ask the administrator to add it.
+  password was right and nothing is wrong with your typing. The account has not been granted
+  access; where sign-in goes through the file server, that usually means the account is
+  missing the group membership the shares require. Ask the administrator to add it.
+- *"Sign-in is temporarily unavailable"* — nothing to do with your account. The server PregDos
+  checks passwords against is not answering. Tell the administrator; the reason is in the log.
 
 Your name and a **Sign out** button appear at the right-hand end of the navigation bar once
 you are signed in.

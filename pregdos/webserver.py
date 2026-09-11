@@ -557,7 +557,7 @@ def login():
 
         audit.event("login.denied", user=username or "-", reason=result.reason,
                     detail=result.detail)
-        if result.reason == "not-allowlisted":
+        if result.reason in ("not-allowlisted", "not-authorised"):
             # Worth saying plainly: it costs a valid password to learn, and the alternative
             # is a user retyping a password that was never the problem.
             flash("That password is correct, but this account is not authorised to use "

@@ -271,3 +271,131 @@ def test_passwd_follows_state_directory_when_systemd_set_it(write_config, monkey
     passwd.main(["--config", str(path), "add", "alice"])
 
     assert (tmp_path / "users").is_file()
+
+
+# ---------------------------------------------------------------------------
+# SmbBackend
+#
+# The status strings below are what `smbclient` actually returned on the DCPT server
+# (issue #103), not what the manual implies.  This mapping IS the backend, so it is pinned to
+# observed output rather than to a guess.
+# ---------------------------------------------------------------------------
+
+def _smb():
+    return auth.SmbBackend(server="localhost", share="users", timeout=10)
+
+
+def test_smb_accepts_a_clean_exit():
+    result = _smb()._interpret("adminniebas", 0, "")
+
+    assert result.ok
+    assert result.identity.username == "adminniebas"
+
+
+@pytest.mark.parametrize("output", [
+    "session setup failed: NT_STATUS_LOGON_FAILURE",          # wrong password
+    "tree connect failed: NT_STATUS_WRONG_PASSWORD",
+    "session setup failed: NT_STATUS_ACCOUNT_LOCKED_OUT",
+])
+def test_smb_reports_a_refused_password_as_bad_credentials(output):
+    assert _smb()._interpret("adminniebas", 1, output).reason == "bad-credentials"
+
+
+def test_smb_cannot_tell_a_wrong_password_from_an_unknown_user():
+    """Samba returns NT_STATUS_LOGON_FAILURE for both, which is the behaviour we want: a
+    login form that distinguishes them enumerates the account list."""
+    backend = _smb()
+    same = "session setup failed: NT_STATUS_LOGON_FAILURE"
+
+    assert backend._interpret("real", 1, same).reason == "bad-credentials"
+    assert backend._interpret("nosuchuser", 1, same).reason == "bad-credentials"
+
+
+def test_smb_tells_a_permitted_account_from_an_authenticated_one():
+    """`valid users = @sambashare` refuses the tree connect after a successful session setup.
+    The password WAS right, and saying so saves the user retyping a correct password."""
+    result = _smb()._interpret("adminniebas", 1, "tree connect failed: NT_STATUS_ACCESS_DENIED")
+
+    assert result.reason == "not-authorised"
+    assert not result.ok
+
+
+@pytest.mark.parametrize("output, why", [
+    ("tree connect failed: NT_STATUS_BAD_NETWORK_NAME", "the share was renamed or removed"),
+    ("do_connect: Connection to localhost failed (Error NT_STATUS_CONNECTION_REFUSED)", "smbd is down"),
+    ("NT_STATUS_IO_TIMEOUT", "the server stopped answering"),
+    ("smbclient: something nobody has seen before", "an unrecognised failure"),
+])
+def test_smb_reports_an_outage_as_an_outage_not_a_wrong_password(output, why):
+    """A renamed share or a stopped service must not present as every account's password
+    breaking at once -- which is what it would look like if these mapped to bad-credentials."""
+    result = _smb()._interpret("adminniebas", 1, output)
+
+    assert result.reason == "backend-unavailable", why
+
+
+def test_smb_refuses_an_anonymous_fallback_whatever_the_exit_code():
+    """On the DCPT server an anonymous SESSION SETUP succeeds and only the tree connect is
+    refused -- so a probe against IPC$ would have admitted anyone.  A session nobody
+    authenticated is never a sign-in, even if smbclient exits 0."""
+    result = _smb()._interpret("anyone", 0, "Anonymous login successful\nDomain=[SAMBA]")
+
+    assert not result.ok
+    assert result.reason == "bad-credentials"
+
+
+def test_smb_never_puts_the_password_on_the_command_line():
+    """/proc/<pid>/cmdline is world-readable, so credentials go in on a pipe."""
+    argv = _smb()._argv()
+
+    assert "-A" in argv and "/dev/stdin" in argv
+    assert not any("password" in part.lower() for part in argv)
+
+
+def test_smb_preflight_requires_smbclient(monkeypatch):
+    monkeypatch.setattr(auth.shutil, "which", lambda _name: None)
+
+    assert "smbclient" in _smb().preflight()
+
+
+def test_smb_timeout_is_an_outage_not_a_rejection(monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(auth.shutil, "which", lambda _name: "/usr/bin/smbclient")
+
+    def hang(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="smbclient", timeout=10)
+
+    monkeypatch.setattr(auth.subprocess, "run", hang)
+
+    assert _smb().check_password("adminniebas", "x").reason == "backend-unavailable"
+
+
+def test_smb_sends_credentials_on_stdin_and_not_in_the_environment(monkeypatch):
+    captured = {}
+
+    class Done:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["input"] = kwargs.get("input", "")
+        return Done()
+
+    monkeypatch.setattr(auth.subprocess, "run", fake_run)
+
+    assert _smb().check_password("adminniebas", "s3cret").ok
+    assert "password = s3cret" in captured["input"]
+    assert not any("s3cret" in part for part in captured["argv"])
+
+
+def test_smb_refuses_an_empty_password_without_calling_smbclient(monkeypatch):
+    """An empty password makes smbclient attempt an ANONYMOUS session, which can succeed."""
+    def explode(*_args, **_kwargs):
+        raise AssertionError("smbclient must not be run for an empty password")
+
+    monkeypatch.setattr(auth.subprocess, "run", explode)
+
+    assert _smb().check_password("adminniebas", "").reason == "bad-credentials"

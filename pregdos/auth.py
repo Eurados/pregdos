@@ -34,7 +34,10 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import secrets
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
@@ -75,7 +78,7 @@ class Identity:
 @dataclass(frozen=True)
 class AuthResult:
     identity: Identity | None = None
-    # "" | "bad-credentials" | "not-allowlisted" | "backend-unavailable"
+    # "" | "bad-credentials" | "not-allowlisted" | "not-authorised" | "backend-unavailable"
     reason: str = ""
     detail: str = ""        # for the audit log ONLY.  Never rendered, never flashed.
 
@@ -256,6 +259,150 @@ class FileBackend(Backend):
 
 
 # ---------------------------------------------------------------------------
+# method = "smb": the site's own Samba, over the SMB protocol
+# ---------------------------------------------------------------------------
+
+# What `smbclient` says, and what each means.  Taken from a real run against the DCPT server
+# (issue #103) rather than from the manual, because the mapping is the whole backend.
+_SMB_BAD_CREDENTIALS = (
+    "NT_STATUS_LOGON_FAILURE",          # wrong password AND unknown user -- indistinguishable,
+                                        # which is what keeps the form from enumerating accounts
+    "NT_STATUS_WRONG_PASSWORD",
+    "NT_STATUS_NO_SUCH_USER",
+    "NT_STATUS_ACCOUNT_DISABLED",
+    "NT_STATUS_ACCOUNT_LOCKED_OUT",
+    "NT_STATUS_PASSWORD_EXPIRED",
+    "NT_STATUS_PASSWORD_MUST_CHANGE",
+)
+
+# The password was accepted; the *share* refused.  On a server whose shares carry
+# `valid users = @somegroup`, this is exactly "authenticated but not permitted", which is worth
+# telling the user apart from a bad password -- it costs them a valid password to learn, and
+# the alternative is retyping a password that was never the problem.
+_SMB_NOT_AUTHORISED = ("NT_STATUS_ACCESS_DENIED",)
+
+# Not about this user at all.  Reporting these as "wrong password" would make a renamed share
+# or a stopped service look like every account breaking at once.
+_SMB_UNAVAILABLE = (
+    "NT_STATUS_BAD_NETWORK_NAME",       # the share does not exist -- renamed or removed
+    "NT_STATUS_CONNECTION_REFUSED",
+    "NT_STATUS_HOST_UNREACHABLE",
+    "NT_STATUS_NETWORK_UNREACHABLE",
+    "NT_STATUS_IO_TIMEOUT",
+    "NT_STATUS_CONNECTION_DISCONNECTED",
+    "NT_STATUS_INVALID_PARAMETER",
+)
+
+# smbclient prints this when it fell back to an anonymous session.  On the DCPT server an
+# anonymous session setup SUCCEEDS and only the tree connect is refused -- so a probe against
+# IPC$, which has no `valid users`, would have let anyone in.  Treated as failure whatever the
+# exit code says, because a session nobody authenticated is never a sign-in.
+_SMB_ANONYMOUS_MARKER = "anonymous login successful"
+
+
+class SmbBackend(Backend):
+    """Check the password against the site's own Samba, by doing an SMB session setup.
+
+    Authenticates through ``smbclient`` rather than a Python SMB library: it matches how this
+    codebase already drives ``sbatch`` and ``dicomexport``, and it keeps the offline wheelhouse
+    free of a new dependency (the maintained Python SMB libraries pull in ``cryptography``,
+    which is not pure Python).
+
+    **The share is load-bearing, not cosmetic.**  ``IPC$`` accepts a session from any account
+    in the passdb -- and, on a standalone server, from an anonymous one.  A real share applies
+    its ``valid users``, so pointing this at a share the intended users already reach makes
+    Samba's own access control PregDos's, with nothing to maintain twice.  That is why
+    ``[auth] smb_share`` has no default and startup refuses without it.
+
+    The cost of that choice, which the docs must state: renaming the share in ``smb.conf``
+    breaks sign-in.  It surfaces as ``NT_STATUS_BAD_NETWORK_NAME`` and is reported as a backend
+    failure naming the share, not as a wrong password.
+    """
+
+    name = "smb"
+    login_hint = ("Use your file-share (Samba) password -- the same one you use for the shared "
+                  "drives, not your computer login.")
+
+    def __init__(self, server: str, share: str, domain: str = "", timeout: int = 10):
+        self.server = server
+        self.share = share
+        self.domain = domain
+        self.timeout = timeout
+
+    def preflight(self) -> str | None:
+        if not shutil.which("smbclient"):
+            return ("[auth] method = \"smb\" needs the `smbclient` command, which is not on "
+                    "PATH. Install the Samba client package (RHEL: `dnf install samba-client`).")
+        if not self.share:
+            return '[auth] smb_share is empty; name the share to authenticate against'
+        return None
+
+    def _argv(self) -> list:
+        # No credentials on the command line: /proc/<pid>/cmdline is world-readable, and the
+        # environment is readable by the same user.  -A /dev/stdin keeps them on a pipe.
+        return [
+            "smbclient", f"//{self.server}/{self.share}",
+            "-A", "/dev/stdin",
+            "-m", "SMB3",
+            "--use-kerberos=off",       # this is a standalone server; no ticket to reuse
+            "-c", "quit",               # connect and disconnect; touch nothing
+        ]
+
+    def check_password(self, username: str, password: str) -> AuthResult:
+        # An empty password would make smbclient attempt an ANONYMOUS session, which on a
+        # standalone server can succeed.  login() rejects empties before reaching here; this is
+        # the second lock on the same door.
+        if not username or not password:
+            return AuthResult(reason="bad-credentials", detail="empty username or password")
+
+        credentials = f"username = {username}\npassword = {password}\n"
+        if self.domain:
+            credentials += f"domain = {self.domain}\n"
+
+        try:
+            completed = subprocess.run(
+                self._argv(), input=credentials, capture_output=True, text=True,
+                timeout=self.timeout or None,
+            )
+        except subprocess.TimeoutExpired:
+            return AuthResult(reason="backend-unavailable",
+                              detail=f"smbclient did not answer within {self.timeout}s")
+        except OSError as exc:
+            return AuthResult(reason="backend-unavailable", detail=f"smbclient: {exc}")
+
+        output = f"{completed.stdout}\n{completed.stderr}"
+        return self._interpret(username, completed.returncode, output)
+
+    def _interpret(self, username: str, returncode: int, output: str) -> AuthResult:
+        """Turn one smbclient run into a result.  Separated so the tests can drive it with
+        captured output instead of a live server."""
+        if _SMB_ANONYMOUS_MARKER in output.lower():
+            # Never a sign-in, whatever the exit code.  See _SMB_ANONYMOUS_MARKER.
+            return AuthResult(reason="bad-credentials", detail="smbclient fell back to anonymous")
+
+        if returncode == 0:
+            return AuthResult(identity=Identity(username=username))
+
+        found = _NT_STATUS_RE.findall(output)
+        status = found[0] if found else ""
+        if status in _SMB_BAD_CREDENTIALS:
+            return AuthResult(reason="bad-credentials", detail=status)
+        if status in _SMB_NOT_AUTHORISED:
+            return AuthResult(reason="not-authorised", detail=status)
+        # Unknown statuses land here deliberately: an unrecognised failure is the operator's
+        # problem and belongs in the journal, not a "wrong password" the user will retype.
+        return AuthResult(
+            reason="backend-unavailable",
+            detail=f"{status or 'smbclient exit ' + str(returncode)} "
+                   f"(//{self.server}/{self.share})",
+        )
+
+
+_NT_STATUS_RE = re.compile(r"NT_STATUS_[A-Z_]+")
+
+
+
+# ---------------------------------------------------------------------------
 # Selection, authorization, and the flow that joins them
 # ---------------------------------------------------------------------------
 
@@ -283,6 +430,9 @@ def get_backend(cfg: config.Config | None = None) -> Backend:
     cfg = cfg or config.load()
     if cfg.auth.method == "file":
         return FileBackend(password_file_path(cfg))
+    if cfg.auth.method == "smb":
+        return SmbBackend(cfg.auth.smb_server, cfg.auth.smb_share,
+                          cfg.auth.smb_domain, cfg.auth.smb_timeout)
     if cfg.auth.method == "none":
         return NoneBackend()
     # config._validate_auth rejects an unknown method, so reaching here means AUTH_METHODS
@@ -337,7 +487,10 @@ def describe_policy(cfg: config.Config | None = None) -> str:
         who = f"allow_users={','.join(cfg.auth.allow_users)}"
     else:
         who = "allow_users=empty (every account the backend accepts)"
-    return (f"auth: method={cfg.auth.method} {who} "
+    where = ""
+    if cfg.auth.method == "smb":
+        where = f" smb=//{cfg.auth.smb_server}/{cfg.auth.smb_share}"
+    return (f"auth: method={cfg.auth.method}{where} {who} "
             f"session_hours={cfg.auth.session_hours} idle_minutes={cfg.auth.idle_minutes}")
 
 
@@ -348,6 +501,7 @@ __all__ = [
     "FileBackend",
     "Identity",
     "NoneBackend",
+    "SmbBackend",
     "authorize",
     "describe_policy",
     "get_backend",

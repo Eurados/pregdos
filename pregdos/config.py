@@ -121,7 +121,7 @@ class Server:
 # The authentication methods pregdos.auth actually implements.  This tuple grows as backends
 # land, never ahead of them: a `method` the config accepts but nothing enforces would be a
 # site believing it is protected when it is not, which is the worst outcome this module has.
-AUTH_METHODS = ("none", "file")
+AUTH_METHODS = ("none", "file", "smb")
 
 
 @dataclass(frozen=True)
@@ -151,6 +151,10 @@ class Auth:
     session_hours: int = 12          # absolute cap on one sign-in
     idle_minutes: int = 60           # 0 = never time an idle session out
     password_file: str = ""          # method="file"; "" = $STATE_DIRECTORY/users
+    smb_server: str = "localhost"    # method="smb"
+    smb_share: str = ""              # REQUIRED for "smb"; see pregdos.auth.SmbBackend
+    smb_domain: str = ""
+    smb_timeout: int = 10            # seconds; 0 = wait forever
     secret_key_file: str = ""        # "" = $STATE_DIRECTORY/secret_key
     allow_insecure_http: bool = False
 
@@ -306,6 +310,7 @@ def _validate_values(cfg: Config, sources: List[Path]) -> None:
         ("paths", "dicomexport_timeout", cfg.paths.dicomexport_timeout, "wait forever"),
         ("scheduler", "cpus_per_task", cfg.scheduler.cpus_per_task, "use every core this machine reports"),
         ("auth", "idle_minutes", cfg.auth.idle_minutes, "never time an idle session out"),
+        ("auth", "smb_timeout", cfg.auth.smb_timeout, "wait forever for the SMB server"),
     ):
         if value < 0:
             raise ConfigError(
@@ -352,6 +357,19 @@ def _validate_auth(cfg: Config, where: str) -> None:
             f'{where}: [auth] allow_users is set but method is "none", so nothing is '
             f"enforced and every visitor still has full access to every study. Set a method, "
             f"or remove allow_users."
+        )
+
+    # IPC$ would be the convenient default and is the wrong one: it carries no `valid users`,
+    # so it admits every account in the passdb -- and on a standalone server an anonymous
+    # session setup can succeed against it outright.  A real share applies its own access
+    # control, which is the whole reason this method is safe without an allowlist.  So there is
+    # no default: naming the share is a decision the site has to make deliberately.
+    if cfg.auth.method == "smb" and not cfg.auth.smb_share.strip():
+        raise ConfigError(
+            f'{where}: [auth] method = "smb" needs smb_share -- the share to authenticate '
+            f"against, e.g. smb_share = \"users\". Name one whose `valid users` already lists "
+            f"the people who should reach PregDos; Samba then does the authorisation. Do not "
+            f"use IPC$: it has no `valid users`, so it would admit every account on the server."
         )
 
     if cfg.auth.session_hours < 1:

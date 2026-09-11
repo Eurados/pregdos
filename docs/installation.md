@@ -226,7 +226,59 @@ Turn it on with two lines:
 method = "file"
 ```
 
-#### Creating accounts
+#### Signing in with the site's Samba (`method = "smb"`)
+
+Where the host already runs Samba, this is usually the right choice: people sign in with the
+password they already use for the file shares, so there is no new credential and nothing for
+anyone else to administer.
+
+```toml
+[auth]
+method = "smb"
+smb_server = "localhost"
+smb_share = "users"
+```
+
+**Naming the share is mandatory, and it is the security-relevant part.** PregDos authenticates
+by doing an SMB session setup against that share. `IPC$` would be the convenient choice and is
+the wrong one: it carries no `valid users`, so it admits every account in the password
+database — and on a standalone server an anonymous session setup against it can succeed
+outright. Point `smb_share` at a real share whose `valid users` already lists the people who
+should reach PregDos, and Samba's own access control becomes PregDos's, with nothing to
+maintain in two places. There is no default; the server refuses to start without one.
+
+The cost of that, stated plainly: **renaming that share in `smb.conf` breaks sign-in.** It is
+reported as a backend failure naming the share, never as a wrong password, so the journal will
+say what happened.
+
+Verify before you enable it — as an ordinary user, not root, since that is how the service
+runs. A wrong password **must** fail:
+
+```bash
+printf 'username = USER\npassword = deliberately-wrong\n' \
+  | smbclient //localhost/users -A /dev/stdin -m SMB3 --use-kerberos=off -c quit ; echo "exit=$?"
+```
+
+If that *succeeds*, guest mapping is reachable and the share is not safe to authenticate
+against. Check `map to guest` in `smb.conf`.
+
+What PregDos does with each outcome:
+
+| Samba says | PregDos reports |
+| --- | --- |
+| exit 0 | signed in |
+| `NT_STATUS_LOGON_FAILURE` | "Incorrect username or password" — the same for a wrong password and an unknown account, so the form cannot be used to enumerate who exists |
+| `NT_STATUS_ACCESS_DENIED` | "Your password is correct, but this account is not authorised" — the password was right and the *share* refused, usually a missing group membership |
+| `NT_STATUS_BAD_NETWORK_NAME`, `CONNECTION_REFUSED`, a timeout | "Sign-in is temporarily unavailable", logged at ERROR — never reported as a wrong password |
+| anonymous fallback | refused, whatever the exit code |
+
+Tell users which password on the form itself, with `login_hint`:
+
+```toml
+login_hint = "Brug dit Samba-kodeord — det samme som til fildrevene, ikke din PC-adgangskode."
+```
+
+#### Creating accounts (`method = "file"`)
 
 `method = "file"` keeps accounts in a file PregDos owns, holding scrypt hashes.
 

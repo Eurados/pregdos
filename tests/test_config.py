@@ -440,3 +440,25 @@ def test_uncommented_example_loads_cleanly(tmp_path, monkeypatch):
     config.reset_cache()
 
     config.load()   # raises ConfigError if the example names anything unknown
+
+
+# -- method = "smb": the share is load-bearing --------------------------------
+
+def test_smb_without_a_share_is_refused(write_config):
+    """IPC$ would be the convenient default and the wrong one: no `valid users`, and an
+    anonymous session setup against it can succeed on a standalone server."""
+    write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "smb"\n')
+    with pytest.raises(config.ConfigError, match="smb_share"):
+        config.load()
+
+
+def test_smb_with_a_share_is_accepted(write_config):
+    write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "smb"\nsmb_share = "users"\n')
+
+    assert config.load().auth.smb_share == "users"
+
+
+def test_the_smb_refusal_names_ipc_as_the_thing_not_to_do(write_config):
+    write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "smb"\n')
+    with pytest.raises(config.ConfigError, match="IPC"):
+        config.load()

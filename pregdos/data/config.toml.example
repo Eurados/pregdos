@@ -139,6 +139,9 @@
 ##   "file" - a password file PregDos manages itself, written with `pregdos-passwd`.  Works
 ##            everywhere, including the container.  It also means a NEW password for every
 ##            user, which is the wrong answer at a site that already has a credential store.
+##   "smb"  - the site's own Samba, checked by doing an SMB session setup.  Users sign in with
+##            the password they already use for the file shares, so no new credential and
+##            nothing for anyone else to administer.  Needs smb_share below.
 ##
 ## AUTHENTICATION IS NOT SEGREGATION.  Everyone who signs in sees every study and every
 ## patient; PregDos has no per-user ownership.  What a login buys is keeping strangers out
@@ -167,6 +170,28 @@
 ## way to express a session that never expires.
 # session_hours = 12
 # idle_minutes = 60
+
+## method = "smb": which server, and WHICH SHARE.
+##
+## The share is not cosmetic.  IPC$ carries no `valid users`, so it admits every account in
+## the passdb -- and on a standalone server an anonymous session setup against it can succeed
+## outright.  Name a real share whose `valid users` already lists the people who should reach
+## PregDos, and Samba does the authorisation for you, with nothing to maintain twice.  There is
+## no default, so the choice has to be deliberate; PregDos refuses to start without it.
+##
+## The cost, stated plainly: renaming that share in smb.conf breaks sign-in.  It is reported as
+## a backend failure naming the share, never as a wrong password.
+##
+##     smb_server = "localhost"
+##     smb_share  = "users"
+##
+## smb_domain is for a server that wants one; leave it empty for a standalone Samba.
+## smb_timeout is how long to wait for the server before calling it unavailable -- which is
+## reported as an outage, not as everybody's password suddenly being wrong.
+# smb_server = "localhost"
+# smb_share = ""
+# smb_domain = ""
+# smb_timeout = 10
 
 ## Where method = "file" keeps its accounts.  Empty means $STATE_DIRECTORY/users, which
 ## systemd creates as /var/lib/pregdos (StateDirectory=pregdos in the shipped unit), or
