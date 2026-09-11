@@ -73,6 +73,12 @@ Provide:
 PregDos flattens nested uploads into a study directory while keeping the original DICOM files
 under that study's `dicom/` subdirectory.
 
+> **Name the upload after the case, not the patient.** The study name is taken from the ZIP
+> filename or the dropped folder's name — nothing is read out of the DICOM — and it then
+> appears in the URL, in browser history, in the server's directory names and in the audit
+> log. `PAT_0012.zip` keeps identifiers out of all four; `Jensen_Hanne_1954.zip` puts them in
+> all four. The DICOM inside is untouched either way.
+
 The DICOM study must contain the required RT modalities:
 
 - CT series

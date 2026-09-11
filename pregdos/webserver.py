@@ -699,16 +699,22 @@ def upload_files():
             structures = get_structures(root, study_name)
             if not structures:
                 raise ValueError("No RS-file or structures found!")
+        # The audit line records the ATTEMPT and how many checks it failed -- deliberately not
+        # the validation text.  Those messages are written for a person looking at the browser
+        # and embed DICOM identifiers to be useful: `dicom_intake.validate` names the actual
+        # PatientIDs when an upload mixes two patients.  Flashing that to the person holding
+        # the data is right; accumulating it in the journal, which has a different retention
+        # and a wider audience, is not.  The count is the audit-relevant fact; the reason is
+        # already in front of whoever can act on it.
         except UploadRejected as e:
             shutil.rmtree(study_path, ignore_errors=True)
-            audit.event("study.upload.rejected", study=study_name, reason="; ".join(e.problems))
+            audit.event("study.upload.rejected", study=study_name, failed_checks=len(e.problems))
             for problem in e.problems:
                 flash(problem)
             return redirect(request.url)
         except Exception as e:
             shutil.rmtree(study_path, ignore_errors=True)
-            audit.event("study.upload.rejected", study=study_name,
-                        reason=str(e) or e.__class__.__name__)
+            audit.event("study.upload.rejected", study=study_name, error=e.__class__.__name__)
             flash(str(e) if str(e) else "Upload failed.")
             return redirect(request.url)
 

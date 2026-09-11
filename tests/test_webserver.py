@@ -2138,3 +2138,23 @@ def test_a_key_already_on_disk_is_shared_even_by_a_direct_import(tmp_path):
     (tmp_path / "secret_key").chmod(0o600)
 
     assert _worker_key(tmp_path, "pregdos.webserver") == "a-key-written-earlier"
+
+
+def test_a_rejection_does_not_copy_dicom_identifiers_into_the_journal(client, tmp_path, caplog):
+    """dicom_intake names the actual PatientIDs when an upload mixes two patients, because
+    that is useful to the person looking at the browser.  The journal has a different
+    retention and a wider audience, so the audit line records the attempt, not the message."""
+    import logging
+
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+    dicom_factory.write(source / "CT.other.dcm", "CT", patient="SECRET-PATIENT-2")
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        response = client.post("/upload", data=_upload_data(source),
+                               content_type="multipart/form-data", follow_redirects=True)
+
+    assert b"more than one patient" in response.data      # the user is still told plainly
+    audit_lines = [r.getMessage() for r in caplog.records if r.name == "pregdos.audit"]
+    assert audit_lines, "the attempt should still be recorded"
+    assert not any("SECRET-PATIENT-2" in line for line in audit_lines)
