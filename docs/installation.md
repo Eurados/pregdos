@@ -304,7 +304,7 @@ Environment variables override the config file. Set these before running `pregdo
 | `PREGDOS_WORK_DIR` | `/var/tmp/pregdos` | Root directory for uploaded studies and generated runs. Keep it on **persistent disk** — never `/tmp`, which is usually a RAM-backed tmpfs that is wiped on reboot and steals memory from the TOPAS workers. `/var/tmp` persists across reboots and its contents are auto-reaped after ~30 days (see the retention drop-in below). |
 | `TOPAS_BIN` | `topas` | TOPAS executable used by local runs and version checks. |
 | `PREGDOS_EXECUTOR` | `auto` | `auto`, `local`, or `slurm`. `auto` uses SLURM when `sbatch` exists, otherwise local execution. |
-| `PREGDOS_SECRET_KEY` | random per process | Flask session secret. Set a stable value for persistent deployments. |
+| `PREGDOS_SECRET_KEY` | see below | Flask session signing key. Usually you do not need to set it: `pregdos-web` generates one at `$STATE_DIRECTORY/secret_key` (`/var/lib/pregdos/secret_key` under the shipped systemd unit) on first start, mode 0600, and reuses it forever after. Set this variable only where there is no persistent state directory — the container being the case it exists for. |
 | `PREGDOS_DEBUG` | unset | Set to `1` only for local Flask debugging. |
 
 Example local setup:
@@ -313,13 +313,15 @@ Example local setup:
 export PREGDOS_WORK_DIR="$PWD/.pregdos_uploads"
 export TOPAS_BIN=/opt/OpenTOPAS/bin/topas
 export PREGDOS_EXECUTOR=local
-export PREGDOS_SECRET_KEY="$(python - <<'PY'
-import secrets
-print(secrets.token_urlsafe(32))
-PY
-)"
 pregdos-web
 ```
+
+No secret key is set there on purpose: `pregdos-web` writes one to
+`${XDG_STATE_HOME:-~/.local/state}/pregdos/secret_key` on first start and reads it back on
+every later start. That matters because a key that changes per process invalidates every
+signed cookie on restart — flash messages disappear, and under a multi-process WSGI server
+each worker would reject the other workers' cookies. PregDos refuses to use a key file that
+other accounts can read.
 
 ## Docker Install
 

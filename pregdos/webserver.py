@@ -16,6 +16,7 @@ import pydicom
 
 import argparse
 import datetime
+import logging
 import zipfile
 import os
 import secrets
@@ -56,10 +57,102 @@ def _apply_config() -> None:
     """
     app.config["WORK_DIR"] = _resolve_work_dir()
 
+    # Session cookie hygiene.  Set here rather than at import so that a test which calls
+    # _apply_config() again gets these restored along with everything else.
+    #
+    # The NAME is not cosmetic.  Cookies are scoped by host and ignore the port, so a second
+    # Flask app on the same machine -- the DCPT host already runs one -- would share the
+    # default `session` cookie with PregDos and the two would clobber each other.
+    app.config.update(
+        SESSION_COOKIE_NAME="pregdos_session",
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+    )
+
+
+# ---------------------------------------------------------------------------
+# The session signing key
+# ---------------------------------------------------------------------------
+
+def _secret_key_path() -> Path:
+    """Where a persistent Flask session key lives on a deployment that has state.
+
+    ``$STATE_DIRECTORY`` is set by systemd's ``StateDirectory=pregdos`` (see
+    packaging/pregdos.service), which creates the directory 0700 and owns it to the service
+    account.  systemd may hand over a colon-separated list; the first entry is ours.  Outside
+    systemd the XDG state directory is the equivalent.
+    """
+    state = (os.environ.get("STATE_DIRECTORY") or "").split(":")[0].strip()
+    if state:
+        return Path(state) / "secret_key"
+    xdg = (os.environ.get("XDG_STATE_HOME") or "").strip() or str(Path.home() / ".local" / "state")
+    return Path(xdg) / "pregdos" / "secret_key"
+
+
+def _stored_secret_key() -> str:
+    """The persisted key if one exists and is safe to use, else ``""``.
+
+    Never raises.  This runs at *import* time, where the only sensible response to a problem
+    is to fall back to a per-process key -- which fails closed, since a key nobody else knows
+    is never worse than one they might.  :func:`ensure_secret_key` is the strict version and
+    reports instead.
+    """
+    try:
+        path = _secret_key_path()
+        if path.stat().st_mode & 0o077:
+            return ""
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def ensure_secret_key() -> str:
+    """Load the persistent session key, creating it on first start.  Returns a one-line note.
+
+    Called from :func:`main` only.  A long-running server wants a key that survives restart
+    and is shared by every worker; a bare import -- pytest, ``flask --app pregdos.webserver``
+    -- must not write to a state directory, so it keeps the per-process fallback below.
+
+    ``$PREGDOS_SECRET_KEY`` still wins, for the container, which has no state to persist.
+    """
+    if os.environ.get("PREGDOS_SECRET_KEY"):
+        return "session key from $PREGDOS_SECRET_KEY"
+
+    path = _secret_key_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        # O_EXCL *is* the claim, the same way studies.create_study's mkdir is: two workers
+        # starting at once must not each write a different key, or each would reject the
+        # other's cookies.  The loser reads what the winner wrote.
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        created = False
+    else:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(secrets.token_urlsafe(64) + "\n")
+        created = True
+
+    mode = path.stat().st_mode
+    if mode & 0o077:
+        raise RuntimeError(
+            f"{path}: mode {mode & 0o777:04o} lets other accounts read the session signing "
+            f"key, and anyone who can read it can forge a signed session. chmod 0600."
+        )
+    key = path.read_text(encoding="utf-8").strip()
+    if not key:
+        raise RuntimeError(f"{path}: session signing key file is empty. Delete it and restart.")
+    app.secret_key = key
+    return f"session key {'created at' if created else 'read from'} {path}"
+
 
 app = Flask(__name__)
 _apply_config()
-app.secret_key = os.environ.get("PREGDOS_SECRET_KEY") or secrets.token_urlsafe(32)
+# A per-process random key is the fallback, not the goal: it invalidates every signed cookie
+# on restart, so flash messages vanish and -- once there is a login -- everyone is signed out.
+# main() upgrades this to the persistent file above.
+app.secret_key = (
+    os.environ.get("PREGDOS_SECRET_KEY") or _stored_secret_key() or secrets.token_urlsafe(32)
+)
 
 # Templates render doses with a shared SI prefix (e.g. "3.8 mSv") via this helper.
 app.jinja_env.globals["fmt_dose"] = results.humanize_dose
@@ -1276,6 +1369,16 @@ def main(argv: list[str] | None = None):
     if args.config:
         config.set_config_path(args.config)
 
+    # Nothing configures the root logger, so every logger.info in the package currently goes
+    # nowhere.  stderr is journald under systemd -- already timestamped, already rotated, and
+    # already `journalctl -u pregdos` for the site admin -- so there is no file to own here.
+    # `force` because Flask/Werkzeug may have installed a handler by the time we run.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        force=True,
+    )
+
     # Fail before binding a port: a bad config should be a startup error naming the file and
     # the key, not a 500 on whichever page first happens to read it.
     try:
@@ -1286,6 +1389,13 @@ def main(argv: list[str] | None = None):
     # The module was imported to reach main(), so the import-time read above happened before
     # --config was known.  Redo it now.
     _apply_config()
+
+    # Upgrade the import-time per-process key to one that survives a restart.  Only main()
+    # does this, so importing the module never writes to the state directory.
+    try:
+        logging.getLogger(__name__).info("%s", ensure_secret_key())
+    except (OSError, RuntimeError) as exc:
+        parser.error(str(exc))
 
     # A flag beats the file: it is the more explicit, per-invocation signal, exactly as
     # --config beats $PREGDOS_CONFIG.  `is not None` rather than `or`, so --port 0 (bind an

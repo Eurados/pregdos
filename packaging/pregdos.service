@@ -1,8 +1,12 @@
 # PregDos web interface, as a system service.
 #
-#     sudo useradd --system --home-dir /var/lib/pregdos --create-home \
+#     sudo useradd --system --home-dir /var/lib/pregdos \
 #         --shell /sbin/nologin --comment "PregDos service account" pregdos
 #     sudo install -m 0644 systemd/pregdos.service /etc/systemd/system/pregdos.service
+#
+# No `--create-home` is needed: `StateDirectory=pregdos` below has systemd create
+# /var/lib/pregdos at first start, with the owner and mode the session key needs.
+#
 #     sudo chown -R pregdos:pregdos /var/tmp/pregdos      # if runs already exist
 #     sudo systemctl daemon-reload && sudo systemctl enable --now pregdos
 #     sudo journalctl -u pregdos -f
@@ -37,6 +41,17 @@ ExecStart=/opt/pregdos/venv/bin/pregdos-web
 # `systemctl restart pregdos`, not just a reload.
 Restart=on-failure
 RestartSec=5
+
+# Creates /var/lib/pregdos 0700 owned by the service account, adds it to ReadWritePaths, and
+# exports $STATE_DIRECTORY.  PregDos keeps the Flask session signing key there.  That key MUST
+# persist: one that changes per process invalidates every signed cookie on restart, so flash
+# messages vanish -- and once there is a login (issue #103), everybody is signed out.  It must
+# also be shared, or two workers under a WSGI server would reject each other's cookies.
+StateDirectory=pregdos
+StateDirectoryMode=0700
+
+# Tag the journal, so `journalctl -t pregdos` works as well as `-u`.
+SyslogIdentifier=pregdos
 
 # Modest hardening.  Deliberately NOT PrivateTmp=yes: that gives the unit a private /tmp AND
 # a private /var/tmp, which would hide the studies root (/var/tmp/pregdos by default) from

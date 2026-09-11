@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
 
-from pregdos import dicom_intake, executor, reporting, results, studies
+from pregdos import dicom_intake, executor, reporting, results, studies, webserver
 from tests import dicom_factory
 from pregdos.webserver import app
 from pregdos.models import ConversionParameters, ConversionResult
@@ -527,6 +527,130 @@ def test_run_dir_is_left_alone_when_pregdos_submits_as_itself(tmp_path, write_co
 def test_secret_key_is_not_insecure_example_value():
     assert app.secret_key
     assert app.secret_key != "pregdos_secret_key"
+
+
+# ---------------------------------------------------------------------------
+# The persistent session signing key
+#
+# A key that changes per process invalidates every signed cookie on restart, which today
+# loses flash messages and -- once there is a login -- signs everybody out.  It must also be
+# the same key in every worker under a multi-process WSGI server.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def state_dir(tmp_path, monkeypatch):
+    """Point the key at a tmp state directory, the way systemd's StateDirectory= does."""
+    path = tmp_path / "state"
+    path.mkdir()
+    monkeypatch.setenv("STATE_DIRECTORY", str(path))
+    monkeypatch.delenv("PREGDOS_SECRET_KEY", raising=False)
+    original = app.secret_key
+    yield path
+    app.secret_key = original
+
+
+def test_secret_key_path_follows_systemd_state_directory(state_dir):
+    assert webserver._secret_key_path() == state_dir / "secret_key"
+
+
+def test_secret_key_path_takes_the_first_of_a_colon_separated_list(tmp_path, monkeypatch):
+    """systemd may hand over several directories; the first is the one it made for us."""
+    monkeypatch.setenv("STATE_DIRECTORY", f"{tmp_path}/a:{tmp_path}/b")
+    assert webserver._secret_key_path() == tmp_path / "a" / "secret_key"
+
+
+def test_secret_key_path_falls_back_to_xdg_state_home(tmp_path, monkeypatch):
+    monkeypatch.delenv("STATE_DIRECTORY", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert webserver._secret_key_path() == tmp_path / "pregdos" / "secret_key"
+
+
+def test_ensure_secret_key_creates_the_file_0600_and_uses_it(state_dir):
+    note = webserver.ensure_secret_key()
+
+    key_file = state_dir / "secret_key"
+    assert key_file.stat().st_mode & 0o777 == 0o600
+    assert app.secret_key == key_file.read_text().strip()
+    assert app.secret_key
+    assert "created" in note
+
+
+def test_ensure_secret_key_reuses_an_existing_key(state_dir):
+    (state_dir / "secret_key").write_text("already-here\n")
+    (state_dir / "secret_key").chmod(0o600)
+
+    note = webserver.ensure_secret_key()
+
+    assert app.secret_key == "already-here"
+    assert "read from" in note
+
+
+def test_ensure_secret_key_does_not_clobber_a_key_written_concurrently(state_dir, mocker):
+    """O_EXCL is the claim: the worker that loses the race reads the winner's key.
+
+    Two workers each writing their own key would reject each other's cookies, which under a
+    multi-process WSGI server looks like a login that randomly forgets itself.
+    """
+    real_open = webserver.os.open
+
+    def winner_gets_there_first(path, flags, mode=0o777):
+        Path(path).write_text("written-by-the-other-worker\n")
+        Path(path).chmod(0o600)
+        return real_open(path, flags, mode)      # now raises FileExistsError
+
+    mocker.patch.object(webserver.os, "open", side_effect=winner_gets_there_first)
+
+    webserver.ensure_secret_key()
+
+    assert app.secret_key == "written-by-the-other-worker"
+
+
+def test_ensure_secret_key_refuses_a_key_other_accounts_can_read(state_dir):
+    (state_dir / "secret_key").write_text("leaked\n")
+    (state_dir / "secret_key").chmod(0o644)
+
+    with pytest.raises(RuntimeError, match="forge a signed session"):
+        webserver.ensure_secret_key()
+
+
+def test_ensure_secret_key_refuses_an_empty_key_file(state_dir):
+    (state_dir / "secret_key").write_text("")
+    (state_dir / "secret_key").chmod(0o600)
+
+    with pytest.raises(RuntimeError, match="empty"):
+        webserver.ensure_secret_key()
+
+
+def test_environment_secret_key_wins_and_writes_nothing(state_dir, monkeypatch):
+    """The container has no state directory to keep, so the env var must still be enough."""
+    monkeypatch.setenv("PREGDOS_SECRET_KEY", "from-the-environment")
+
+    note = webserver.ensure_secret_key()
+
+    assert not (state_dir / "secret_key").exists()
+    assert "PREGDOS_SECRET_KEY" in note
+
+
+def test_stored_secret_key_ignores_a_world_readable_file(state_dir):
+    """Import time cannot report, so it falls back to a per-process key -- which fails closed."""
+    (state_dir / "secret_key").write_text("leaked\n")
+    (state_dir / "secret_key").chmod(0o644)
+
+    assert webserver._stored_secret_key() == ""
+
+
+def test_stored_secret_key_is_empty_when_there_is_no_file(state_dir):
+    assert webserver._stored_secret_key() == ""
+
+
+def test_session_cookie_is_named_for_pregdos_and_is_http_only():
+    """Cookies are scoped by host and ignore the port, so a second Flask app on the same
+    machine would otherwise share the default `session` cookie with PregDos."""
+    webserver._apply_config()
+
+    assert app.config["SESSION_COOKIE_NAME"] == "pregdos_session"
+    assert app.config["SESSION_COOKIE_HTTPONLY"] is True
+    assert app.config["SESSION_COOKIE_SAMESITE"] == "Lax"
 
 
 def test_submit_sbatch_failure_flashes_error(client, tmp_path, mocker, monkeypatch):
