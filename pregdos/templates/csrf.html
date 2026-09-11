@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block title %}Request rejected — PregDos{% endblock %}
+{% block heading %}Request rejected{% endblock %}
+{% block subtitle %}This action did not carry a valid token for your session{% endblock %}
+
+{% block content %}
+<div class="alert">
+  <p>
+    Nothing was changed. This usually means the page had been open long enough for the
+    session to be renewed, or that you signed in again in another tab.
+  </p>
+  <p>
+    Reload the page you came from and try the action again.
+  </p>
+</div>
+<p><a class="btn btn-secondary" href="{{ url_for('index') }}">Back to the dashboard</a></p>
+{% endblock %}

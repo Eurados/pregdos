@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}Sign in — PregDos{% endblock %}
+
+{# The nav is emptied: every tab on it redirects straight back to this page. #}
+{% block nav %}{% endblock %}
+
+{% block heading %}PregDos{% endblock %}
+{% block subtitle %}Sign in to continue{% endblock %}
+
+{% block content %}
+<div class="login-card">
+  <form method="POST" action="{{ url_for('login', next=next) }}" autocomplete="on">
+    {# Minted for a visitor who has no session yet, which is what makes this login-CSRF
+       resistant.  Checked inside the view rather than by the _csrf_protect hook. #}
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username"
+           autocomplete="username" autocapitalize="none" spellcheck="false" autofocus required>
+
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autocomplete="current-password" required>
+
+    <button type="submit" class="btn btn-primary">Sign in</button>
+  </form>
+</div>
+{% endblock %}

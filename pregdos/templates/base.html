@@ -14,6 +14,8 @@
      looks unchanged and one without looks native (issue #79). #}
 </head>
 <body>
+  {# A block so login.html can empty it: all three tabs would redirect straight back here. #}
+  {% block nav %}
   <nav class="tab-nav">
     <div class="container tab-nav-inner">
       {# The brand is a nav destination in its own right (the dashboard), so it carries the
@@ -36,8 +38,17 @@
           About
         </a>
       </div>
+      {# Absent entirely when [auth] is off, so the nav is byte-identical to before. #}
+      {% if current_user %}
+      <form class="tab-nav-account" method="POST" action="{{ url_for('logout') }}">
+        {{ csrf_field() }}
+        <span class="tab-nav-user" title="Signed in">{{ current_user.display_name or current_user.username }}</span>
+        <button type="submit" class="tab-nav-signout">Sign out</button>
+      </form>
+      {% endif %}
     </div>
   </nav>
+  {% endblock %}
 
   <header class="site-header">
     <div class="container">

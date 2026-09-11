@@ -1,15 +1,18 @@
 from flask import (
     Flask,
     Response,
+    g,
     jsonify,
     request,
     render_template,
     send_from_directory,
     redirect,
     flash,
+    session,
     url_for,
     stream_with_context,
 )
+from markupsafe import Markup, escape
 import importlib.metadata
 import importlib.resources
 import pydicom
@@ -17,6 +20,7 @@ import pydicom
 import argparse
 import datetime
 import logging
+import time
 import zipfile
 import os
 import secrets
@@ -26,8 +30,8 @@ import subprocess
 import sys
 import shutil
 
-from . import (config, dicom_intake, executor, report_pdf, reporting, results, rtdose,
-               structure_metrics, studies, versions)
+from . import (audit, auth, config, dicom_intake, executor, report_pdf, reporting, results,
+               rtdose, structure_metrics, studies, versions)
 from .models import ConversionParameters, ConversionResult
 from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
@@ -66,7 +70,26 @@ def _apply_config() -> None:
     app.config.update(
         SESSION_COOKIE_NAME="pregdos_session",
         SESSION_COOKIE_HTTPONLY=True,
-        SESSION_COOKIE_SAMESITE="Lax",
+    )
+
+    # The rest depends on whether the cookie confers authority or merely carries a flash.
+    #
+    # SameSite=Strict costs exactly one thing: a link from an email lands on the login page
+    # the first time, and a reload then works.  Worth it for a server holding patient data.
+    #
+    # Secure is the subtle one.  It is safe on loopback -- browsers treat that as a secure
+    # context -- and wrong on a plain-HTTP LAN address, where it produces the nastiest symptom
+    # available: a sign-in that appears to succeed and bounces straight back to the form.
+    # `allow_insecure_http` is precisely that case, a proxy terminating TLS ahead of this port.
+    cfg = config.load()
+    enabled = auth.is_enabled(cfg)
+    app.config.update(
+        SESSION_COOKIE_SAMESITE="Strict" if enabled else "Lax",
+        SESSION_COOKIE_SECURE=enabled and not cfg.auth.allow_insecure_http,
+        # The idle anchor in the session is ours; letting Flask also re-sign on every response
+        # would rewrite the cookie 12 times a minute per open task page.
+        SESSION_REFRESH_EACH_REQUEST=False,
+        PERMANENT_SESSION_LIFETIME=datetime.timedelta(hours=cfg.auth.session_hours),
     )
 
 
@@ -75,18 +98,13 @@ def _apply_config() -> None:
 # ---------------------------------------------------------------------------
 
 def _secret_key_path() -> Path:
-    """Where a persistent Flask session key lives on a deployment that has state.
-
-    ``$STATE_DIRECTORY`` is set by systemd's ``StateDirectory=pregdos`` (see
-    packaging/pregdos.service), which creates the directory 0700 and owns it to the service
-    account.  systemd may hand over a colon-separated list; the first entry is ours.  Outside
-    systemd the XDG state directory is the equivalent.
-    """
-    state = (os.environ.get("STATE_DIRECTORY") or "").split(":")[0].strip()
-    if state:
-        return Path(state) / "secret_key"
-    xdg = (os.environ.get("XDG_STATE_HOME") or "").strip() or str(Path.home() / ".local" / "state")
-    return Path(xdg) / "pregdos" / "secret_key"
+    """Where the persistent Flask session key lives: ``[auth] secret_key_file``, else the
+    state directory.  See :func:`pregdos.config.state_dir`."""
+    try:
+        configured = config.load().auth.secret_key_file
+    except config.ConfigError:
+        configured = ""      # a broken config is main()'s error to report, not this function's
+    return Path(configured) if configured else config.state_dir() / "secret_key"
 
 
 def _stored_secret_key() -> str:
@@ -330,12 +348,242 @@ def inject_layout_context():
         "pregdos_version": version,
         "pregdos_version_short": version.split("+", 1)[0],
         "funding_logos": _funding_logos(),
+        # None whenever [auth] is off, so the nav renders byte-identically to before.
+        "current_user": getattr(g, "current_user", None),
     }
+
+
+# ---------------------------------------------------------------------------
+# The login gate.  Issue #103; entirely inert while [auth] method = "none".
+# ---------------------------------------------------------------------------
+
+# Reachable without a session.  ENDPOINT NAMES, not path prefixes: request.endpoint is None
+# for a URL that matched no rule, and a 404 must not become a way to probe the server.
+#
+# `static` and `favicon` are here because base.html requests both on EVERY page -- including
+# the login page, which would otherwise render unstyled and iconless from behind its own
+# redirect loop.  Neither serves anything but packaged assets.
+_PUBLIC_ENDPOINTS = frozenset({"login", "logout", "static", "favicon"})
+
+# Authenticated, but not evidence that anyone is at the keyboard.  The task pages poll these
+# every 5 s for as long as a tab is open, so counting them as activity would mean an
+# unattended screen never times out -- which is the one thing the idle timeout is for.
+_IDLE_NEUTRAL_ENDPOINTS = frozenset({"studies_fragment", "run_progress_fragment"})
+
+# Re-signing the cookie on every request would rewrite it 12 times a minute per open tab for
+# no benefit.  The idle anchor only has to be accurate to well within idle_minutes.
+_IDLE_ANCHOR_RESOLUTION = 60     # seconds
+
+
+def _session_user(cfg) -> auth.Identity | None:
+    """The signed-in user for this request, or None.  Enforces both timeouts.
+
+    Clears the session on expiry rather than leaving a cookie that will be rejected on every
+    later request: the user should land on the login page once, not loop.
+    """
+    username = session.get("u")
+    if not username:
+        return None
+
+    now = int(time.time())
+    started = session.get("t", 0)
+    seen = session.get("s", 0)
+    idle_limit = cfg.auth.idle_minutes * 60
+
+    expired = (
+        now - started >= cfg.auth.session_hours * 3600
+        or (idle_limit and now - seen >= idle_limit)
+    )
+    if expired:
+        session.clear()
+        return None
+
+    # A poll proves the tab is open, not that anyone is looking at it.
+    if request.endpoint not in _IDLE_NEUTRAL_ENDPOINTS and now - seen > _IDLE_ANCHOR_RESOLUTION:
+        session["s"] = now
+
+    return auth.Identity(username=username, display_name=session.get("n", ""))
+
+
+def _safe_next(target: str | None) -> str:
+    """``target`` if it is a path on this server, else the dashboard.
+
+    Only a single leading ``/`` is accepted.  ``//evil.example`` and ``/\\evil.example`` are
+    both read by browsers as absolute URLs elsewhere, which would turn the login page into an
+    open redirect.
+    """
+    if target and target.startswith("/") and not target.startswith(("//", "/\\")):
+        return target
+    return url_for("index")
+
+
+def _wants_json() -> bool:
+    """True for the in-page pollers, false for a browser navigation.
+
+    The two fragment endpoints are fetched with ``Accept: application/json``; a navigation
+    always carries ``text/html``.  ``X-Requested-With`` is belt and braces, added to both
+    fetch() calls in the same change.
+    """
+    accept = request.headers.get("Accept", "")
+    if "application/json" in accept and "text/html" not in accept:
+        return True
+    return request.headers.get("X-Requested-With") == "XMLHttpRequest"
+
+
+def _unauthenticated():
+    """What to send someone who is not signed in."""
+    if _wants_json():
+        # A redirect here would be followed by fetch(), parsed as JSON, throw, and land in the
+        # poller's catch -- which retries forever and tells nobody.  Say 401 and let the page
+        # reload itself.
+        response = jsonify({"error": "unauthenticated", "login_url": url_for("login")})
+        response.status_code = 401
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    # Only a GET is worth coming back to: a POST's body is gone by the time the user has
+    # signed in, and replaying it would be worse than dropping it.
+    target = request.full_path.rstrip("?") if request.method == "GET" else None
+    return redirect(url_for("login", next=_safe_next(target)))
+
+
+@app.before_request
+def _require_login():
+    cfg = config.load()
+    if not auth.is_enabled(cfg):
+        return None
+    if request.endpoint in _PUBLIC_ENDPOINTS:
+        return None
+    g.current_user = _session_user(cfg)
+    if g.current_user is not None:
+        return None
+    return _unauthenticated()
+
+
+@app.before_request
+def _csrf_protect():
+    """Reject a state-changing request that does not carry this session's token.
+
+    Registered after ``_require_login``, so an expired session on a POST produces the redirect
+    rather than a confusing 403.
+
+    Off entirely when [auth] is off: with no login there is nothing to forge -- anyone who can
+    reach the port can already open the page and click the button -- so the requirement would
+    be pure ceremony, and it would break every existing deployment and every unauthenticated
+    POST in the test suite.
+    """
+    if not auth.is_enabled(config.load()):
+        return None
+    if request.method in ("GET", "HEAD", "OPTIONS", "TRACE"):
+        return None
+    # The login form carries a token too, against login-CSRF, but it is minted for a visitor
+    # who has no session yet -- so it is checked inside the view, not here.
+    if request.endpoint in ("login", "static"):
+        return None
+    sent = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token", "")
+    if not sent or not secrets.compare_digest(sent, session.get("csrf", "")):
+        audit.event("csrf.rejected", endpoint=request.endpoint or "-")
+        return render_template("csrf.html"), 403
+
+
+def _csrf_token() -> str:
+    """This session's token, minting one if the session does not have it yet.
+
+    Per SESSION, not per request.  `studies_fragment` re-renders `_studies_list.html` every
+    5 s and the client swaps it in, delete form and all -- so a per-request token would be
+    stale the moment the fragment was replaced, and every delete after the first poll would
+    403.  It is rotated where it matters, on sign-in and sign-out.
+    """
+    token = session.get("csrf")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf"] = token
+    return token
+
+
+def _csrf_field() -> Markup:
+    """``{{ csrf_field() }}`` for the forms.  Renders nothing at all when [auth] is off, so
+    the existing HTML assertions in the test suite are unaffected."""
+    if not auth.is_enabled(config.load()):
+        return Markup("")
+    return Markup(f'<input type="hidden" name="csrf_token" value="{escape(_csrf_token())}">')
+
+
+app.jinja_env.globals["csrf_field"] = _csrf_field
+
+
+def _start_session(identity: auth.Identity) -> None:
+    """Sign someone in.  Clears first, so neither a fixated session id nor a token from
+    before the sign-in survives it."""
+    now = int(time.time())
+    session.clear()
+    session["u"] = identity.username
+    session["n"] = identity.display_name
+    session["t"] = now      # when this sign-in began  -> session_hours
+    session["s"] = now      # when it was last active  -> idle_minutes
+    session["csrf"] = secrets.token_urlsafe(32)
+    session.permanent = True
 
 
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    cfg = config.load()
+    if not auth.is_enabled(cfg):
+        # Nothing to sign in to; showing a dead form would be worse than going home.
+        return redirect(url_for("index"))
+
+    target = _safe_next(request.args.get("next"))
+    if _session_user(cfg) is not None:
+        return redirect(target)
+
+    if request.method == "POST":
+        # Checked here rather than in _csrf_protect because the visitor had no session when
+        # the form was rendered -- the GET below is what gave them one, carrying this token.
+        sent = request.form.get("csrf_token", "")
+        if not sent or not secrets.compare_digest(sent, session.get("csrf", "")):
+            flash("Your session expired before the form was submitted. Please try again.")
+            return redirect(url_for("login", next=target))
+
+        username = request.form.get("username", "")
+        result = auth.login(username, request.form.get("password", ""), cfg)
+        if result.ok:
+            assert result.identity is not None
+            _start_session(result.identity)
+            audit.event("login.ok", user=result.identity.username)
+            return redirect(target)
+
+        audit.event("login.denied", user=username or "-", reason=result.reason,
+                    detail=result.detail)
+        if result.reason == "not-allowlisted":
+            # Worth saying plainly: it costs a valid password to learn, and the alternative
+            # is a user retyping a password that was never the problem.
+            flash("That password is correct, but this account is not authorised to use "
+                  "PregDos. Ask the administrator to add it.")
+        elif result.reason == "backend-unavailable":
+            flash("Sign-in is temporarily unavailable. The administrator will find the "
+                  "reason in the server log.")
+        else:
+            flash("Incorrect username or password.")
+        # Not a rate limiter -- see pregdos.auth -- just enough to make an online guessing
+        # loop tedious without pretending to be a defence.
+        time.sleep(0.5)
+        return redirect(url_for("login", next=target))
+
+    return render_template("login.html", next=target, csrf_token=_csrf_token())
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    """POST only: a GET would be trivially CSRF-able, and browsers prefetch links."""
+    user = session.get("u", "-")
+    session.clear()
+    if user != "-":
+        audit.event("logout", user=user)
+        flash("Signed out.")
+    return redirect(url_for("index"))
 
 @app.route("/")
 def index():
@@ -387,6 +635,7 @@ def upload_files():
         root = studies_root()
         try:
             study_name, study_path = studies.create_study(root, _upload_study_name(study_zip, study_dir_files))
+            audit.event("study.upload", study=study_name)
         except (StudyError, ValueError) as e:
             flash(str(e))
             return redirect(request.url)
@@ -618,13 +867,8 @@ def download_file(study, run_id, filename):
     if not (run_dir / safe_filename).is_file():
         flash("File not found.")
         return redirect(url_for("upload_files"))
+    audit.event("download.file", study=study, run=run_id, file=safe_filename)
     return send_from_directory(str(run_dir), safe_filename, as_attachment=True)
-
-
-@app.route("/squeue")
-def squeue():
-    result = subprocess.run(["squeue"], capture_output=True, text=True)
-    return result.stdout or result.stderr
 
 
 @app.route("/submit", methods=["POST"])
@@ -992,6 +1236,7 @@ def download_report(study, run_id):
         return redirect(url_for("list_studies"))
 
     csv_text = reporting.build_report_csv(run_dir, study, run_id, studies_root())
+    audit.event("download.report_csv", study=study, run=run_id)
     return Response(
         csv_text,
         mimetype="text/csv",
@@ -1013,6 +1258,7 @@ def download_pdf_report(study, run_id):
         return redirect(url_for("list_studies"))
 
     rows, warnings, plan_fractions = reporting.result_rows(run_dir, study, studies_root())
+    audit.event("download.report_pdf", study=study, run=run_id)
     pdf = report_pdf.build_report_pdf(
         study=study,
         run_id=run_id,
@@ -1084,6 +1330,8 @@ def _submit_topas_files(study_name: str, run_id: str, run_dir: Path, out_files: 
             pass  # not root, or no such account -- submitting as ourselves still works
 
     info = executor.submit_run(run_dir, topas_files)
+    audit.event("run.submit", study=study_name, run=run_id,
+                backend=info.backend, fields=len(info.fields))
 
     if info.backend == executor.SLURM:
         for job in info.fields:
@@ -1113,6 +1361,7 @@ def cancel_run(study, run_id):
     # remaining fields, and the UI then refused to stop it (issue #80).
     if status in (executor.RUNNING, executor.QUEUED) or executor.worker_alive(run_dir):
         executor.cancel_run(run_dir)
+        audit.event("run.cancel", study=study, run=run_id)
         flash(f"Cancelled run {run_id}.")
     else:
         flash(f"Run {run_id} is {status}; nothing to cancel.")
@@ -1185,6 +1434,7 @@ def delete_study(study):
             cancelled += 1
 
     shutil.rmtree(study_dir, ignore_errors=True)
+    audit.event("study.delete", study=study, runs_cancelled=cancelled)
     if cancelled:
         flash(f"Cancelled {cancelled} unfinished run(s).")
     flash(f"Deleted study {study}.")
@@ -1198,6 +1448,7 @@ def download_job_file(study, run_id, filename):
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
     safe = secure_filename(filename)
+    audit.event("download.file", study=study, run=run_id, file=safe)
     if safe.endswith(".csv") and (run_dir / safe).is_file():
         return Response(
             _served_bytes(run_dir / safe),
@@ -1283,6 +1534,7 @@ def download_full_run(study, run_id):
     if not files:
         flash("This run has no files to archive yet.")
         return redirect(url_for("run_detail", study=study, run_id=run_id))
+    audit.event("download.archive", study=study, run=run_id, files=len(files))
 
     def generate():
         stream = _ZipStream()
@@ -1345,6 +1597,7 @@ def download_rtdose_bundle(study, run_id):
                   "dose scorer enabled.")
         return redirect(url_for("run_detail", study=study, run_id=run_id))
 
+    audit.event("download.rtdose", study=study, run=run_id)
     return send_from_directory(str(run_dir), rtdose.PLAN_IMPORT_BUNDLE_NAME, as_attachment=True)
 
 
@@ -1404,6 +1657,22 @@ def main(argv: list[str] | None = None):
     port = args.port if args.port is not None else cfg.server.port
     if not 0 <= port <= 65535:
         parser.error(f"--port {port} is not a valid port (0-65535)")
+
+    # config validated this against [server] host, but --host never passes through config
+    # validation at all -- so a loopback config launched with `--host 0.0.0.0` would put a
+    # password form on the network in clear.  Check the interface actually about to be bound.
+    if reason := config.insecure_auth_reason(
+        cfg.auth.method, host, cfg.server.ssl_cert, cfg.auth.allow_insecure_http
+    ):
+        parser.error(reason)
+
+    # Fail before binding, for the same reason the config is read first: a password file that
+    # does not exist should name itself at startup, not present as a login page that rejects
+    # everybody with nothing in the journal to say why.
+    if auth.is_enabled(cfg):
+        if problem := auth.get_backend(cfg).preflight():
+            parser.error(problem)
+    logging.getLogger(__name__).info("%s", auth.describe_policy(cfg))
 
     # Read the certificate before binding, for the same reason the config is validated first:
     # a missing file should name itself, not surface as a Werkzeug traceback on the first

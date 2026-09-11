@@ -21,16 +21,19 @@
     <div class="actions">
       {% if can_cancel %}
         <form method="POST" action="{{ url_for('cancel_run', study=study, run_id=run_id) }}">
+          {{ csrf_field() }}
           <button type="submit" class="btn btn-danger">Cancel run</button>
         </form>
       {% endif %}
       {% if can_move_up %}
         <form method="POST" action="{{ url_for('move_run_up', study=study, run_id=run_id) }}">
+          {{ csrf_field() }}
           <button type="submit" class="btn btn-secondary">Move up</button>
         </form>
       {% endif %}
       {% if can_rerun %}
         <form method="POST" action="{{ url_for('rerun_run', study=study, run_id=run_id) }}">
+          {{ csrf_field() }}
           <button type="submit" class="btn btn-secondary">Rerun</button>
         </form>
       {% endif %}
@@ -92,7 +95,17 @@
     async function tick() {
       let data;
       try {
-        const resp = await fetch(url, {headers: {'Accept': 'application/json'}});
+        const resp = await fetch(url, {
+          headers: {'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
+          // See studies.html: `follow` would silently poll the login page forever.
+          redirect: 'manual',
+        });
+        // The session ended.  Reload so the gate can send the browser to the login page, and
+        // do NOT reschedule.  A task page left open overnight takes exactly this path.
+        if (resp.status === 401 || resp.type === 'opaqueredirect') {
+          location.reload();
+          return;
+        }
         if (!resp.ok) throw new Error(resp.status);
         data = await resp.json();
       } catch (e) {

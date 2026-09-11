@@ -25,6 +25,34 @@ The main navigation has:
 - **Tasks**: view converted/running/completed runs.
 - **About**: runtime versions and toolchain checks.
 
+### Signing in
+
+Most installations have no login at all and go straight to the dashboard. Where the site has
+turned authentication on, PregDos shows a sign-in form first.
+
+**Which password?** The one your administrator issued **for PregDos**. It is not necessarily
+the password you use to log into the PC — ask if you are unsure rather than guessing, because
+repeated failures are recorded and, depending on the site, can lock an account.
+
+Two messages are worth telling apart:
+
+- *"Incorrect username or password"* — retype it. Note that usernames are case-sensitive.
+- *"That password is correct, but this account is not authorised to use PregDos"* — the
+  password was right and nothing is wrong with your typing. The account simply has not been
+  granted access; ask the administrator to add it.
+
+Your name and a **Sign out** button appear at the right-hand end of the navigation bar once
+you are signed in.
+
+A sign-in lasts 12 hours, and ends after 60 minutes with no activity. Watching a task page
+does **not** count as activity — the page refreshes itself every few seconds, but that is the
+browser, not you. So a run left open overnight will show the sign-in form in the morning; sign
+in again and the task page comes straight back, with the run unaffected. Nothing you have
+submitted is lost by signing out or by timing out: runs continue on the server regardless.
+
+Everyone who can sign in sees every study on the server. There is no per-user separation of
+studies, so treat what you upload as visible to all PregDos users at your site.
+
 ## 2. Upload A Study
 
 Open **New simulation**.

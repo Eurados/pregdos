@@ -39,6 +39,9 @@
       <h2><code>{{ tile.name }}</code></h2>
       <form method="POST" action="{{ url_for('delete_study', study=tile.name) }}"
             onsubmit="return confirm('Delete study &quot;{{ tile.name }}&quot;?\n\nThis permanently removes the uploaded DICOM, every conversion and all results.{% if tile.active %}\n\nA run is still in progress and will be cancelled.{% endif %}\n\nThis cannot be undone.');">
+        {# This fragment is re-rendered every 5 s by the task-page poller and swapped in, so
+           the token here must be the same one the full page carried -- see _csrf_token(). #}
+        {{ csrf_field() }}
         <button type="submit" class="btn btn-danger" title="Delete this study">🗑 Delete</button>
       </form>
     </div>

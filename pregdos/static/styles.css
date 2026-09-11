@@ -147,6 +147,71 @@ main {
   border-bottom-color: var(--brand);
 }
 
+/* Who is signed in, pushed to the far end of the nav.  Present only when [auth] is on --
+   with no authentication the block is not rendered at all. */
+.tab-nav-account {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tab-nav-user {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.tab-nav-signout {
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.tab-nav-signout:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+/* ----------------------------------------------------------
+   Sign-in page
+   ---------------------------------------------------------- */
+
+.login-card {
+  max-width: 26rem;
+  margin: 8px auto 0;
+  padding: 24px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.login-card label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.login-card input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  margin-bottom: 16px;
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.login-card button {
+  width: 100%;
+}
+
 /* ----------------------------------------------------------
    Header
    ---------------------------------------------------------- */

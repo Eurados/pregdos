@@ -201,13 +201,121 @@ than offering the usual "proceed anyway" — so a CN-only certificate fails in a
 like a server fault. List every name users will type, including the bare hostname and the IP.
 
 Be clear about what that buys: encryption on the wire, from the **development** server. It is
-not a production WSGI deployment (issue #90) and it is not authentication (issue #64) — anyone
-who can reach the port can read every study on the server. A self-signed certificate also
+not a production WSGI deployment (issue #90), and encryption is not authentication — that is
+[Authentication](#authentication) below, which is optional and off by default, so on a default
+install anyone who can reach the port can read every study on the server. The two are checked
+together at startup: turning a login on over plain HTTP on a non-loopback address is refused.
+A self-signed certificate also
 shows every user a browser warning, which trains exactly the wrong reflex for a clinical tool;
 if the site has its own CA, a certificate from it costs the same to install and avoids that.
 
 Remember the host firewall: `sudo firewall-cmd --add-port=8080/tcp` (add `--permanent`, then
 `--reload`, once the port is settled).
+
+### Authentication
+
+**Off by default.** PregDos has always served without a login, and on a single-user
+workstation or inside the container that is still the right setting. It stops being right the
+moment a shared host holds studies that are not anonymized: without `[auth]`, anyone who can
+reach the port can read every study, download the DICOM, and delete studies.
+
+Turn it on with two lines:
+
+```toml
+[auth]
+method = "file"
+```
+
+#### Creating accounts
+
+`method = "file"` keeps accounts in a file PregDos owns, holding scrypt hashes. Manage it with
+`pregdos-passwd`, run **as the account the web service runs as** so the file it creates is
+owned by the process that has to read it:
+
+```bash
+sudo -u pregdos /opt/pregdos/venv/bin/pregdos-passwd add nbassler   # prompts twice, no echo
+sudo -u pregdos /opt/pregdos/venv/bin/pregdos-passwd list
+sudo -u pregdos /opt/pregdos/venv/bin/pregdos-passwd delete olduser
+```
+
+`add` on an existing account changes its password. The file lands at `$STATE_DIRECTORY/users`
+— `/var/lib/pregdos/users` under the shipped systemd unit — unless `[auth] password_file` says
+otherwise, and must stay mode 0600; PregDos refuses to read it otherwise.
+
+Deleting the last remaining account is refused, because it would leave a running server that
+nobody can sign in to. Turn `[auth]` off instead if that is what you want.
+
+#### Who may sign in
+
+`allow_users` is a *narrowing* filter and is empty by default, which means every account in
+the password file may sign in. Set it only to admit fewer than that:
+
+```toml
+[auth]
+method = "file"
+allow_users = ["nbassler", "oncall"]
+```
+
+Setting `allow_users` while `method = "none"` is a startup error: it would enforce nothing,
+and an admin who wrote it would have every reason to believe the server was protected.
+
+#### What a login does and does not buy
+
+**Authentication is not segregation.** Everyone who signs in sees every study and every
+patient — PregDos has no per-user ownership of studies. What a login buys is keeping strangers
+out, and, together with the audit log, a record of who saw what. If the department needs
+per-user separation, that is a different feature and it does not exist yet.
+
+The audit trail goes to the journal, one line per action:
+
+```bash
+journalctl -u pregdos | grep audit
+```
+
+```text
+audit action=login.ok user=nbassler ip=10.0.4.17
+audit action=login.denied user=jdoe reason=bad-credentials ip=10.0.4.99
+audit action=study.delete user=nbassler study=PAT_0012 runs_cancelled=2
+audit action=download.archive user=nbassler study=PAT_0012 run=run_20260911_101316 files=214
+```
+
+Two things about that log that are easy to miss:
+
+- **It contains PHI.** Study names come from the uploaded folder or ZIP, so with
+  non-anonymized data they are patient names or record numbers. There is no way to record who
+  downloaded patient X's data without naming X. Protect and retain the journal under the same
+  policy as the studies root.
+- **The journal may be volatile.** `Storage=auto` keeps nothing across a reboot unless
+  `/var/log/journal` exists. Check with `test -d /var/log/journal && journalctl --disk-usage`;
+  if it is missing, `sudo mkdir -p /var/log/journal && sudo systemctl restart systemd-journald`.
+
+#### TLS is not optional once there is a login
+
+A password typed into a form that crosses the network in clear is worse than no login at all.
+PregDos therefore **refuses to start** with `[auth]` enabled on a non-loopback address with no
+TLS configured. Three ways to satisfy it:
+
+- set `[server] ssl_cert` and `ssl_key` (see [Choosing a port, and TLS](#choosing-a-port-and-tls));
+- bind `host = "127.0.0.1"` and let a reverse proxy be the only way in;
+- set `[auth] allow_insecure_http = true`, which is correct **only** where a proxy already
+  terminates TLS ahead of this port.
+
+The check is repeated against whatever `--host` actually binds, so a loopback config launched
+with `--host 0.0.0.0` is refused too.
+
+#### Sessions
+
+A sign-in lasts `session_hours` (12 by default) and is dropped after `idle_minutes` (60) with
+no activity; `idle_minutes = 0` disables the idle timeout. The 5-second task-page poller
+deliberately does *not* count as activity, so a screen left unattended still times out — a
+task page left open overnight will show the login form in the morning rather than the run.
+
+Sessions survive a restart, because the signing key is persisted (see
+[Useful Environment Variables](#useful-environment-variables)).
+
+There is **no login rate limiter**, on purpose: an in-process counter is worthless across the
+worker processes of a WSGI server, and a half-working one is worse than none. Failed sign-ins
+are delayed slightly and recorded in the journal.
 
 ### Configuration File
 
@@ -239,8 +347,8 @@ a port, so a bad file fails immediately rather than on whichever page first read
 > sees it. Use `PREGDOS_CONFIG` in the unit file for those deployments.
 
 The sections are `[paths]` (`work_dir`, `topas_bin`, `dicomexport`, `dicomexport_timeout`),
-`[scheduler]` (see below), `[server]` (`host`, `port`, `ssl_cert`, `ssl_key`), and
-`[network]` (`update_check`).
+`[scheduler]` (see below), `[server]` (`host`, `port`, `ssl_cert`, `ssl_key`), `[auth]` (see
+[Authentication](#authentication)), and `[network]` (`update_check`).
 
 #### Airgapped sites
 

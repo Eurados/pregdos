@@ -5,6 +5,7 @@
 
 {% block content %}
 <form method="post" action="{{ url_for('convert') }}" class="form-grid" id="setup-form">
+  {{ csrf_field() }}
 
   {# Pass through fields from upload step.  These are names, never filesystem paths:
      the server resolves them against the studies root (see pregdos/studies.py). #}
