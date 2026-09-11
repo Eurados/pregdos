@@ -21,6 +21,8 @@
 
     <label for="password">Password</label>
     <input type="password" id="password" name="password" autocomplete="current-password" required>
+    {# Which password to type.  Escaped by Jinja: [auth] login_hint is text, not markup. #}
+    {% if login_hint %}<p class="login-hint">{{ login_hint }}</p>{% endif %}
 
     <button type="submit" class="btn btn-primary">Sign in</button>
   </form>

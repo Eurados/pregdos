@@ -430,3 +430,57 @@ def test_secure_is_dropped_only_where_a_proxy_terminates_tls_in_front(write_conf
     finally:
         config.reset_cache()
         webserver._apply_config()
+
+
+# ---------------------------------------------------------------------------
+# "Which password?" -- the first support question at any site with more than one
+# ---------------------------------------------------------------------------
+
+def test_the_sign_in_form_says_which_password_is_wanted(auth_client):
+    body = auth_client.get("/login").data.decode()
+
+    assert "specific to PregDos" in body
+
+
+def test_a_site_can_word_the_hint_itself(tmp_path, write_config):
+    """The wording that actually stops the question names the site's own store, and may not
+    be in English -- so the config wins over the backend's default."""
+    users = tmp_path / "users"
+    auth.write_password_file(users, {"alice": auth.hash_password("secret")})
+    write_config(
+        '[server]\nhost = "127.0.0.1"\n\n[auth]\nmethod = "file"\n'
+        f'password_file = "{users}"\n'
+        'login_hint = "Brug dit Samba-kodeord"\n'
+    )
+    try:
+        webserver._apply_config()
+        app.config["SESSION_COOKIE_SECURE"] = False
+        app.config["WORK_DIR"] = str(tmp_path)
+        with app.test_client() as client:
+            body = client.get("/login").data.decode()
+        assert "Brug dit Samba-kodeord" in body
+        assert "specific to PregDos" not in body
+    finally:
+        config.reset_cache()
+        webserver._apply_config()
+
+
+def test_the_hint_is_escaped_not_rendered_as_markup(tmp_path, write_config):
+    users = tmp_path / "users"
+    auth.write_password_file(users, {"alice": auth.hash_password("secret")})
+    write_config(
+        '[server]\nhost = "127.0.0.1"\n\n[auth]\nmethod = "file"\n'
+        f'password_file = "{users}"\n'
+        'login_hint = "<script>alert(1)</script>"\n'
+    )
+    try:
+        webserver._apply_config()
+        app.config["SESSION_COOKIE_SECURE"] = False
+        app.config["WORK_DIR"] = str(tmp_path)
+        with app.test_client() as client:
+            body = client.get("/login").data.decode()
+        assert "<script>alert(1)</script>" not in body
+        assert "&lt;script&gt;" in body
+    finally:
+        config.reset_cache()
+        webserver._apply_config()

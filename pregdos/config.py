@@ -147,6 +147,7 @@ class Auth:
 
     method: str = "none"
     allow_users: List[str] = field(default_factory=list)
+    login_hint: str = ""             # "" = the backend's own wording; see pregdos.auth
     session_hours: int = 12          # absolute cap on one sign-in
     idle_minutes: int = 60           # 0 = never time an idle session out
     password_file: str = ""          # method="file"; "" = $STATE_DIRECTORY/users

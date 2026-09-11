@@ -212,6 +212,15 @@ main {
   width: 100%;
 }
 
+/* Which password to type.  Sits under the field it is about, not above the form, because
+   that is where someone who has just mistyped one will look. */
+.login-hint {
+  margin: -8px 0 16px;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
 /* ----------------------------------------------------------
    Header
    ---------------------------------------------------------- */

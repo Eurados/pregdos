@@ -155,6 +155,12 @@
 ## admin who wrote it would have every reason to think the server was protected.
 # allow_users = []
 
+## One line shown on the sign-in form saying WHICH password is being asked for.  At a site
+## with more than one credential store this is the first support question people ask, so it
+## is worth wording precisely -- name the actual share or server, and write it in the language
+## the people typing it read.  Empty means the method's own default wording.
+# login_hint = ""
+
 ## How long one sign-in lasts at most, and how long a tab may sit untouched before it is
 ## signed out.  The 5 s task-page poller deliberately does NOT count as activity, so a screen
 ## left unattended still times out.  idle_minutes = 0 disables the idle timeout; there is no

@@ -228,19 +228,37 @@ method = "file"
 
 #### Creating accounts
 
-`method = "file"` keeps accounts in a file PregDos owns, holding scrypt hashes. Manage it with
-`pregdos-passwd`, run **as the account the web service runs as** so the file it creates is
-owned by the process that has to read it:
+`method = "file"` keeps accounts in a file PregDos owns, holding scrypt hashes.
 
-```bash
-sudo -u pregdos /opt/pregdos/venv/bin/pregdos-passwd add nbassler   # prompts twice, no echo
-sudo -u pregdos /opt/pregdos/venv/bin/pregdos-passwd list
-sudo -u pregdos /opt/pregdos/venv/bin/pregdos-passwd delete olduser
+**Set `password_file` explicitly before creating the first account**, and put the whole block
+in before you run anything:
+
+```toml
+[auth]
+method = "file"
+password_file = "/var/lib/pregdos/users"
 ```
 
-`add` on an existing account changes its password. The file lands at `$STATE_DIRECTORY/users`
-— `/var/lib/pregdos/users` under the shipped systemd unit — unless `[auth] password_file` says
-otherwise, and must stay mode 0600; PregDos refuses to read it otherwise.
+The default is `$STATE_DIRECTORY/users`, and systemd exports `$STATE_DIRECTORY` to the
+*service* only — never to your shell. So without an explicit path, `pregdos-passwd` would
+resolve somewhere the server does not read. It refuses rather than guessing, but naming the
+path up front avoids the question entirely.
+
+Manage accounts with `pregdos-passwd`, run **as the account the web service runs as** so the
+file it creates is owned by the process that has to read it:
+
+```bash
+sudo -u pregdos /opt/pregdos/venv/bin/pregdos-passwd \
+     --config /etc/pregdos/config.toml add nbassler       # prompts twice, no echo
+sudo -u pregdos /opt/pregdos/venv/bin/pregdos-passwd --config /etc/pregdos/config.toml list
+```
+
+`add` on an existing account changes its password. The file must stay mode 0600; PregDos
+refuses to read it otherwise.
+
+**Order matters.** Create the first account *before* restarting with `[auth]` enabled: with
+the method set and no accounts present, the server refuses to start rather than come up with
+nobody able to sign in.
 
 Deleting the last remaining account is refused, because it would leave a running server that
 nobody can sign in to. Turn `[auth]` off instead if that is what you want.

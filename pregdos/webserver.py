@@ -572,7 +572,8 @@ def login():
         time.sleep(0.5)
         return redirect(url_for("login", next=target))
 
-    return render_template("login.html", next=target, csrf_token=_csrf_token())
+    return render_template("login.html", next=target, csrf_token=_csrf_token(),
+                           login_hint=auth.login_hint(cfg))
 
 
 @app.route("/logout", methods=["POST"])

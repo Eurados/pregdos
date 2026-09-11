@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import sys
+from pathlib import Path
 
 from . import auth, config
 
@@ -33,7 +35,7 @@ def _prompt_for_password(username: str) -> str:
     return first
 
 
-def _load(path):
+def _load(path: Path) -> dict[str, str]:
     """The current accounts, treating a missing file as an empty set.
 
     `add` must work on a site that has never had one, which is every site the first time.  A
@@ -43,6 +45,36 @@ def _load(path):
     if not path.exists():
         return {}
     return auth.read_password_file(path)
+
+
+def _resolve_password_file(cfg: config.Config, parser: argparse.ArgumentParser) -> Path:
+    """Where to write, or a startup error explaining why we will not guess.
+
+    The trap this exists for, found the hard way on the first real deployment: the default
+    location is ``$STATE_DIRECTORY/users``, and systemd sets ``$STATE_DIRECTORY`` for the
+    *service* only.  Run from a plain shell -- which is the only way this command is ever run
+    -- that variable is unset, so the path quietly fell back to ``$HOME/.local/state/...``.
+    The account was created successfully, in a location the service does not read; the service
+    then refused to start, several minutes and one restart later, with a message about a
+    different path.
+
+    A path the service will not read is never what the operator meant, so refuse rather than
+    guess.  The message has to name the fix, because the person reading it is mid-deployment.
+    """
+    if cfg.auth.password_file or os.environ.get("STATE_DIRECTORY"):
+        return auth.password_file_path(cfg)
+    parser.error(
+        f"cannot tell where the password file belongs, and will not guess.\n\n"
+        f"  [auth] password_file is not set, and $STATE_DIRECTORY is unset -- which it is in\n"
+        f"  any ordinary shell, because systemd exports it only to the service itself.\n"
+        f"  Guessing would write to\n\n"
+        f"      {auth.password_file_path(cfg)}\n\n"
+        f"  which pregdos-web will not read, so the account would appear to be created and\n"
+        f"  the service would then refuse to start.\n\n"
+        f"  Set the path explicitly in the config file, then run this again:\n\n"
+        f"      [auth]\n"
+        f'      password_file = "/var/lib/pregdos/users"\n'
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -74,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     except config.ConfigError as exc:
         parser.error(str(exc))
 
-    path = auth.password_file_path(cfg)
+    path = _resolve_password_file(cfg, parser)
 
     try:
         users = _load(path)

@@ -223,3 +223,51 @@ def test_describe_policy_names_the_method_and_who_may_sign_in(write_config, user
 
     assert "method=file" in line
     assert "bob" in line
+
+
+# ---------------------------------------------------------------------------
+# pregdos-passwd: where it writes
+#
+# The first real deployment lost a service restart to this.  $STATE_DIRECTORY is exported by
+# systemd to the *service* only, so running the CLI from a shell silently resolved the default
+# to $HOME/.local/state/... -- the account was created, in a place pregdos-web does not read,
+# and the service refused to start minutes later naming a different path.
+# ---------------------------------------------------------------------------
+
+def test_passwd_refuses_to_guess_a_path_the_service_will_not_read(write_config, monkeypatch, capsys):
+    from pregdos import passwd
+
+    monkeypatch.delenv("STATE_DIRECTORY", raising=False)
+    path = write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "file"\n')
+
+    with pytest.raises(SystemExit):
+        passwd.main(["--config", str(path), "add", "alice"])
+
+    assert "will not guess" in capsys.readouterr().err
+
+
+def test_passwd_writes_where_the_config_says(write_config, monkeypatch, tmp_path):
+    from pregdos import passwd
+
+    monkeypatch.delenv("STATE_DIRECTORY", raising=False)
+    monkeypatch.setattr(passwd, "_prompt_for_password", lambda _user: "secret")
+    target = tmp_path / "users"
+    path = write_config(
+        f'[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "file"\npassword_file = "{target}"\n'
+    )
+
+    passwd.main(["--config", str(path), "add", "alice"])
+
+    assert list(auth.read_password_file(target)) == ["alice"]
+
+
+def test_passwd_follows_state_directory_when_systemd_set_it(write_config, monkeypatch, tmp_path):
+    from pregdos import passwd
+
+    monkeypatch.setenv("STATE_DIRECTORY", str(tmp_path))
+    monkeypatch.setattr(passwd, "_prompt_for_password", lambda _user: "secret")
+    path = write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "file"\n')
+
+    passwd.main(["--config", str(path), "add", "alice"])
+
+    assert (tmp_path / "users").is_file()

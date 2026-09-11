@@ -92,6 +92,13 @@ class Backend:
 
     name: str = ""
 
+    # Shown on the sign-in form, to say WHICH password is being asked for.  At a site with
+    # more than one credential store -- which is every site that made authentication hard
+    # enough to need this module -- "which password?" is the first support question, and the
+    # answer depends on the backend.  `[auth] login_hint` overrides it, because the wording
+    # that actually stops the question is site-specific and may not be in English.
+    login_hint: str = ""
+
     def preflight(self) -> str | None:
         """A human-readable reason this backend cannot work on this host, or None.
 
@@ -220,6 +227,8 @@ class FileBackend(Backend):
     """
 
     name = "file"
+    login_hint = ("This password is specific to PregDos. It is not your computer login, "
+                  "and not your file-share password.")
 
     def __init__(self, path: Path):
         self.path = path
@@ -249,6 +258,20 @@ class FileBackend(Backend):
 # ---------------------------------------------------------------------------
 # Selection, authorization, and the flow that joins them
 # ---------------------------------------------------------------------------
+
+def login_hint(cfg: config.Config | None = None) -> str:
+    """What to tell people on the sign-in form about *which* password to type.
+
+    ``[auth] login_hint`` wins over the backend's own wording, so a site can name its actual
+    credential store -- "your Samba password for \\\\exrhel0583", say -- or write it in the
+    language the people typing it read.  Rendered through Jinja, so it is escaped; it is text,
+    not markup.
+    """
+    cfg = cfg or config.load()
+    if cfg.auth.login_hint:
+        return cfg.auth.login_hint
+    return get_backend(cfg).login_hint
+
 
 def is_enabled(cfg: config.Config | None = None) -> bool:
     """Whether a login is required at all.  The only place ``"none"`` is special-cased."""
@@ -331,6 +354,7 @@ __all__ = [
     "hash_password",
     "is_enabled",
     "login",
+    "login_hint",
     "password_file_path",
     "read_password_file",
     "verify_password",
