@@ -802,3 +802,55 @@ def test_sbatch_is_given_the_job_name(tmp_path):
     argv = executor._sbatch_argv(run_dir, "topas_field01.txt")
     assert "--job-name=study:field01" in argv
     assert argv[-2] == "--wrap"          # --wrap stays last
+
+
+# ---------------------------------------------------------------------------
+# run.json must never be observable half-written
+#
+# read_run_metadata tolerates a torn file by returning None, and start_next_local_run reads
+# None as "not submitted" and continues -- skipping the _worker_alive check with it.  A torn
+# read of a RUNNING run therefore makes it invisible, the scheduler thinks the local slot is
+# free, and starts a second worker: two TOPAS runs on a machine sized for one.
+# ---------------------------------------------------------------------------
+
+def test_run_metadata_is_never_readable_half_written(tmp_path):
+    """A writer loop in another process, read continuously here.  Without os.replace the
+    reader catches a truncated file and read_run_metadata returns None."""
+    import subprocess
+    import sys
+    import textwrap
+
+    run_dir = tmp_path / "run_1"
+    run_dir.mkdir()
+    # A wide payload widens the window a torn read needs; a tiny file can be written in one go.
+    info = executor.RunInfo(
+        backend=executor.LOCAL, submitted="now",
+        fields=[executor.FieldJob(f"topas_field{n:03d}.txt", str(n)) for n in range(400)],
+    )
+    executor._write_run_metadata(run_dir, info)
+
+    writer = subprocess.Popen([sys.executable, "-c", textwrap.dedent(f"""
+        import sys
+        sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
+        from pathlib import Path
+        from pregdos import executor
+        run_dir = Path({str(run_dir)!r})
+        info = executor.RunInfo(
+            backend=executor.LOCAL, submitted="now",
+            fields=[executor.FieldJob(f"topas_field{{n:03d}}.txt", str(n)) for n in range(400)],
+        )
+        for _ in range(300):
+            executor._write_run_metadata(run_dir, info)
+    """)])
+    try:
+        torn = 0
+        reads = 0
+        while writer.poll() is None and reads < 4000:
+            if executor.read_run_metadata(run_dir) is None:
+                torn += 1
+            reads += 1
+    finally:
+        writer.wait(timeout=60)
+
+    assert torn == 0, f"{torn} of {reads} reads saw a half-written run.json"
+    assert not list(run_dir.glob("*.tmp")), "a temp file was left behind"

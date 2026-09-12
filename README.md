@@ -45,11 +45,10 @@ pregdos-web
 
 Then open http://localhost:5000 in a browser.
 
-Optionally set a custom secret key:
-
-```bash
-PREGDOS_SECRET_KEY=mysecret pregdos-web
-```
+The Flask session signing key is generated on first start and kept at
+`${XDG_STATE_HOME:-~/.local/state}/pregdos/secret_key` (mode 0600), so sessions survive a
+restart. Override it with `PREGDOS_SECRET_KEY=… pregdos-web` where there is no persistent
+state directory to write to — the container being the case that needs it.
 
 ## Running tests
 

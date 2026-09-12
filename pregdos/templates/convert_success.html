@@ -18,6 +18,7 @@
     {% endfor %}
   </ul>
   <form method="POST" action="{{ url_for('submit_job') }}">
+    {{ csrf_field() }}
     <input type="hidden" name="study_name" value="{{ study_name }}">
     <input type="hidden" name="run_id" value="{{ run_id }}">
     {% for f in out_files %}

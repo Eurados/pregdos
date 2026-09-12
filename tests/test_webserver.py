@@ -1,12 +1,14 @@
+import contextlib
 import csv
 import io
 import json
+import os
 import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
 
-from pregdos import dicom_intake, executor, reporting, results, studies
+from pregdos import dicom_intake, executor, reporting, results, studies, webserver
 from tests import dicom_factory
 from pregdos.webserver import app
 from pregdos.models import ConversionParameters, ConversionResult
@@ -527,6 +529,188 @@ def test_run_dir_is_left_alone_when_pregdos_submits_as_itself(tmp_path, write_co
 def test_secret_key_is_not_insecure_example_value():
     assert app.secret_key
     assert app.secret_key != "pregdos_secret_key"
+
+
+# ---------------------------------------------------------------------------
+# The persistent session signing key
+#
+# A key that changes per process invalidates every signed cookie on restart, which today
+# loses flash messages and -- once there is a login -- signs everybody out.  It must also be
+# the same key in every worker under a multi-process WSGI server.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def state_dir(tmp_path, monkeypatch):
+    """Point the key at a tmp state directory, the way systemd's StateDirectory= does."""
+    path = tmp_path / "state"
+    path.mkdir()
+    monkeypatch.setenv("STATE_DIRECTORY", str(path))
+    monkeypatch.delenv("PREGDOS_SECRET_KEY", raising=False)
+    original = app.secret_key
+    yield path
+    app.secret_key = original
+
+
+def test_secret_key_path_follows_systemd_state_directory(state_dir):
+    assert webserver._secret_key_path() == state_dir / "secret_key"
+
+
+def test_secret_key_path_takes_the_first_of_a_colon_separated_list(tmp_path, monkeypatch):
+    """systemd may hand over several directories; the first is the one it made for us."""
+    monkeypatch.setenv("STATE_DIRECTORY", f"{tmp_path}/a:{tmp_path}/b")
+    assert webserver._secret_key_path() == tmp_path / "a" / "secret_key"
+
+
+def test_secret_key_path_falls_back_to_xdg_state_home(tmp_path, monkeypatch):
+    monkeypatch.delenv("STATE_DIRECTORY", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert webserver._secret_key_path() == tmp_path / "pregdos" / "secret_key"
+
+
+def test_ensure_secret_key_creates_the_file_0600_and_uses_it(state_dir):
+    note = webserver.ensure_secret_key()
+
+    key_file = state_dir / "secret_key"
+    assert key_file.stat().st_mode & 0o777 == 0o600
+    assert app.secret_key == key_file.read_text().strip()
+    assert app.secret_key
+    assert "created" in note
+
+
+def test_ensure_secret_key_reuses_an_existing_key(state_dir):
+    (state_dir / "secret_key").write_text("already-here\n")
+    (state_dir / "secret_key").chmod(0o600)
+
+    note = webserver.ensure_secret_key()
+
+    assert app.secret_key == "already-here"
+    assert "read from" in note
+
+
+def test_ensure_secret_key_does_not_clobber_a_key_written_concurrently(state_dir, mocker):
+    """O_EXCL is the claim: the worker that loses the race reads the winner's key.
+
+    Two workers each writing their own key would reject each other's cookies, which under a
+    multi-process WSGI server looks like a login that randomly forgets itself.
+    """
+    real_open = webserver.os.open
+
+    def winner_gets_there_first(path, flags, mode=0o777):
+        Path(path).write_text("written-by-the-other-worker\n")
+        Path(path).chmod(0o600)
+        return real_open(path, flags, mode)      # now raises FileExistsError
+
+    mocker.patch.object(webserver.os, "open", side_effect=winner_gets_there_first)
+
+    webserver.ensure_secret_key()
+
+    assert app.secret_key == "written-by-the-other-worker"
+
+
+def test_ensure_secret_key_refuses_a_key_other_accounts_can_read(state_dir):
+    (state_dir / "secret_key").write_text("leaked\n")
+    (state_dir / "secret_key").chmod(0o644)
+
+    with pytest.raises(RuntimeError, match="forge a signed session"):
+        webserver.ensure_secret_key()
+
+
+def test_ensure_secret_key_refuses_an_empty_key_file(state_dir):
+    (state_dir / "secret_key").write_text("")
+    (state_dir / "secret_key").chmod(0o600)
+
+    with pytest.raises(RuntimeError, match="empty"):
+        webserver.ensure_secret_key()
+
+
+def test_environment_secret_key_wins_and_writes_nothing(state_dir, monkeypatch):
+    """The container has no state directory to keep, so the env var must still be enough."""
+    monkeypatch.setenv("PREGDOS_SECRET_KEY", "from-the-environment")
+
+    note = webserver.ensure_secret_key()
+
+    assert not (state_dir / "secret_key").exists()
+    assert "PREGDOS_SECRET_KEY" in note
+
+
+def test_stored_secret_key_ignores_a_world_readable_file(state_dir):
+    """Import time cannot report, so it falls back to a per-process key -- which fails closed."""
+    (state_dir / "secret_key").write_text("leaked\n")
+    (state_dir / "secret_key").chmod(0o644)
+
+    assert webserver._stored_secret_key() == ""
+
+
+def test_stored_secret_key_is_empty_when_there_is_no_file(state_dir):
+    assert webserver._stored_secret_key() == ""
+
+
+def test_ensure_secret_key_waits_for_the_winner_to_finish_writing(state_dir, mocker):
+    """O_EXCL makes the path *exist* before its contents are there.
+
+    The loser used to catch FileExistsError and read immediately, so on a concurrent fresh
+    deployment -- two `pregdos.wsgi` imports at once, which is what that module is for -- it
+    could read an empty file and abort startup on a key it merely arrived too early for.
+    Holding the lock across the whole create-or-read closes that window.
+    """
+    key_path = state_dir / "secret_key"
+    key_path.write_text("")                  # claimed with O_EXCL, not yet written into
+    key_path.chmod(0o600)
+
+    @contextlib.contextmanager
+    def the_winner_finishes_while_we_wait(path):
+        path.write_text("written-by-the-worker-that-got-there-first\n")
+        path.chmod(0o600)
+        yield
+
+    mocker.patch.object(webserver.portable, "lock_file",
+                        side_effect=the_winner_finishes_while_we_wait)
+
+    webserver.ensure_secret_key()
+
+    assert app.secret_key == "written-by-the-worker-that-got-there-first"
+
+
+def test_ensure_secret_key_reports_a_key_file_that_is_not_utf8(state_dir):
+    """UnicodeDecodeError is a ValueError, so main() -- which converts OSError and RuntimeError
+    -- would have shown a traceback instead of the path-specific error this promises."""
+    (state_dir / "secret_key").write_bytes(b"\xff\xfe not text \x00\n")
+    (state_dir / "secret_key").chmod(0o600)
+
+    with pytest.raises(RuntimeError, match="not valid UTF-8"):
+        webserver.ensure_secret_key()
+
+
+def test_stored_secret_key_survives_a_key_file_that_is_not_utf8(state_dir):
+    """`_stored_secret_key` promises never to raise: it runs at import, where the only sensible
+    answer to a corrupt key is the per-process fallback."""
+    (state_dir / "secret_key").write_bytes(b"\xff\xfe not text \x00\n")
+    (state_dir / "secret_key").chmod(0o600)
+
+    assert webserver._stored_secret_key() == ""
+
+
+def test_the_permission_check_is_skipped_rather_than_faked_on_windows(state_dir, mocker):
+    """Windows has no POSIX mode bits -- os.stat reports 0666 for an ordinary file -- so the
+    bare `st_mode & 0o077` test rejected every file and stopped pregdos-web starting there."""
+    (state_dir / "secret_key").write_text("fine-on-windows\n")
+    (state_dir / "secret_key").chmod(0o644)
+    mocker.patch.object(webserver.portable, "_no_posix_mode_bits", return_value=True)
+
+    note = webserver.ensure_secret_key()
+
+    assert app.secret_key == "fine-on-windows"
+    assert "not checked on Windows" in note
+
+
+def test_session_cookie_is_named_for_pregdos_and_is_http_only():
+    """Cookies are scoped by host and ignore the port, so a second Flask app on the same
+    machine would otherwise share the default `session` cookie with PregDos."""
+    webserver._apply_config()
+
+    assert app.config["SESSION_COOKIE_NAME"] == "pregdos_session"
+    assert app.config["SESSION_COOKIE_HTTPONLY"] is True
+    assert app.config["SESSION_COOKIE_SAMESITE"] == "Lax"
 
 
 def test_submit_sbatch_failure_flashes_error(client, tmp_path, mocker, monkeypatch):
@@ -1889,3 +2073,259 @@ def test_main_rejects_a_bad_config_before_binding_a_port(tmp_path, monkeypatch, 
     finally:
         webserver.config.set_config_path(None)
         webserver._apply_config()
+
+
+# ---------------------------------------------------------------------------
+# The audit log must not claim something that did not happen
+#
+# With non-anonymized data the study name IS a patient name, so a premature record does not
+# merely miscount -- it asserts in the journal that a patient's study was uploaded when the
+# server refused it and deleted the directory again.
+# ---------------------------------------------------------------------------
+
+def _audit_actions(caplog):
+    return [record.getMessage().split("action=")[1].split(" ")[0]
+            for record in caplog.records if record.name == "pregdos.audit"]
+
+
+def test_a_rejected_upload_is_not_recorded_as_an_upload(client, tmp_path, caplog):
+    import logging
+
+    data = {
+        "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
+        "spr_table": (io.BytesIO(b"data"), "spr.txt"),
+        "study_dir": (io.BytesIO(b"data"), "study/CT.1.dcm"),
+    }
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        client.post("/upload", data=data, content_type="multipart/form-data",
+                    follow_redirects=True)
+
+    assert studies.list_studies(tmp_path) == [], "the study directory was left behind"
+    actions = _audit_actions(caplog)
+    assert "study.upload" not in actions, "a deleted study was recorded as uploaded"
+    assert "study.upload.rejected" in actions, "the attempt should still leave a record"
+
+
+def test_a_successful_upload_is_recorded_once_it_has_survived_validation(client, tmp_path, caplog):
+    import logging
+
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        response = client.post("/upload", data=_upload_data(source),
+                               content_type="multipart/form-data", follow_redirects=True)
+
+    assert b"CTV" in response.data                      # the setup page rendered
+    actions = _audit_actions(caplog)
+    assert "study.upload" in actions
+    assert "study.upload.rejected" not in actions
+
+
+def test_an_upload_missing_a_modality_is_recorded_as_rejected(client, tmp_path, caplog):
+    """The realistic rejection: a real DICOM study that is incomplete, not junk bytes."""
+    import logging
+
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+    for found in dicom_intake.scan(source).by_modality("RTDOSE"):
+        found.path.unlink()
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        client.post("/upload", data=_upload_data(source),
+                    content_type="multipart/form-data", follow_redirects=True)
+
+    assert studies.list_studies(tmp_path) == []
+    assert _audit_actions(caplog) == ["study.upload.rejected"]
+
+
+def test_a_failed_conversion_is_not_recorded_as_a_conversion(client, tmp_path, mocker, caplog):
+    """Every failure below `create_run` deletes the run directory again, so an event emitted
+    right after it named a run that no longer exists."""
+    import logging
+
+    _make_study(tmp_path, "alpha")
+    mocker.patch("pregdos.webserver.run_conversion",
+                 side_effect=RuntimeError("dicomexport fell over"))
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        client.post("/convert", data={
+            "study_name": "alpha", "beam_model_name": "beam.csv",
+            "spr_table_name": "spr.txt", "nstat": "1000",
+        }, follow_redirects=True)
+
+    assert "run.convert" not in _audit_actions(caplog)
+
+
+def test_a_successful_conversion_is_recorded(client, tmp_path, mocker, caplog):
+    import logging
+
+    _make_study(tmp_path, "alpha")
+    mocker.patch("pregdos.webserver.run_conversion", return_value=ConversionResult(
+        out_files=["topas_field01.txt"], study_name="alpha", run_id="run_0001",
+        selected_structures=[],
+    ))
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        client.post("/convert", data={
+            "study_name": "alpha", "beam_model_name": "beam.csv",
+            "spr_table_name": "spr.txt", "nstat": "1000", "keep_infield": "on",
+        }, follow_redirects=True)
+
+    assert "run.convert" in _audit_actions(caplog)
+
+
+def test_a_download_of_a_missing_file_is_not_recorded_as_a_download(client, tmp_path, caplog):
+    """A 404 served no bytes. Recording it claims patient data left the server when it did not."""
+    import logging
+
+    _make_study(tmp_path, "alpha")
+    run_id, _ = studies.create_run(tmp_path, "alpha")
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        response = client.get(f"/studies/download/alpha/{run_id}/never_written.csv")
+
+    assert response.status_code == 302, "a missing file redirects rather than serving"
+    assert _audit_actions(caplog) == []
+
+
+def test_a_download_that_serves_bytes_is_recorded(client, tmp_path, caplog):
+    import logging
+
+    _make_study(tmp_path, "alpha")
+    run_id, run_dir = studies.create_run(tmp_path, "alpha")
+    (run_dir / "topas.csv").write_text("# a header\n1,2,3\n")
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        response = client.get(f"/studies/download/alpha/{run_id}/topas.csv")
+
+    assert response.status_code == 200
+    assert _audit_actions(caplog) == ["download.file"]
+
+
+def test_a_deletion_that_left_the_study_on_disk_is_not_recorded_as_a_deletion(
+        client, tmp_path, mocker, caplog):
+    """`rmtree(ignore_errors=True)` can return with the directory still there. Claiming the
+    patient data was deleted when it was not is the one lie an audit log must not tell."""
+    import logging
+
+    _make_study(tmp_path, "alpha")
+    mocker.patch("pregdos.webserver.shutil.rmtree")      # silently does nothing, as rmtree can
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        response = client.post("/studies/alpha/delete", follow_redirects=True)
+
+    assert studies.list_studies(tmp_path) == ["alpha"], "the study is still on disk"
+    assert _audit_actions(caplog) == ["study.delete.failed"]
+    assert b"still on disk" in response.data, "the operator is told, not just the journal"
+
+
+def test_a_deletion_that_succeeded_is_recorded(client, tmp_path, caplog):
+    import logging
+
+    _make_study(tmp_path, "alpha")
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        client.post("/studies/alpha/delete", follow_redirects=True)
+
+    assert studies.list_studies(tmp_path) == []
+    assert _audit_actions(caplog) == ["study.delete"]
+
+
+def test_a_rerun_is_recorded_only_once_the_outputs_are_actually_gone(
+        client, tmp_path, mocker, caplog):
+    """Clearing the outputs is the destructive half of a rerun and can fail on its own."""
+    import logging
+
+    _make_study(tmp_path, "alpha")
+    run_id, run_dir = studies.create_run(tmp_path, "alpha")
+    (run_dir / "topas_field01.txt").write_text("i:So/Example = 1")
+    mocker.patch("pregdos.webserver._clear_run_outputs",
+                 side_effect=OSError("read-only filesystem"))
+    mocker.patch("pregdos.webserver.versions.submit_blocker", return_value=None)
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        with pytest.raises(OSError):
+            client.post(f"/studies/alpha/{run_id}/rerun")
+
+    assert "run.rerun" not in _audit_actions(caplog)
+
+
+# ---------------------------------------------------------------------------
+# The WSGI entry point
+#
+# `pregdos-web` provisions the session key in main(); a WSGI server imports the module and
+# never calls it.  On a FRESH deployment every worker would then pick its own random key, and
+# a cookie signed by one worker is rejected by the next -- a login that works or does not
+# depending on which worker answers, with nothing in the log to say why.
+# ---------------------------------------------------------------------------
+
+def _worker_key(state_dir, module):
+    """The secret key a freshly-imported worker ends up with, in its own process."""
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(f"""
+        import sys
+        sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
+        import {module} as entry
+        from pregdos.webserver import app
+        print(app.secret_key)
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True,
+        env={"STATE_DIRECTORY": str(state_dir), "PATH": os.environ.get("PATH", ""),
+             "HOME": str(state_dir)},
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def test_two_wsgi_workers_agree_on_the_session_key(tmp_path):
+    """The fix: pregdos.wsgi provisions before serving, and O_EXCL makes the second worker
+    read what the first wrote rather than write its own."""
+    first = _worker_key(tmp_path, "pregdos.wsgi")
+    second = _worker_key(tmp_path, "pregdos.wsgi")
+
+    assert first == second
+    assert first == (tmp_path / "secret_key").read_text().strip()
+
+
+def test_importing_the_app_directly_still_cannot_provision(tmp_path):
+    """Documents why pregdos.wsgi exists: this is the path that breaks, and it is the one the
+    systemd unit used to name."""
+    first = _worker_key(tmp_path, "pregdos.webserver")
+    second = _worker_key(tmp_path, "pregdos.webserver")
+
+    assert first != second, "two workers agreeing here would mean the fixture proves nothing"
+    assert not (tmp_path / "secret_key").exists()
+
+
+def test_a_key_already_on_disk_is_shared_even_by_a_direct_import(tmp_path):
+    """The narrow case Copilot identified: only a FRESH deployment diverges.  Once the file
+    exists, every import reads it."""
+    (tmp_path / "secret_key").write_text("a-key-written-earlier\n")
+    (tmp_path / "secret_key").chmod(0o600)
+
+    assert _worker_key(tmp_path, "pregdos.webserver") == "a-key-written-earlier"
+
+
+def test_a_rejection_does_not_copy_dicom_identifiers_into_the_journal(client, tmp_path, caplog):
+    """dicom_intake names the actual PatientIDs when an upload mixes two patients, because
+    that is useful to the person looking at the browser.  The journal has a different
+    retention and a wider audience, so the audit line records the attempt, not the message."""
+    import logging
+
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+    dicom_factory.write(source / "CT.other.dcm", "CT", patient="SECRET-PATIENT-2")
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        response = client.post("/upload", data=_upload_data(source),
+                               content_type="multipart/form-data", follow_redirects=True)
+
+    assert b"more than one patient" in response.data      # the user is still told plainly
+    audit_lines = [r.getMessage() for r in caplog.records if r.name == "pregdos.audit"]
+    assert audit_lines, "the attempt should still be recorded"
+    assert not any("SECRET-PATIENT-2" in line for line in audit_lines)

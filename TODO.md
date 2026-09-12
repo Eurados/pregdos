@@ -67,7 +67,9 @@ OpenTOPAS behind `module load opentopas/4.2`).  This branch stays open until the
   vars with a config file, and the listen address is the one knob a site cannot avoid setting,
   so it belongs here: a `[server]` section with `host` and `port`, plus matching `--host` /
   `--port` flags.  Note `0.0.0.0` as the default deserves a second look while in there — the
-  service has no authentication (deliberately, see #64) and TLS is #90.
+  service had no authentication (deliberately, see #64) and TLS is #90. Authentication has
+  since been added as an opt-in `[auth]` section (#103); the default is still no login, so
+  `0.0.0.0` still deserves that second look.
   Done: `[server]` carries `host`, `port`, `ssl_cert`, `ssl_key`; flags override the file.
   The default stayed `0.0.0.0:5000` because the container depends on it, and the example
   config now says plainly what that exposes.
@@ -99,7 +101,7 @@ OpenTOPAS behind `module load opentopas/4.2`).  This branch stays open until the
 - [ ] **Results viewer** — expose scorer CSV outputs from job folders in the web UI:
   - `/jobs/<name>` already lists files; extend it to parse and display scorer CSVs as a table
   - Show one row per scorer (neutron H*(10), gamma, proton primary/secondary) with mean dose ± SD
-  - Add a "Delete job" button on the job page (no auth required — trusted environment)
+  - Add a "Delete job" button on the job page (gated by `[auth]` when it is configured, #103)
   - Consider a simple bar chart per scorer using a lightweight JS library (Chart.js or similar)
 - [ ] Turn off `debug=True` in `webserver.py` for production/container use
 - [ ] Remove unused `StructureSelection` dataclass from `models.py` or wire it in

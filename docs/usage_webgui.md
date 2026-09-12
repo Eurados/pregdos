@@ -25,6 +25,39 @@ The main navigation has:
 - **Tasks**: view converted/running/completed runs.
 - **About**: runtime versions and toolchain checks.
 
+### Signing in
+
+Most installations have no login at all and go straight to the dashboard. Where the site has
+turned authentication on, PregDos shows a sign-in form first.
+
+**Which password?** The sign-in form says, under the password box — read that line, because
+the answer differs between sites. It is commonly the **file-share (Samba) password**, and it
+is usually *not* the password you use to log into the PC. Ask rather than guessing: repeated
+failures are recorded and, depending on the site, can lock the account you share with the file
+server.
+
+Two messages are worth telling apart:
+
+- *"Incorrect username or password"* — retype it. Note that usernames are case-sensitive.
+- *"That password is correct, but this account is not authorised to use PregDos"* — the
+  password was right and nothing is wrong with your typing. The account has not been granted
+  access; where sign-in goes through the file server, that usually means the account is
+  missing the group membership the shares require. Ask the administrator to add it.
+- *"Sign-in is temporarily unavailable"* — nothing to do with your account. The server PregDos
+  checks passwords against is not answering. Tell the administrator; the reason is in the log.
+
+Your name and a **Sign out** button appear at the right-hand end of the navigation bar once
+you are signed in.
+
+A sign-in lasts 12 hours, and ends after 60 minutes with no activity. Watching a task page
+does **not** count as activity — the page refreshes itself every few seconds, but that is the
+browser, not you. So a run left open overnight will show the sign-in form in the morning; sign
+in again and the task page comes straight back, with the run unaffected. Nothing you have
+submitted is lost by signing out or by timing out: runs continue on the server regardless.
+
+Everyone who can sign in sees every study on the server. There is no per-user separation of
+studies, so treat what you upload as visible to all PregDos users at your site.
+
 ## 2. Upload A Study
 
 Open **New simulation**.
@@ -39,6 +72,12 @@ Provide:
 
 PregDos flattens nested uploads into a study directory while keeping the original DICOM files
 under that study's `dicom/` subdirectory.
+
+> **Name the upload after the case, not the patient.** The study name is taken from the ZIP
+> filename or the dropped folder's name — nothing is read out of the DICOM — and it then
+> appears in the URL, in browser history, in the server's directory names and in the audit
+> log. `PAT_0012.zip` keeps identifiers out of all four; `Jensen_Hanne_1954.zip` puts them in
+> all four. The DICOM inside is untouched either way.
 
 The DICOM study must contain the required RT modalities:
 

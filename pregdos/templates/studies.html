@@ -22,7 +22,20 @@
     async function tick() {
       let data;
       try {
-        const resp = await fetch(url, {headers: {'Accept': 'application/json'}});
+        const resp = await fetch(url, {
+          headers: {'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
+          // Belt and braces against a redirect: `follow` (the default) would fetch the login
+          // page, fail to parse it as JSON, and land in the catch below -- which retries
+          // forever and tells nobody.  `manual` surfaces it as an opaque response instead.
+          redirect: 'manual',
+        });
+        // The session ended: idle timeout, a restart, or a sign-out in another tab.  Reload,
+        // so the gate sees a navigation and sends the browser to the login page.  Do NOT
+        // reschedule -- polling the login page every 5 s forever is the bug this avoids.
+        if (resp.status === 401 || resp.type === 'opaqueredirect') {
+          location.reload();
+          return;
+        }
         if (!resp.ok) throw new Error(resp.status);
         data = await resp.json();
       } catch (e) {
