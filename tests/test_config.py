@@ -462,3 +462,23 @@ def test_the_smb_refusal_names_ipc_as_the_thing_not_to_do(write_config):
     write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "smb"\n')
     with pytest.raises(config.ConfigError, match="IPC"):
         config.load()
+
+
+@pytest.mark.parametrize("share", ["IPC$", "ipc$", "Ipc$", " IPC$ "])
+def test_ipc_is_refused_and_not_merely_warned_about(write_config, share):
+    """Naming IPC$ in the error message for a *missing* share is not the same as refusing it.
+
+    IPC$ carries no `valid users`, so a site that configures it gets a login gate admitting
+    every account in the passdb -- and, on a standalone server, an anonymous session.  Share
+    names are case-insensitive in SMB, so `ipc$` has to be the same door.
+    """
+    write_config(f'[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "smb"\nsmb_share = "{share}"\n')
+    with pytest.raises(config.ConfigError, match="IPC"):
+        config.load()
+
+
+def test_a_share_merely_containing_ipc_is_still_allowed(write_config):
+    """The refusal is the exact name, not a substring: `ipcs` is an ordinary share."""
+    write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "smb"\nsmb_share = "ipcs"\n')
+
+    assert config.load().auth.smb_share == "ipcs"

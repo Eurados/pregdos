@@ -364,13 +364,30 @@ def _validate_auth(cfg: Config, where: str) -> None:
     # session setup can succeed against it outright.  A real share applies its own access
     # control, which is the whole reason this method is safe without an allowlist.  So there is
     # no default: naming the share is a decision the site has to make deliberately.
-    if cfg.auth.method == "smb" and not cfg.auth.smb_share.strip():
-        raise ConfigError(
-            f'{where}: [auth] method = "smb" needs smb_share -- the share to authenticate '
-            f"against, e.g. smb_share = \"users\". Name one whose `valid users` already lists "
-            f"the people who should reach PregDos; Samba then does the authorisation. Do not "
-            f"use IPC$: it has no `valid users`, so it would admit every account on the server."
-        )
+    if cfg.auth.method == "smb":
+        share = cfg.auth.smb_share.strip()
+        if not share:
+            raise ConfigError(
+                f'{where}: [auth] method = "smb" needs smb_share -- the share to authenticate '
+                f'against, e.g. smb_share = "users". Name one whose `valid users` already '
+                f"lists the people who should reach PregDos; Samba then does the "
+                f"authorisation. Do not use IPC$: it has no `valid users`, so it would admit "
+                f"every account on the server."
+            )
+        # Saying "do not use IPC$" in the message above is not the same as refusing it, and
+        # the difference is the entire security property: IPC$ has no `valid users`, so a
+        # site that reads past the warning gets a login gate that admits every account in the
+        # passdb -- and, on a standalone server, an anonymous session.  Case-insensitive
+        # because SMB share names are, so `ipc$` is the same door.
+        if share.upper() == "IPC$":
+            raise ConfigError(
+                f'{where}: [auth] smb_share = {cfg.auth.smb_share!r} is refused. IPC$ is the '
+                f"inter-process-communication share: it carries no `valid users`, so every "
+                f"account on the server would pass this login gate, and on a standalone "
+                f"server an anonymous session setup against it can succeed outright -- which "
+                f"would admit people with no account at all. Name a real share whose "
+                f"`valid users` already lists the people who should reach PregDos."
+            )
 
     if cfg.auth.session_hours < 1:
         raise ConfigError(

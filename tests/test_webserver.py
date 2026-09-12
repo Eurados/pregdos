@@ -1,3 +1,4 @@
+import contextlib
 import csv
 import io
 import json
@@ -642,6 +643,64 @@ def test_stored_secret_key_ignores_a_world_readable_file(state_dir):
 
 def test_stored_secret_key_is_empty_when_there_is_no_file(state_dir):
     assert webserver._stored_secret_key() == ""
+
+
+def test_ensure_secret_key_waits_for_the_winner_to_finish_writing(state_dir, mocker):
+    """O_EXCL makes the path *exist* before its contents are there.
+
+    The loser used to catch FileExistsError and read immediately, so on a concurrent fresh
+    deployment -- two `pregdos.wsgi` imports at once, which is what that module is for -- it
+    could read an empty file and abort startup on a key it merely arrived too early for.
+    Holding the lock across the whole create-or-read closes that window.
+    """
+    key_path = state_dir / "secret_key"
+    key_path.write_text("")                  # claimed with O_EXCL, not yet written into
+    key_path.chmod(0o600)
+
+    @contextlib.contextmanager
+    def the_winner_finishes_while_we_wait(path):
+        path.write_text("written-by-the-worker-that-got-there-first\n")
+        path.chmod(0o600)
+        yield
+
+    mocker.patch.object(webserver.portable, "lock_file",
+                        side_effect=the_winner_finishes_while_we_wait)
+
+    webserver.ensure_secret_key()
+
+    assert app.secret_key == "written-by-the-worker-that-got-there-first"
+
+
+def test_ensure_secret_key_reports_a_key_file_that_is_not_utf8(state_dir):
+    """UnicodeDecodeError is a ValueError, so main() -- which converts OSError and RuntimeError
+    -- would have shown a traceback instead of the path-specific error this promises."""
+    (state_dir / "secret_key").write_bytes(b"\xff\xfe not text \x00\n")
+    (state_dir / "secret_key").chmod(0o600)
+
+    with pytest.raises(RuntimeError, match="not valid UTF-8"):
+        webserver.ensure_secret_key()
+
+
+def test_stored_secret_key_survives_a_key_file_that_is_not_utf8(state_dir):
+    """`_stored_secret_key` promises never to raise: it runs at import, where the only sensible
+    answer to a corrupt key is the per-process fallback."""
+    (state_dir / "secret_key").write_bytes(b"\xff\xfe not text \x00\n")
+    (state_dir / "secret_key").chmod(0o600)
+
+    assert webserver._stored_secret_key() == ""
+
+
+def test_the_permission_check_is_skipped_rather_than_faked_on_windows(state_dir, mocker):
+    """Windows has no POSIX mode bits -- os.stat reports 0666 for an ordinary file -- so the
+    bare `st_mode & 0o077` test rejected every file and stopped pregdos-web starting there."""
+    (state_dir / "secret_key").write_text("fine-on-windows\n")
+    (state_dir / "secret_key").chmod(0o644)
+    mocker.patch.object(webserver.portable, "_no_posix_mode_bits", return_value=True)
+
+    note = webserver.ensure_secret_key()
+
+    assert app.secret_key == "fine-on-windows"
+    assert "not checked on Windows" in note
 
 
 def test_session_cookie_is_named_for_pregdos_and_is_http_only():
@@ -2078,6 +2137,118 @@ def test_an_upload_missing_a_modality_is_recorded_as_rejected(client, tmp_path, 
 
     assert studies.list_studies(tmp_path) == []
     assert _audit_actions(caplog) == ["study.upload.rejected"]
+
+
+def test_a_failed_conversion_is_not_recorded_as_a_conversion(client, tmp_path, mocker, caplog):
+    """Every failure below `create_run` deletes the run directory again, so an event emitted
+    right after it named a run that no longer exists."""
+    import logging
+
+    _make_study(tmp_path, "alpha")
+    mocker.patch("pregdos.webserver.run_conversion",
+                 side_effect=RuntimeError("dicomexport fell over"))
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        client.post("/convert", data={
+            "study_name": "alpha", "beam_model_name": "beam.csv",
+            "spr_table_name": "spr.txt", "nstat": "1000",
+        }, follow_redirects=True)
+
+    assert "run.convert" not in _audit_actions(caplog)
+
+
+def test_a_successful_conversion_is_recorded(client, tmp_path, mocker, caplog):
+    import logging
+
+    _make_study(tmp_path, "alpha")
+    mocker.patch("pregdos.webserver.run_conversion", return_value=ConversionResult(
+        out_files=["topas_field01.txt"], study_name="alpha", run_id="run_0001",
+        selected_structures=[],
+    ))
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        client.post("/convert", data={
+            "study_name": "alpha", "beam_model_name": "beam.csv",
+            "spr_table_name": "spr.txt", "nstat": "1000", "keep_infield": "on",
+        }, follow_redirects=True)
+
+    assert "run.convert" in _audit_actions(caplog)
+
+
+def test_a_download_of_a_missing_file_is_not_recorded_as_a_download(client, tmp_path, caplog):
+    """A 404 served no bytes. Recording it claims patient data left the server when it did not."""
+    import logging
+
+    _make_study(tmp_path, "alpha")
+    run_id, _ = studies.create_run(tmp_path, "alpha")
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        response = client.get(f"/studies/download/alpha/{run_id}/never_written.csv")
+
+    assert response.status_code == 302, "a missing file redirects rather than serving"
+    assert _audit_actions(caplog) == []
+
+
+def test_a_download_that_serves_bytes_is_recorded(client, tmp_path, caplog):
+    import logging
+
+    _make_study(tmp_path, "alpha")
+    run_id, run_dir = studies.create_run(tmp_path, "alpha")
+    (run_dir / "topas.csv").write_text("# a header\n1,2,3\n")
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        response = client.get(f"/studies/download/alpha/{run_id}/topas.csv")
+
+    assert response.status_code == 200
+    assert _audit_actions(caplog) == ["download.file"]
+
+
+def test_a_deletion_that_left_the_study_on_disk_is_not_recorded_as_a_deletion(
+        client, tmp_path, mocker, caplog):
+    """`rmtree(ignore_errors=True)` can return with the directory still there. Claiming the
+    patient data was deleted when it was not is the one lie an audit log must not tell."""
+    import logging
+
+    _make_study(tmp_path, "alpha")
+    mocker.patch("pregdos.webserver.shutil.rmtree")      # silently does nothing, as rmtree can
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        response = client.post("/studies/alpha/delete", follow_redirects=True)
+
+    assert studies.list_studies(tmp_path) == ["alpha"], "the study is still on disk"
+    assert _audit_actions(caplog) == ["study.delete.failed"]
+    assert b"still on disk" in response.data, "the operator is told, not just the journal"
+
+
+def test_a_deletion_that_succeeded_is_recorded(client, tmp_path, caplog):
+    import logging
+
+    _make_study(tmp_path, "alpha")
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        client.post("/studies/alpha/delete", follow_redirects=True)
+
+    assert studies.list_studies(tmp_path) == []
+    assert _audit_actions(caplog) == ["study.delete"]
+
+
+def test_a_rerun_is_recorded_only_once_the_outputs_are_actually_gone(
+        client, tmp_path, mocker, caplog):
+    """Clearing the outputs is the destructive half of a rerun and can fail on its own."""
+    import logging
+
+    _make_study(tmp_path, "alpha")
+    run_id, run_dir = studies.create_run(tmp_path, "alpha")
+    (run_dir / "topas_field01.txt").write_text("i:So/Example = 1")
+    mocker.patch("pregdos.webserver._clear_run_outputs",
+                 side_effect=OSError("read-only filesystem"))
+    mocker.patch("pregdos.webserver.versions.submit_blocker", return_value=None)
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        with pytest.raises(OSError):
+            client.post(f"/studies/alpha/{run_id}/rerun")
+
+    assert "run.rerun" not in _audit_actions(caplog)
 
 
 # ---------------------------------------------------------------------------

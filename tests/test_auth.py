@@ -75,7 +75,26 @@ def test_password_file_readable_by_others_is_refused(users_file):
         auth.read_password_file(users_file)
 
 
+def test_password_file_permissions_are_not_checked_on_windows(users_file, mocker):
+    """Windows has no POSIX mode bits: os.stat reports 0666 for any ordinary file, so the bare
+    `st_mode & 0o077` test rejected *every* password file and made method = "file" unusable on
+    a platform this project supports.  Skipped rather than faked -- see portable."""
+    users_file.chmod(0o644)
+    mocker.patch("pregdos.portable._no_posix_mode_bits", return_value=True)
+
+    assert "alice" in auth.read_password_file(users_file)
+
+
 def test_missing_password_file_says_how_to_make_one(tmp_path):
+    with pytest.raises(auth.AuthError, match="pregdos-passwd add"):
+        auth.read_password_file(tmp_path / "nope")
+
+
+def test_a_missing_file_is_still_reported_as_missing_on_windows(tmp_path, mocker):
+    """The permission check moved inside the try/except that turns a missing file into the
+    'create it with pregdos-passwd' message; skipping the check must not skip that."""
+    mocker.patch("pregdos.portable._no_posix_mode_bits", return_value=True)
+
     with pytest.raises(auth.AuthError, match="pregdos-passwd add"):
         auth.read_password_file(tmp_path / "nope")
 

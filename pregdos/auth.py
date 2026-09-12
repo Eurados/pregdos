@@ -205,17 +205,24 @@ def read_password_file(path: Path) -> Dict[str, str]:
     Blank lines and ``#`` comments are skipped, so an admin can annotate the file even though
     ``pregdos-passwd`` is the supported way to edit it.
     """
+    # Existence first, and on its own: this is the error an operator meets on every fresh
+    # install, and it has to name the command that fixes it.  The permission judgement below
+    # is a separate question and does not answer this one on every platform.
     try:
-        mode = path.stat().st_mode
+        path.stat()
     except FileNotFoundError as exc:
         raise AuthError(f"{path}: password file does not exist. "
                         f"Create it with `pregdos-passwd add <user>`.") from exc
     except OSError as exc:
         raise AuthError(f"{path}: password file cannot be read ({exc.strerror}).") from exc
-    if mode & 0o077:
+
+    # Via portable.readable_by_others rather than a bare `st_mode & 0o077`: Windows has no
+    # POSIX permission bits, so the raw test there rejects every file and made method = "file"
+    # unusable on a platform this project supports.  See that function for what is checked
+    # where, and what protects the file when the check is skipped.
+    if mode := portable.readable_by_others(path):
         raise AuthError(
-            f"{path}: mode {mode & 0o777:04o} lets other accounts read the password hashes. "
-            f"chmod 0600."
+            f"{path}: mode {mode} lets other accounts read the password hashes. chmod 0600."
         )
 
     # Reading is a second syscall and can fail on its own: permissions can change between the
@@ -252,17 +259,12 @@ def password_file_lock(path: Path):
     would each write a set computed before the other's change, silently discarding one of
     them.  The admin sees "Added alice", and alice cannot sign in.
 
-    The lock is a sibling file rather than the password file itself, because ``os.replace``
-    swaps that file out from under any lock held on it -- the two processes would end up
-    holding locks on different inodes and both proceed.
-
-    Uses :func:`pregdos.portable.exclusive_lock`, the same helper the local scheduler uses.
+    :func:`pregdos.portable.lock_file` holds it on a *sibling* path, for the reason spelled out
+    there: ``os.replace`` swaps the password file's inode out from under any lock taken on the
+    file itself.
     """
-    lock_path = path.with_name(path.name + ".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "a+", encoding="utf-8") as handle:
-        with portable.exclusive_lock(handle):
-            yield
+    with portable.lock_file(path):
+        yield
 
 
 def write_password_file(path: Path, users: Dict[str, str]) -> None:
@@ -273,9 +275,15 @@ def write_password_file(path: Path, users: Dict[str, str]) -> None:
 
     The temporary name is UNIQUE, not a fixed ``.tmp``.  Two writers sharing one temp path can
     interleave their writes into it and then publish the mixture, which is worse than losing an
-    update: it is a corrupt file nobody can sign in against.  Callers doing read-modify-write
-    should also hold :func:`password_file_lock`; this is the second lock on that door, and it
-    is the one that protects a caller who forgets.
+    update: it is a corrupt file nobody can sign in against.
+
+    That is the whole of what this function guarantees, and it is worth being exact about the
+    limit: atomic replacement protects *readers*, so every reader sees one complete set of
+    accounts.  It cannot prevent a lost *update*, because by the time a caller gets here it has
+    already decided what to write.  Two concurrent read-modify-write callers still each publish
+    a set computed before the other's change, and one account silently vanishes.  Only
+    :func:`password_file_lock`, held across both the read and the write, stops that -- callers
+    doing read-modify-write must take it.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     body = "".join(f"{user}:{stored}\n" for user, stored in sorted(users.items()))
@@ -319,7 +327,9 @@ class FileBackend(Backend):
         return None
 
     def check_password(self, username: str, password: str) -> AuthResult:
-        users = read_password_file(self.path)          # AuthError -> the caller logs and 500s
+        # AuthError propagates: login() catches it, logs it at ERROR, and returns
+        # backend-unavailable.  The login page never sees a traceback.
+        users = read_password_file(self.path)
         stored = users.get(username)
         if stored is None:
             # Spend the time anyway.  Returning early for an unknown user makes the response
@@ -408,6 +418,11 @@ class SmbBackend(Backend):
                     "PATH. Install the Samba client package (RHEL: `dnf install samba-client`).")
         if not self.share:
             return '[auth] smb_share is empty; name the share to authenticate against'
+        # config._validate_auth refuses this too; this is the second lock on the same door,
+        # for a backend constructed directly rather than through a validated config.
+        if self.share.strip().upper() == "IPC$":
+            return ('[auth] smb_share = "IPC$" would admit every account on the server, and '
+                    "an anonymous session besides. Name a real share with `valid users`.")
         return None
 
     def _argv(self) -> list:

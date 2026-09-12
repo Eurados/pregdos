@@ -226,6 +226,20 @@ def test_an_idle_session_expires(auth_client):
     assert auth_client.get("/").status_code == 302
 
 
+def test_activity_within_the_idle_limit_is_not_expired_by_the_anchor_s_own_lag(auth_client):
+    """`s` is only refreshed every _IDLE_ANCHOR_RESOLUTION seconds, so it can lag real
+    activity by that much.  Testing it against a bare idle_limit would sign someone out up to
+    a minute early, mid-task, for a timeout the config says is an hour -- so the comparison
+    carries one anchor period of grace."""
+    sign_in(auth_client)
+    with auth_client.session_transaction() as sess:
+        # Someone active 30 s ago, whose anchor was last written 59 min 40 s ago because the
+        # refresh only fires once a minute.  idle_minutes defaults to 60.
+        sess["s"] = int(time.time()) - (60 * 60 - 20)
+
+    assert auth_client.get("/").status_code == 200
+
+
 def test_a_session_expires_on_the_absolute_cap_however_busy_it_was(auth_client):
     sign_in(auth_client)
     with auth_client.session_transaction() as sess:

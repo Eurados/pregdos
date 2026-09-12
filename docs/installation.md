@@ -219,12 +219,54 @@ workstation or inside the container that is still the right setting. It stops be
 moment a shared host holds studies that are not anonymized: without `[auth]`, anyone who can
 reach the port can read every study, download the DICOM, and delete studies.
 
-Turn it on with two lines:
+Turning it on is two lines — but they are not sufficient on their own, and the server will
+tell you so rather than start:
 
 ```toml
 [auth]
 method = "file"
 ```
+
+`[server] host` defaults to `0.0.0.0`, and PregDos refuses to put a password form on a
+non-loopback address in clear. So a working configuration also says how the password is
+protected on the wire. Pick one:
+
+```toml
+# (a) TLS on this server — see "Serving over HTTPS" above.
+[server]
+ssl_cert = "/etc/pki/tls/certs/pregdos.crt"
+ssl_key  = "/etc/pki/tls/private/pregdos.key"
+
+[auth]
+method = "file"
+```
+
+```toml
+# (b) Bind loopback only, and put a reverse proxy in front. Nothing off-host reaches the port.
+[server]
+host = "127.0.0.1"
+
+[auth]
+method = "file"
+```
+
+```toml
+# (c) A proxy already terminates TLS ahead of this port. You are asserting that; PregDos
+#     cannot check it, which is why it is an explicit opt-out and not a default.
+[auth]
+method = "file"
+allow_insecure_http = true
+```
+
+Then create an account — the server also refuses to start with `method = "file"` and no
+accounts in the password file. Set `password_file` explicitly first; see
+[Creating accounts](#creating-accounts-method--file) below for why that matters.
+
+```bash
+sudo -u pregdos pregdos-passwd add nbassler
+```
+
+The examples below show only the `[auth]` block; each still needs one of (a), (b) or (c).
 
 #### Signing in with the site's Samba (`method = "smb"`)
 
@@ -245,7 +287,8 @@ the wrong one: it carries no `valid users`, so it admits every account in the pa
 database — and on a standalone server an anonymous session setup against it can succeed
 outright. Point `smb_share` at a real share whose `valid users` already lists the people who
 should reach PregDos, and Samba's own access control becomes PregDos's, with nothing to
-maintain in two places. There is no default; the server refuses to start without one.
+maintain in two places. There is no default; the server refuses to start without one, and it
+refuses `IPC$` by name (in any case) rather than only warning about it here.
 
 The cost of that, stated plainly: **renaming that share in `smb.conf` breaks sign-in.** It is
 reported as a backend failure naming the share, never as a wrong password, so the journal will
@@ -307,6 +350,15 @@ sudo -u pregdos /opt/pregdos/venv/bin/pregdos-passwd --config /etc/pregdos/confi
 
 `add` on an existing account changes its password. The file must stay mode 0600; PregDos
 refuses to read it otherwise.
+
+**On Windows that check is skipped**, and this is worth knowing rather than discovering.
+Windows has no POSIX permission bits — `os.stat` reports 0666 for any ordinary file — so the
+test cannot distinguish a protected file from an exposed one, and PregDos does not fake an
+answer it cannot compute. Answering it properly means reading the DACL, which needs a
+dependency this project does not carry for a platform where PregDos runs as one person on
+their own desktop. Keep the password file and the session key under `%LOCALAPPDATA%`, whose
+inherited ACL is what actually protects them there. The startup log says when the check was
+skipped. The same applies to the session signing key.
 
 **Order matters.** Create the first account *before* restarting with `[auth]` enabled: with
 the method set and no accounts present, the server refuses to start rather than come up with

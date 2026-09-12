@@ -30,8 +30,8 @@ import subprocess
 import sys
 import shutil
 
-from . import (audit, auth, config, dicom_intake, executor, report_pdf, reporting, results,
-               rtdose, structure_metrics, studies, versions)
+from . import (audit, auth, config, dicom_intake, executor, portable, report_pdf, reporting,
+               results, rtdose, structure_metrics, studies, versions)
 from .models import ConversionParameters, ConversionResult
 from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
@@ -117,10 +117,14 @@ def _stored_secret_key() -> str:
     """
     try:
         path = _secret_key_path()
-        if path.stat().st_mode & 0o077:
+        if portable.readable_by_others(path):
             return ""
         return path.read_text(encoding="utf-8").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # UnicodeDecodeError is a ValueError, not an OSError, so catching OSError alone let a
+        # corrupted key file break the "never raises" contract and abort a bare import.  An
+        # unreadable stored key and an undecodable one mean the same thing here: there is no
+        # usable persisted key, so fall back to a per-process one.
         return ""
 
 
@@ -138,29 +142,46 @@ def ensure_secret_key() -> str:
 
     path = _secret_key_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        # O_EXCL *is* the claim, the same way studies.create_study's mkdir is: two workers
-        # starting at once must not each write a different key, or each would reject the
-        # other's cookies.  The loser reads what the winner wrote.
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
-        created = False
-    else:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(secrets.token_urlsafe(64) + "\n")
-        created = True
 
-    mode = path.stat().st_mode
-    if mode & 0o077:
-        raise RuntimeError(
-            f"{path}: mode {mode & 0o777:04o} lets other accounts read the session signing "
-            f"key, and anyone who can read it can forge a signed session. chmod 0600."
-        )
-    key = path.read_text(encoding="utf-8").strip()
-    if not key:
-        raise RuntimeError(f"{path}: session signing key file is empty. Delete it and restart.")
+    # The whole create-or-read is inside the lock, not just the create.  O_EXCL alone was not
+    # enough: it makes the path *exist* before the winner has written anything into it, so a
+    # second worker importing pregdos.wsgi at the same moment -- the concurrent fresh
+    # deployment this is written for -- could catch FileExistsError and then read an empty or
+    # half-written file, and fail startup on a key it merely arrived too early for.
+    with portable.lock_file(path):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            created = False
+        else:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(secrets.token_urlsafe(64) + "\n")
+            created = True
+
+        if mode := portable.readable_by_others(path):
+            raise RuntimeError(
+                f"{path}: mode {mode} lets other accounts read the session signing key, and "
+                f"anyone who can read it can forge a signed session. chmod 0600."
+            )
+        try:
+            key = path.read_text(encoding="utf-8").strip()
+        except UnicodeDecodeError as exc:
+            # Not an OSError, so main() would have shown a traceback rather than the
+            # path-specific error this function promises.
+            raise RuntimeError(
+                f"{path}: session signing key file is not valid UTF-8, so it is not a key "
+                f"this server wrote. Delete it and restart to have a new one generated."
+            ) from exc
+        if not key:
+            raise RuntimeError(
+                f"{path}: session signing key file is empty. Delete it and restart."
+            )
+
     app.secret_key = key
-    return f"session key {'created at' if created else 'read from'} {path}"
+    note = f"session key {'created at' if created else 'read from'} {path}"
+    if caveat := portable.permission_check_note():
+        note = f"{note} ({caveat})"
+    return note
 
 
 def _import_time_secret_key() -> str:
@@ -415,9 +436,15 @@ def _session_user(cfg) -> auth.Identity | None:
     seen = session.get("s", 0)
     idle_limit = cfg.auth.idle_minutes * 60
 
+    # The idle test allows one anchor period of slack.  `seen` is only refreshed every
+    # _IDLE_ANCHOR_RESOLUTION seconds, so it can lag real activity by that much; comparing
+    # against a bare idle_limit would then sign someone out up to a minute early, mid-task,
+    # for a timeout the config says is an hour.  Erring towards the grace period is the right
+    # direction: the cost is at most 60 s of extra session on a limit measured in minutes,
+    # against a user losing an unsaved form to a clock they cannot see.
     expired = (
         now - started >= cfg.auth.session_hours * 3600
-        or (idle_limit and now - seen >= idle_limit)
+        or (idle_limit and now - seen >= idle_limit + _IDLE_ANCHOR_RESOLUTION)
     )
     if expired:
         session.clear()
@@ -837,8 +864,6 @@ def convert():
     except StudyError as e:
         flash(str(e))
         return redirect(url_for("upload_files"))
-    audit.event("run.convert", study=study_name, run=run_id,
-                structures=len(selected_structures), histories=nstat)
 
     params = ConversionParameters(
         study_name=study_name,
@@ -886,6 +911,12 @@ def convert():
             shutil.rmtree(run_dir, ignore_errors=True)
             flash(f"Structure mask pre-pass setup failed: {err}")
             return redirect(url_for("upload_files"))
+
+    # Only now is there a run directory that survived conversion, scorer injection and the
+    # mask pre-pass.  Every failure above deletes it again, so recording the event earlier --
+    # as this did -- left the journal claiming a conversion for a run that no longer exists.
+    audit.event("run.convert", study=study_name, run=run_id,
+                structures=len(selected_structures), histories=nstat)
 
     return render_template(
         "convert_success.html",
@@ -1431,8 +1462,12 @@ def rerun_run(study, run_id):
         flash(f"Cannot submit — {blocker}")
         return redirect(url_for("run_detail", study=study, run_id=run_id))
 
-    audit.event("run.rerun", study=study, run=run_id, fields=len(out_files))
+    # After the outputs are actually gone, not before: clearing them is the destructive half of
+    # a rerun and it can fail on a permission or I/O error, which would have left an event
+    # claiming a rerun that never touched the directory.  The submission itself is audited
+    # separately by `run.submit`, from inside _submit_topas_files.
     _clear_run_outputs(run_dir)
+    audit.event("run.rerun", study=study, run=run_id, fields=len(out_files))
     return _submit_topas_files(study, run_id, run_dir, out_files)
 
 
@@ -1476,7 +1511,18 @@ def delete_study(study):
             executor.cancel_run(run_dir)
             cancelled += 1
 
+    # `ignore_errors=True` means this can return with the directory still there -- a file held
+    # open, a permission error, an I/O fault.  Recording `study.delete` unconditionally would
+    # then put a line in the journal saying the patient data was removed while it is still on
+    # disk, which is the one claim an audit log must never make falsely.  So check, and report
+    # the failure to the operator as well as to the journal.
     shutil.rmtree(study_dir, ignore_errors=True)
+    if study_dir.exists():
+        audit.event("study.delete.failed", study=study, runs_cancelled=cancelled)
+        flash(f"Could not delete study {study} — it is still on disk. Check the server log "
+              f"and the permissions on the study directory.")
+        return redirect(url_for("list_studies"))
+
     audit.event("study.delete", study=study, runs_cancelled=cancelled)
     if cancelled:
         flash(f"Cancelled {cancelled} unfinished run(s).")
@@ -1491,8 +1537,15 @@ def download_job_file(study, run_id, filename):
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
     safe = secure_filename(filename)
+    # One existence check for both branches, before the event: a request for a file that is
+    # not there served a 404 while the journal recorded a download, so the audit trail named
+    # bytes that never left the server.  `download_file` already had this ordering.
+    if not (run_dir / safe).is_file():
+        flash("File not found.")
+        return redirect(url_for("run_detail", study=study, run_id=run_id))
+
     audit.event("download.file", study=study, run=run_id, file=safe)
-    if safe.endswith(".csv") and (run_dir / safe).is_file():
+    if safe.endswith(".csv"):
         return Response(
             _served_bytes(run_dir / safe),
             mimetype="text/csv",
