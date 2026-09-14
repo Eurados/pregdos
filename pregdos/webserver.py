@@ -121,11 +121,27 @@ def _stored_secret_key() -> str:
             return ""
         return path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
-        # UnicodeDecodeError is a ValueError, not an OSError, so catching OSError alone let a
-        # corrupted key file break the "never raises" contract and abort a bare import.  An
-        # unreadable stored key and an undecodable one mean the same thing here: there is no
-        # usable persisted key, so fall back to a per-process one.
+        # UnicodeDecodeError is a ValueError, not an OSError, and both mean the same thing
+        # here: no usable persisted key, so fall back to a per-process one.
         return ""
+
+
+def configure_logging() -> None:
+    """Send the package's logging to stderr at INFO.
+
+    Nothing else configures the root logger, so without this every ``log.info`` in the package
+    is dropped -- including :mod:`pregdos.audit`, which is the whole record of who saw which
+    patient's study.  Both entry points must call it: ``pregdos-web`` and :mod:`pregdos.wsgi`.
+
+    stderr is journald under systemd -- already timestamped, already rotated, already
+    ``journalctl -u pregdos`` -- so there is no log file for PregDos to own.  ``force``
+    because Flask, Werkzeug or gunicorn may have installed a handler first.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        force=True,
+    )
 
 
 def ensure_secret_key() -> str:
@@ -137,17 +153,17 @@ def ensure_secret_key() -> str:
 
     ``$PREGDOS_SECRET_KEY`` still wins, for the container, which has no state to persist.
     """
-    if os.environ.get("PREGDOS_SECRET_KEY"):
+    if key := os.environ.get("PREGDOS_SECRET_KEY"):
+        app.secret_key = key        # assigned, not merely reported
         return "session key from $PREGDOS_SECRET_KEY"
 
     path = _secret_key_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # The whole create-or-read is inside the lock, not just the create.  O_EXCL alone was not
-    # enough: it makes the path *exist* before the winner has written anything into it, so a
-    # second worker importing pregdos.wsgi at the same moment -- the concurrent fresh
-    # deployment this is written for -- could catch FileExistsError and then read an empty or
-    # half-written file, and fail startup on a key it merely arrived too early for.
+    # The whole create-or-read is inside the lock, not just the create: O_EXCL makes the path
+    # exist before the winner has written into it, so a worker importing pregdos.wsgi at the
+    # same moment could read an empty file and fail startup on a key it only arrived too early
+    # for.
     with portable.lock_file(path):
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -166,8 +182,7 @@ def ensure_secret_key() -> str:
         try:
             key = path.read_text(encoding="utf-8").strip()
         except UnicodeDecodeError as exc:
-            # Not an OSError, so main() would have shown a traceback rather than the
-            # path-specific error this function promises.
+            # Not an OSError, so main() cannot turn it into a parser error on its own.
             raise RuntimeError(
                 f"{path}: session signing key file is not valid UTF-8, so it is not a key "
                 f"this server wrote. Delete it and restart to have a new one generated."
@@ -436,12 +451,9 @@ def _session_user(cfg) -> auth.Identity | None:
     seen = session.get("s", 0)
     idle_limit = cfg.auth.idle_minutes * 60
 
-    # The idle test allows one anchor period of slack.  `seen` is only refreshed every
-    # _IDLE_ANCHOR_RESOLUTION seconds, so it can lag real activity by that much; comparing
-    # against a bare idle_limit would then sign someone out up to a minute early, mid-task,
-    # for a timeout the config says is an hour.  Erring towards the grace period is the right
-    # direction: the cost is at most 60 s of extra session on a limit measured in minutes,
-    # against a user losing an unsaved form to a clock they cannot see.
+    # One anchor period of slack in the idle test: `seen` lags real activity by up to
+    # _IDLE_ANCHOR_RESOLUTION, and signing someone out that early mid-task costs more than the
+    # same margin of extra session on a limit measured in minutes.
     expired = (
         now - started >= cfg.auth.session_hours * 3600
         or (idle_limit and now - seen >= idle_limit + _IDLE_ANCHOR_RESOLUTION)
@@ -746,9 +758,8 @@ def upload_files():
             return redirect(request.url)
 
         # Only now is there a study on disk that survived extraction, DICOM validation and the
-        # structure check.  Recording it any earlier -- as this did -- meant a rejected upload
-        # left an audit line claiming a study had been uploaded, naming a patient, for a
-        # directory that had just been deleted again.
+        # structure check.  Anything earlier would name a patient in an audit line for a
+        # directory that was deleted again.
         audit.event("study.upload", study=study_name, structures=len(structures))
 
         for note in notes:
@@ -913,8 +924,7 @@ def convert():
             return redirect(url_for("upload_files"))
 
     # Only now is there a run directory that survived conversion, scorer injection and the
-    # mask pre-pass.  Every failure above deletes it again, so recording the event earlier --
-    # as this did -- left the journal claiming a conversion for a run that no longer exists.
+    # mask pre-pass.  Every failure above deletes it again.
     audit.event("run.convert", study=study_name, run=run_id,
                 structures=len(selected_structures), histories=nstat)
 
@@ -1376,8 +1386,12 @@ def _clear_run_outputs(run_dir: Path) -> None:
 
 def _submit_topas_files(study_name: str, run_id: str, run_dir: Path, out_files: list[str]):
     """Submit a prepared run directory and flash the user-facing outcome."""
+    # Every way out of this function records one event, so a caller that has already logged a
+    # destructive step -- `run.rerun` clears the outputs before getting here -- is never the
+    # last word in the journal on whether the work actually started.
     blocker = versions.submit_blocker()
     if blocker:
+        audit.event("run.submit.rejected", study=study_name, run=run_id, reason="toolchain")
         flash(f"Cannot submit — {blocker}")
         return redirect(url_for("run_detail", study=study_name, run_id=run_id))
 
@@ -1388,6 +1402,7 @@ def _submit_topas_files(study_name: str, run_id: str, run_dir: Path, out_files: 
     topas_files.extend(out_files)
 
     if not topas_files:
+        audit.event("run.submit.rejected", study=study_name, run=run_id, reason="nothing-to-submit")
         flash("Error: Nothing to submit.")
         return redirect(url_for("run_detail", study=study_name, run_id=run_id))
 
@@ -1403,8 +1418,11 @@ def _submit_topas_files(study_name: str, run_id: str, run_dir: Path, out_files: 
             pass  # not root, or no such account -- submitting as ourselves still works
 
     info = executor.submit_run(run_dir, topas_files)
-    audit.event("run.submit", study=study_name, run=run_id,
-                backend=info.backend, fields=len(info.fields))
+    # `errors` is how a partial submission reports itself: some fields queued, some refused.
+    # Recording only the count that went in would make that look like a clean run.
+    audit.event("run.submit" if info.fields else "run.submit.failed",
+                study=study_name, run=run_id, backend=info.backend,
+                fields=len(info.fields), errors=len(info.errors))
 
     if info.backend == executor.SLURM:
         for job in info.fields:
@@ -1462,10 +1480,10 @@ def rerun_run(study, run_id):
         flash(f"Cannot submit — {blocker}")
         return redirect(url_for("run_detail", study=study, run_id=run_id))
 
-    # After the outputs are actually gone, not before: clearing them is the destructive half of
-    # a rerun and it can fail on a permission or I/O error, which would have left an event
-    # claiming a rerun that never touched the directory.  The submission itself is audited
-    # separately by `run.submit`, from inside _submit_topas_files.
+    # `run.rerun` records the destructive half only -- the previous results are gone -- so it
+    # is emitted once that has actually happened.  Whether the work then started is a separate
+    # fact, and _submit_topas_files records it either way (`run.submit`, `run.submit.failed`,
+    # `run.submit.rejected`).
     _clear_run_outputs(run_dir)
     audit.event("run.rerun", study=study, run=run_id, fields=len(out_files))
     return _submit_topas_files(study, run_id, run_dir, out_files)
@@ -1511,11 +1529,9 @@ def delete_study(study):
             executor.cancel_run(run_dir)
             cancelled += 1
 
-    # `ignore_errors=True` means this can return with the directory still there -- a file held
-    # open, a permission error, an I/O fault.  Recording `study.delete` unconditionally would
-    # then put a line in the journal saying the patient data was removed while it is still on
-    # disk, which is the one claim an audit log must never make falsely.  So check, and report
-    # the failure to the operator as well as to the journal.
+    # `ignore_errors=True` can return with the directory still there.  Saying the patient data
+    # was removed while it is still on disk is the one claim an audit log must not make, so
+    # check, and tell the operator as well as the journal.
     shutil.rmtree(study_dir, ignore_errors=True)
     if study_dir.exists():
         audit.event("study.delete.failed", study=study, runs_cancelled=cancelled)
@@ -1537,9 +1553,8 @@ def download_job_file(study, run_id, filename):
         flash("Run directory not found.")
         return redirect(url_for("list_studies"))
     safe = secure_filename(filename)
-    # One existence check for both branches, before the event: a request for a file that is
-    # not there served a 404 while the journal recorded a download, so the audit trail named
-    # bytes that never left the server.  `download_file` already had this ordering.
+    # One existence check for both branches, before the event: a 404 served no bytes, and the
+    # journal must not name a download that did not happen.
     if not (run_dir / safe).is_file():
         flash("File not found.")
         return redirect(url_for("run_detail", study=study, run_id=run_id))
@@ -1718,15 +1733,7 @@ def main(argv: list[str] | None = None):
     if args.config:
         config.set_config_path(args.config)
 
-    # Nothing configures the root logger, so every logger.info in the package currently goes
-    # nowhere.  stderr is journald under systemd -- already timestamped, already rotated, and
-    # already `journalctl -u pregdos` for the site admin -- so there is no file to own here.
-    # `force` because Flask/Werkzeug may have installed a handler by the time we run.
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        force=True,
-    )
+    configure_logging()
 
     # Fail before binding a port: a bad config should be a startup error naming the file and
     # the key, not a 500 on whichever page first happens to read it.

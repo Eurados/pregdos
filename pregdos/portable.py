@@ -76,15 +76,13 @@ def exclusive_lock(handle: IO) -> Iterator[None]:
 def lock_file(path: Path) -> Iterator[None]:
     """Serialize a critical section across processes, on a sibling ``<path>.lock``.
 
-    The lock is a *sibling* rather than the guarded file itself, because every writer here
-    publishes with ``os.replace``, which swaps the guarded file's inode out from under any lock
-    held on it -- two processes would end up holding locks on different inodes and both
-    proceed, which is the bug this exists to prevent rather than a subtlety of it.
+    A *sibling* because the writers this guards publish with ``os.replace``, which swaps the
+    guarded file's inode out from under any lock held on the file itself -- two processes
+    would then hold locks on different inodes and both proceed.
 
-    Opened ``a+`` because :func:`exclusive_lock` needs a writable handle on Windows.  The lock
-    file's contents are never read; it is only a rendezvous every PregDos process agrees on,
-    and it is deliberately left behind -- deleting it would let the next process create a
-    *different* inode and lock that instead.
+    The lock file is only a rendezvous; its contents are never read, and it is left behind on
+    purpose, since deleting it would let the next process lock a different inode.  Opened
+    ``a+`` because :func:`exclusive_lock` needs a writable handle on Windows.
     """
     lock_path = path.with_name(path.name + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -96,10 +94,8 @@ def lock_file(path: Path) -> Iterator[None]:
 def _no_posix_mode_bits() -> bool:
     """Whether ``st_mode`` on this platform says nothing about who may read a file.
 
-    A named predicate rather than an inline ``sys.platform`` test, so the two callers below can
-    be exercised for both platforms from a test on either -- patching ``sys.platform`` itself
-    would also redirect :func:`exclusive_lock` into the Windows branch, where ``msvcrt`` is not
-    imported.
+    Named rather than inline so a test can flip it for the two callers below without patching
+    ``sys.platform``, which would also send :func:`exclusive_lock` down its ``msvcrt`` branch.
     """
     return sys.platform == "win32"
 
@@ -107,22 +103,16 @@ def _no_posix_mode_bits() -> bool:
 def readable_by_others(path: Path) -> str | None:
     """``"0644"`` -- the offending mode -- if other accounts can read ``path``, else None.
 
-    PregDos keeps two secrets in files: the password hashes and the session signing key.  Both
-    are worth refusing to use when the filesystem says everyone can read them, and on POSIX
-    ``st_mode & 0o077`` says exactly that.
+    Guards the two secrets PregDos keeps in files: the password hashes and the session signing
+    key.  On POSIX, ``st_mode & 0o077`` answers this exactly.
 
-    **On Windows this always returns None, and that is not an oversight.**  Windows has no
-    POSIX permission bits: ``os.stat`` synthesises ``st_mode`` from the read-only attribute
-    alone, so an ordinary file reports 0666 and a read-only one 0444.  Testing ``& 0o077``
-    there does not measure access at all -- it rejects *every* file, which is how the POSIX
-    check reached this codebase and made ``pregdos-web`` refuse to start on the supported
-    Windows workstation path (issue #91's platform) before serving a page.
-
-    Answering the real question on Windows means reading the DACL, which needs ``pywin32`` --
-    a dependency this project deliberately does not have, for a platform where PregDos runs as
-    one person on their own desktop.  So the check is skipped there rather than faked, and the
-    caller says so in the log; ``%LOCALAPPDATA%`` inheriting the user's own ACL is what
-    actually protects the file, and the docs say that plainly.
+    **On Windows it always returns None, deliberately.**  There are no POSIX permission bits
+    there -- ``os.stat`` synthesises ``st_mode`` from the read-only attribute, so an ordinary
+    file reports 0666 -- and testing ``& 0o077`` would reject every file rather than measure
+    access.  The real question needs the DACL and so ``pywin32``, a dependency this project
+    does not carry for a platform where PregDos runs as one person on their own desktop.  The
+    check is skipped rather than faked; the caller says so in the log, and
+    ``%LOCALAPPDATA%``'s inherited ACL is what protects the file.
     """
     if _no_posix_mode_bits():
         return None

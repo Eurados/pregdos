@@ -205,9 +205,9 @@ def read_password_file(path: Path) -> Dict[str, str]:
     Blank lines and ``#`` comments are skipped, so an admin can annotate the file even though
     ``pregdos-passwd`` is the supported way to edit it.
     """
-    # Existence first, and on its own: this is the error an operator meets on every fresh
-    # install, and it has to name the command that fixes it.  The permission judgement below
-    # is a separate question and does not answer this one on every platform.
+    # Existence first and on its own: it is the error every fresh install meets, and it has to
+    # name the command that fixes it.  The permission check below is a separate question, and
+    # on Windows it answers nothing.
     try:
         path.stat()
     except FileNotFoundError as exc:
@@ -216,10 +216,7 @@ def read_password_file(path: Path) -> Dict[str, str]:
     except OSError as exc:
         raise AuthError(f"{path}: password file cannot be read ({exc.strerror}).") from exc
 
-    # Via portable.readable_by_others rather than a bare `st_mode & 0o077`: Windows has no
-    # POSIX permission bits, so the raw test there rejects every file and made method = "file"
-    # unusable on a platform this project supports.  See that function for what is checked
-    # where, and what protects the file when the check is skipped.
+    # See portable.readable_by_others for what is checked on which platform.
     if mode := portable.readable_by_others(path):
         raise AuthError(
             f"{path}: mode {mode} lets other accounts read the password hashes. chmod 0600."
@@ -273,25 +270,21 @@ def write_password_file(path: Path, users: Dict[str, str]) -> None:
     tmp-file + ``os.replace`` so a crash or a full disk cannot leave a half-written file that
     locks everyone out -- readers see either the old set of accounts or the new one.
 
-    The temporary name is UNIQUE, not a fixed ``.tmp``.  Two writers sharing one temp path can
-    interleave their writes into it and then publish the mixture, which is worse than losing an
-    update: it is a corrupt file nobody can sign in against.
+    The temporary name is UNIQUE, not a fixed ``.tmp``: two writers sharing one temp path can
+    interleave their writes into it and publish the mixture, a corrupt file nobody can sign in
+    against.
 
-    That is the whole of what this function guarantees, and it is worth being exact about the
-    limit: atomic replacement protects *readers*, so every reader sees one complete set of
-    accounts.  It cannot prevent a lost *update*, because by the time a caller gets here it has
-    already decided what to write.  Two concurrent read-modify-write callers still each publish
-    a set computed before the other's change, and one account silently vanishes.  Only
-    :func:`password_file_lock`, held across both the read and the write, stops that -- callers
-    doing read-modify-write must take it.
+    That is the limit of what this guarantees.  Atomic replacement protects *readers* -- each
+    sees one complete set of accounts -- but cannot prevent a lost *update*, since the caller
+    has already decided what to write by the time it gets here.  Callers doing read-modify-
+    write must hold :func:`password_file_lock` across both halves.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     body = "".join(f"{user}:{stored}\n" for user, stored in sorted(users.items()))
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     tmp = Path(tmp_name)
     try:
-        # No chmod: mkstemp already creates 0600, which is what this file must be.  (The
-        # explicit os.fchmod that used to be here was both redundant and Unix-only.)
+        # No chmod: mkstemp already creates 0600, which is what this file must be.
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(body)
         os.replace(tmp, path)

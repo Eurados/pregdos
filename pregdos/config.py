@@ -374,11 +374,9 @@ def _validate_auth(cfg: Config, where: str) -> None:
                 f"authorisation. Do not use IPC$: it has no `valid users`, so it would admit "
                 f"every account on the server."
             )
-        # Saying "do not use IPC$" in the message above is not the same as refusing it, and
-        # the difference is the entire security property: IPC$ has no `valid users`, so a
-        # site that reads past the warning gets a login gate that admits every account in the
-        # passdb -- and, on a standalone server, an anonymous session.  Case-insensitive
-        # because SMB share names are, so `ipc$` is the same door.
+        # Warning about IPC$ in the message above is not the same as refusing it, and the
+        # difference is the whole security property.  Case-insensitive, because SMB share
+        # names are: `ipc$` is the same door.
         if share.upper() == "IPC$":
             raise ConfigError(
                 f'{where}: [auth] smb_share = {cfg.auth.smb_share!r} is refused. IPC$ is the '

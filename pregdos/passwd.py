@@ -51,6 +51,13 @@ def _check_username(username: str, parser: argparse.ArgumentParser) -> None:
     if auth.has_forbidden_characters(username) or username != username.strip():
         parser.error(f"{username!r} contains a newline, a NUL or surrounding whitespace, none "
                      f"of which the password file can represent.")
+    # `read_password_file` skips comment lines, so `#alice:<hash>` is written, reported as
+    # added, and then never read back -- an account that cannot sign in and does not appear in
+    # `list`, with nothing anywhere saying why.
+    if username.startswith("#"):
+        parser.error(f"{username!r} starts with '#', which marks a comment line in the "
+                     f"password file, so the account would be written and then ignored. "
+                     f"Pick a name without one.")
 
 
 def _load(path: Path) -> dict[str, str]:

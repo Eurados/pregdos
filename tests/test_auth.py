@@ -556,7 +556,7 @@ def test_a_legitimate_password_with_punctuation_still_works(write_config, tmp_pa
     assert auth.login("alice", tricky, config.load()).ok
 
 
-@pytest.mark.parametrize("username", ["a:b", "a\nb", "a\x00b", " alice", ""])
+@pytest.mark.parametrize("username", ["a:b", "a\nb", "a\x00b", " alice", "", "#alice"])
 def test_passwd_refuses_a_username_the_file_format_cannot_hold(username, tmp_path,
                                                                write_config, monkeypatch, capsys):
     from pregdos import passwd
@@ -570,6 +570,25 @@ def test_passwd_refuses_a_username_the_file_format_cannot_hold(username, tmp_pat
         passwd.main(["--config", str(path), "add", username])
 
     assert not target.exists(), "a malformed username reached the password file"
+
+
+def test_every_username_the_cli_accepts_can_be_read_back(tmp_path, write_config, monkeypatch):
+    """The round trip is the real contract.  `#alice` passed validation, was written as
+    `#alice:<hash>`, and then read back as a comment -- so the CLI reported an account that
+    could never sign in and never appeared in `list`."""
+    from pregdos import passwd
+
+    monkeypatch.delenv("STATE_DIRECTORY", raising=False)
+    monkeypatch.setattr(passwd, "_prompt_for_password", lambda _user: "secret")
+    target = tmp_path / "users"
+    path = write_config(
+        f'[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "file"\npassword_file = "{target}"\n')
+
+    for username in ("alice", "bob.smith", "user-1", "Ævar", "a#b"):
+        passwd.main(["--config", str(path), "add", username])
+        assert username in auth.read_password_file(target), (
+            f"{username!r} was accepted, written, and then not read back"
+        )
 
 
 # ---------------------------------------------------------------------------

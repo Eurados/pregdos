@@ -631,6 +631,9 @@ def test_environment_secret_key_wins_and_writes_nothing(state_dir, monkeypatch):
 
     assert not (state_dir / "secret_key").exists()
     assert "PREGDOS_SECRET_KEY" in note
+    # The message is not the point: this function's job is to leave the app holding the key
+    # it reports, and reporting one it never assigned lets the two paths diverge unnoticed.
+    assert app.secret_key == "from-the-environment"
 
 
 def test_stored_secret_key_ignores_a_world_readable_file(state_dir):
@@ -2251,6 +2254,43 @@ def test_a_rerun_is_recorded_only_once_the_outputs_are_actually_gone(
     assert "run.rerun" not in _audit_actions(caplog)
 
 
+def test_a_rerun_whose_submission_is_refused_says_so_in_the_journal(
+        client, tmp_path, mocker, caplog):
+    """`run.rerun` records only that the outputs are gone. Whether the work then started is a
+    separate fact, and leaving it unrecorded made a refused submission look like a clean rerun."""
+    import logging
+
+    _make_study(tmp_path, "alpha")
+    run_id, run_dir = studies.create_run(tmp_path, "alpha")
+    (run_dir / "topas_field01.txt").write_text("i:So/Example = 1")
+    mocker.patch("pregdos.webserver.versions.submit_blocker",
+                 side_effect=[None, "TOPAS 4.0.1 is too old"])
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        client.post(f"/studies/alpha/{run_id}/rerun", follow_redirects=True)
+
+    actions = _audit_actions(caplog)
+    assert actions == ["run.rerun", "run.submit.rejected"]
+    assert "run.submit" not in actions, "nothing was submitted"
+
+
+def test_a_submission_that_queued_nothing_is_not_recorded_as_a_submission(
+        client, tmp_path, mocker, caplog):
+    import logging
+
+    _make_study(tmp_path, "alpha")
+    run_id, run_dir = studies.create_run(tmp_path, "alpha")
+    (run_dir / "topas_field01.txt").write_text("i:So/Example = 1")
+    mocker.patch("pregdos.webserver.executor.submit_run", return_value=executor.RunInfo(
+        backend="local", submitted="now", fields=[], errors=["sbatch: command not found"],
+    ))
+
+    with caplog.at_level(logging.INFO, logger="pregdos.audit"):
+        client.post(f"/studies/alpha/{run_id}/rerun", follow_redirects=True)
+
+    assert _audit_actions(caplog) == ["run.rerun", "run.submit.failed"]
+
+
 # ---------------------------------------------------------------------------
 # The WSGI entry point
 #
@@ -2309,6 +2349,59 @@ def test_a_key_already_on_disk_is_shared_even_by_a_direct_import(tmp_path):
     (tmp_path / "secret_key").chmod(0o600)
 
     assert _worker_key(tmp_path, "pregdos.webserver") == "a-key-written-earlier"
+
+
+def _worker_stderr(state_dir, module, body):
+    """Run `body` in a fresh process that imported `module`, and return what it logged."""
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(f"""
+        import sys
+        sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
+        import {module} as entry
+    """) + textwrap.dedent(body)
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True,
+        env={"STATE_DIRECTORY": str(state_dir), "PATH": os.environ.get("PATH", ""),
+             "HOME": str(state_dir)},
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stderr
+
+
+def test_the_wsgi_entry_point_configures_audit_logging(tmp_path):
+    """Nothing else configures the root logger, so a WSGI deployment dropped every audit event
+    silently -- on the deployment path the docs recommend, for the log that is the entire
+    record of who saw which patient's study."""
+    stderr = _worker_stderr(tmp_path, "pregdos.wsgi", """
+        from pregdos import audit
+        with entry.app.test_request_context('/'):
+            audit.event("test.event", study="patient-x")
+    """)
+
+    assert "audit action=test.event" in stderr
+    assert "study=patient-x" in stderr
+
+
+def test_the_wsgi_entry_point_records_the_startup_facts(tmp_path):
+    """`describe_policy` answers "who could sign in on the day of the incident"."""
+    stderr = _worker_stderr(tmp_path, "pregdos.wsgi", "pass")
+
+    assert "session key" in stderr
+    assert "auth: disabled" in stderr
+
+
+def test_importing_the_app_directly_leaves_audit_logging_off(tmp_path):
+    """The counterpart: this is the path that silently drops events, and why wsgi.py exists."""
+    stderr = _worker_stderr(tmp_path, "pregdos.webserver", """
+        from pregdos import audit
+        with entry.app.test_request_context('/'):
+            audit.event("test.event", study="patient-x")
+    """)
+
+    assert "test.event" not in stderr
 
 
 def test_a_rejection_does_not_copy_dicom_identifiers_into_the_journal(client, tmp_path, caplog):

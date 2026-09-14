@@ -6,7 +6,7 @@
 
 A tool for calculating dose to a fetus in proton therapy.
 Converts DICOM RT plans to [OpenTOPAS](https://github.com/OpenTOPAS/OpenTOPAS)
-Monte Carlo input files and submits them as SLURM jobs.
+Monte Carlo input files and runs them locally or as SLURM jobs.
 
 <table>
   <tr>
@@ -24,11 +24,13 @@ Monte Carlo input files and submits them as SLURM jobs.
 
 ## What it does
 
-1. Upload a DICOM RT plan via the web UI
+1. Upload a DICOM study (CT, RTSTRUCT, RTPLAN, and RTDOSE) via the web UI
 2. Select which structures to include
 3. Convert to TOPAS input files
-4. Run TOPAS via SLURM (job scheduling)
-5. Post-process and display dose/effective dose per structure
+4. Run TOPAS locally or via SLURM (job scheduling)
+5. Post-process and display absorbed dose/equivalent dose per structure
+6. Export the simulated dose cubes as RTDOSE — one per field plus the summed plan dose,
+   built from the study's own clinical RTDOSE as a template so a TPS will import them
 
 ## Structure dose and normalization
 
@@ -38,6 +40,9 @@ grid and a TOPAS mask pre-pass. The details live in
 
 ## Running the webserver locally (development)
 
+Requires Python 3.11 or newer. To run simulations, also install OpenTOPAS 4.2.3 or newer;
+see the [installation guide](docs/installation.md#local-workstation-install).
+
 ```bash
 pip install -e ".[dev]"
 pregdos-web
@@ -45,10 +50,24 @@ pregdos-web
 
 Then open http://localhost:5000 in a browser.
 
-The Flask session signing key is generated on first start and kept at
-`${XDG_STATE_HOME:-~/.local/state}/pregdos/secret_key` (mode 0600), so sessions survive a
-restart. Override it with `PREGDOS_SECRET_KEY=… pregdos-web` where there is no persistent
-state directory to write to — the container being the case that needs it.
+The execution backend defaults to SLURM when `sbatch` is on `PATH`, and local execution
+otherwise. The [configuration file](docs/installation.md#configuration-file) can select it
+explicitly.
+
+Authentication is off by default, and the server listens on all interfaces. Optional
+password-file and Samba authentication are described in the
+[authentication setup guide](docs/installation.md#authentication), including TLS requirements.
+All signed-in users share access to all studies.
+
+The Flask session signing key is generated on first start and reused across restarts.
+`[auth] secret_key_file` selects its location; otherwise it lives under `$STATE_DIRECTORY`
+(set to `/var/lib/pregdos` by the shipped systemd service), or
+`${XDG_STATE_HOME:-~/.local/state}/pregdos/secret_key` outside systemd. Files are created with
+mode 0600 on POSIX; Windows permissions are not checked. Use `PREGDOS_SECRET_KEY` to supply
+the key through the environment, or persist the state directory when recreating containers.
+For a WSGI server, use `pregdos.wsgi:app` so startup provisions the persistent key.
+
+See the [web UI guide](docs/usage_webgui.md) for the complete workflow.
 
 ## Running tests
 
