@@ -6,9 +6,11 @@ import os
 import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock
+import pydicom
 import pytest
 
-from pregdos import dicom_intake, executor, reporting, results, studies, webserver
+from pregdos import (dicom_intake, executor, reporting, results, structure_metrics,
+                     studies, webserver)
 from tests import dicom_factory
 from pregdos.webserver import app
 from pregdos.models import ConversionParameters, ConversionResult
@@ -741,7 +743,11 @@ def test_submit_sbatch_failure_flashes_error(client, tmp_path, mocker, monkeypat
 # --- POST /convert input validation ---
 
 def _convert_form(tmp_path, overrides=None):
-    """Minimal valid /convert form data for a study that exists on disk."""
+    """Minimal valid /convert form data for a study that exists on disk.
+
+    ``keep_infield`` is part of the minimum: a form with neither it nor a ticked structure
+    asks for a run that can produce nothing, and /convert refuses it (#105).
+    """
     _make_study(tmp_path)
     data = {
         "study_name": "mystudy",
@@ -749,6 +755,7 @@ def _convert_form(tmp_path, overrides=None):
         "spr_table_name": "spr.txt",
         "nstat": "1000000",
         "output_basename": "topas",
+        "keep_infield": "1",
     }
     if overrides:
         data.update(overrides)
@@ -795,6 +802,53 @@ def test_convert_invalid_nstat_creates_no_run_dir(client, tmp_path):
     data = _convert_form(tmp_path, {"nstat": "abc"})
     client.post("/convert", data=data, follow_redirects=True)
     assert studies.list_runs(tmp_path, "mystudy") == []
+
+
+# --- a selection that can produce nothing (#105) ---
+
+def _nothing_ticked(tmp_path, overrides=None):
+    """No structures scored and the in-field scorer switched off -- a run yielding nothing."""
+    data = _convert_form(tmp_path, overrides)
+    data.pop("keep_infield")
+    return data
+
+
+def test_convert_refuses_a_selection_that_can_produce_nothing(client, tmp_path):
+    """No structures *and* no in-field scorer strips every scorer from the TOPAS input, so the
+    run would burn its hours to produce neither a dose cube nor any scorer result."""
+    resp = client.post("/convert", data=_nothing_ticked(tmp_path), follow_redirects=True)
+
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "Nothing would be scored" in body
+    assert "in-field dose scorer" in body          # names what to tick
+    assert studies.list_runs(tmp_path, "mystudy") == []   # refused before anything on disk
+    assert "Select structures and dose quantities" in body  # and lands back on the setup page
+
+
+def test_a_refused_selection_keeps_what_the_user_typed(client, tmp_path):
+    """The refusal re-renders setup; silently resetting 10^9 histories to the 10^6 default
+    would hand back a run a thousand times shorter than the one that was asked for."""
+    data = _nothing_ticked(tmp_path, {"nstat": "1000000000", "output_basename": "recalc"})
+    body = client.post("/convert", data=data).data.decode()
+
+    assert 'value="1000000000"\n                     checked' in body
+    assert 'name="output_basename" value="recalc"' in body
+    # the checkbox shows the state being complained about, rather than quietly fixing it
+    assert 'name="keep_infield" value="1"\n               >' in body
+
+
+def test_convert_accepts_the_in_field_scorer_alone(client, tmp_path, mocker):
+    """The case the refusal must not catch: a plain dose recalculation, no structures."""
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    resp = client.post("/convert", data=_convert_form(tmp_path), follow_redirects=True)
+
+    assert resp.status_code == 200
+    (run_id,) = studies.list_runs(tmp_path, "mystudy")
+    text = (studies.run_path(tmp_path, "mystudy", run_id) / "topas_field01.txt").read_text()
+    assert "DoseToWater" in text
+    # no structures ticked, so no mask pre-pass is set up
+    assert not (studies.run_path(tmp_path, "mystudy", run_id) / "structure_mask_prepass.txt").exists()
 
 
 # --- /convert scorer post-processing (issues #36, #41) ---
@@ -1739,6 +1793,130 @@ def test_run_page_offers_the_export_only_when_a_cube_exists(client, tmp_path):
     assert b"RTDOSE" in body
     assert b"RTDOSE for TPS" not in body
     assert b"Download dose for TPS" not in body
+
+
+# --- a dose-only run: no structures ticked (#105) ---
+
+def _dose_only_run(tmp_path, study="alpha"):
+    """A finished run holding an in-field dose cube and no scorer CSV at all.
+
+    What a user gets when they want a plain dose recalculation and tick no structures.
+    """
+    _make_study(tmp_path, study)
+    run_id, run_dir = studies.create_run(tmp_path, study)
+    (run_dir / _REAL_TOPAS.name).write_bytes(_REAL_TOPAS.read_bytes())
+    (run_dir / "topas_field1.dcm").write_bytes(b"cube")
+    (run_dir / "topas_field01.exit_code").write_text("0\n")
+    (run_dir / "run.json").write_text(json.dumps({
+        "backend": "local", "submitted": "2026-09-15T10:00:00",
+        "fields": [{"topas_file": "topas_field01.txt", "ident": "1"}],
+    }))
+    return run_id, run_dir
+
+
+def test_a_dose_only_run_offers_its_dose_instead_of_reporting_as_empty(client, tmp_path):
+    """The #105 failure: the RTDOSE button lived inside the `groups` branch, so a run with no
+    scorer rows could not reach it and said "No scorer output found" about a run that did
+    exactly what was asked of it."""
+    run_id, _ = _dose_only_run(tmp_path)
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    assert "No scorer output found in this run" not in body
+    assert "No structure scorers were selected" in body
+    assert f"/studies/alpha/{run_id}/rtdose" in body
+    assert "rtdose_plan_eclipse_import.zip" in body       # named, since the import needs it
+    # The CSV and PDF summarise structure scorers, so with none they would be empty reports.
+    assert f"/studies/alpha/{run_id}/report.csv" not in body
+    assert f"/studies/alpha/{run_id}/report.pdf" not in body
+
+
+def test_a_run_with_neither_scorers_nor_a_cube_still_reports_as_empty(client, tmp_path):
+    """The other half: "nothing came out of this run" must still be sayable."""
+    run_id, run_dir = _dose_only_run(tmp_path)
+    (run_dir / "topas_field1.dcm").unlink()
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    assert "No scorer output found in this run" in body
+    assert f"/studies/alpha/{run_id}/rtdose" not in body
+
+
+def test_a_dose_only_run_names_the_export_uids_once_it_has_been_built(client, tmp_path):
+    """The UIDs are minted when the export is written, which is on first download -- so the
+    page promises them rather than inventing them, and names them once they exist."""
+    run_id, run_dir = _dose_only_run(tmp_path)
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+    assert "built the first time it is downloaded" in body
+
+    plan = dicom_factory.write(run_dir / "rtdose_plan.dcm", "RTDOSE")
+    ds = pydicom.dcmread(plan)
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+    assert str(ds.SeriesInstanceUID) in body
+    assert str(ds.SOPInstanceUID) in body
+
+
+def test_a_dose_only_run_that_is_still_going_says_so(client, tmp_path):
+    """A cube from the first finished field must not turn into a download offer: the plan dose
+    would silently omit every field that has not run."""
+    run_id, run_dir = _dose_only_run(tmp_path)
+    (run_dir / "topas_field01.exit_code").unlink()
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    assert "No results yet" in body
+    assert f"/studies/alpha/{run_id}/rtdose" not in body
+
+
+def test_a_run_whose_scorers_produced_nothing_is_not_called_dose_only(client, tmp_path):
+    """`groups` is empty both when no structures were ticked and when a requested scorer's CSV
+    is missing, so the page must not infer the first from the second (Copilot on #105)."""
+    run_id, run_dir = _dose_only_run(tmp_path)
+    # the marker convert() writes when at least one structure was ticked
+    (run_dir / structure_metrics.MASK_PREPASS_FILE).write_text("prepass\n")
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    assert "No structure scorers were selected" not in body
+    assert "Structure scorers were requested, but no results could be read" in body
+    assert f"/studies/alpha/{run_id}/rtdose" in body        # the cube is still exportable
+
+
+def test_a_completed_run_missing_a_cube_says_the_export_is_incomplete(client, tmp_path):
+    """COMPLETED means every field exited cleanly, not that every field wrote a cube. The plan
+    dose would sum only what exists while still calling itself the whole course."""
+    run_id, run_dir = _dose_only_run(tmp_path)
+    (run_dir / "topas_field02.txt").write_text("a second field, whose cube never appeared\n")
+
+    # collapse the template's line wrapping before matching on a sentence
+    body = " ".join(client.get(f"/studies/alpha/{run_id}").data.decode().split())
+
+    assert "The dose export is unavailable for this run" in body
+    assert "Field 2 produced no dose cube" in body
+    # no button, because the export would refuse
+    assert f"/studies/alpha/{run_id}/rtdose" not in body
+
+
+def test_a_complete_run_does_not_claim_to_be_incomplete(client, tmp_path):
+    run_id, run_dir = _dose_only_run(tmp_path)
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+    assert "This export would be incomplete" not in body
+
+
+def test_downloading_an_incomplete_export_is_refused(client, tmp_path):
+    """The /rtdose URL is reachable without rendering the page, so hiding the button is not
+    the guarantee -- rtdose.postprocess refusing the set is."""
+    run_id, run_dir = _dose_only_run(tmp_path)
+    (run_dir / "topas_field02.txt").write_text("second field, no cube\n")
+
+    resp = client.get(f"/studies/alpha/{run_id}/rtdose", follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert b"produced no dose cube" in resp.data
+    assert b"describing itself as the whole course" in resp.data
+    assert not (run_dir / "rtdose_plan_eclipse_import.zip").exists()
 
 
 # --- studies-root resolution (issue #71) ---

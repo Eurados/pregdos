@@ -98,6 +98,15 @@ For a minimal completed run with the head phantom:
 4. Choose the number of histories per field. For a quick smoke test, use a small value; for
    meaningful results, use a production history count appropriate to the study.
 
+A dose-only recalculation is a valid setup: tick no structures at all and keep the in-field
+`DoseToWater` scorer. The run then produces its dose cube and nothing else, and the result page
+offers the RTDOSE export on its own.
+
+The setup page refuses only the empty combination — no structures **and** the in-field scorer
+unticked. That generates TOPAS inputs with no scorer in them, so the run would consume its full
+compute time and produce nothing downloadable. PregDos sends the form back instead of queueing
+it, keeping what you entered.
+
 PregDos structure scoring is TOPAS-native: it uses RTSTRUCT filtering in TOPAS and a mask
 pre-pass on the CT grid. The input data therefore needs valid CT geometry and RTSTRUCT contours
 that TOPAS can rasterize. For the normalization details, see [Scorer Normalization](normalization.md).
@@ -156,6 +165,11 @@ The result page groups downloads under **Downloads**:
 - **CSV**: raw numeric results, provenance, histories, and normalization audit fields.
 - **PDF**: formatted dose report for review and archiving.
 - **RTDOSE**: DICOM dose export for TPS import, when TOPAS DICOM dose files are available.
+
+A run with no structures selected has no scorer results to report, so it offers **RTDOSE**
+alone: the CSV and PDF summarise structure scorers and would be empty reports. The exported
+object's SeriesInstanceUID and SOPInstanceUID are shown next to that download once the export
+exists, which is the first time it is downloaded.
 
 The **Files** table lists generated TOPAS inputs, logs, scorer CSV files, DICOM dose files, and
 metadata files from the run directory.

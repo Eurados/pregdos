@@ -664,6 +664,33 @@ def favicon():
     return Response(svg, mimetype="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
 
 
+def _setup_page(root, study_name, beam_model_name, spr_table_name, form=None, structures=None):
+    """Render the setup page: structure/scorer matrix, in-field scorer, histories, basename.
+
+    Reached twice -- straight after an upload, and again when :func:`convert` refuses a
+    selection that could produce nothing (#105) -- so the two renders cannot drift apart.
+
+    On the refusal the submitted values are carried back rather than reset.  Being returned to
+    the 10^6 default after deliberately asking for 10^9, and not noticing, is exactly the sort
+    of quietly wrong result this project exists to avoid.
+    """
+    form = form if form is not None else {}
+    return render_template(
+        "setup.html",
+        structures=get_structures(root, study_name) if structures is None else structures,
+        study_name=study_name,
+        beam_model_name=beam_model_name,
+        spr_table_name=spr_table_name,
+        scorer_defs=SCORER_DEFS,
+        output_basename=form.get("output_basename") or "topas",
+        nstat=form.get("nstat") or "1000000",
+        nstat_custom=form.get("nstat_custom") or "",
+        # Checked by default on a fresh setup page; on a refusal, whatever was submitted -- the
+        # form has to show the state the message is complaining about.
+        keep_infield=bool(form.get("keep_infield")) if form else True,
+    )
+
+
 @app.route("/upload", methods=["GET", "POST"])
 def upload_files():
     folder_err = ensure_studies_root()
@@ -766,14 +793,8 @@ def upload_files():
             flash(note)
 
         # Render the combined setup page (structure inclusion + scorer selection)
-        return render_template(
-            "setup.html",
-            structures=structures,
-            study_name=study_name,
-            beam_model_name=beam_model_name,
-            spr_table_name=spr_table_name,
-            scorer_defs=SCORER_DEFS,
-        )
+        return _setup_page(root, study_name, beam_model_name, spr_table_name,
+                           structures=structures)
     return render_template(
         "upload.html",
         builtin_beam_models=_builtin_beam_models(),
@@ -869,6 +890,19 @@ def convert():
         flash("Invalid output basename — use letters, digits, underscores, and hyphens only.")
         return redirect(url_for("upload_files"))
 
+    # The scorer config is built here, before anything exists on disk, because one combination
+    # of it and the structure matrix produces nothing at all: no structures ticked strips every
+    # out-of-field scorer, and `keep_infield` unticked makes `append_scorers` drop the
+    # DoseToWater scorer dicomexport wrote.  Such a run is submittable today and burns its
+    # SLURM hours to yield no dose cube and no scorer results -- so refuse it at the setup
+    # page, naming what to tick, rather than after the fact (#105).
+    scorer_config = scorer_config_from_form(request.form)
+    if not selected_structures and not scorer_config.keep_infield:
+        flash("Nothing would be scored, so this run could produce no results at all. "
+              "Tick the in-field dose scorer to get a dose cube, or at least one quantity "
+              "for one structure to get scorer results.")
+        return _setup_page(root, study_name, beam_model_name, spr_table_name, request.form)
+
     try:
         study_path = studies.study_path(root, study_name)
         run_id, run_dir = studies.create_run(root, study_name)
@@ -896,8 +930,7 @@ def convert():
         return redirect(url_for("upload_files"))
 
     # Inject the requested out-of-field scorer blocks, and optionally drop the in-field
-    # DoseToWater scorer that dicomexport always writes.
-    scorer_config = scorer_config_from_form(request.form)
+    # DoseToWater scorer that dicomexport always writes.  Validated above, before the run dir.
     if scorer_config.scorers or not scorer_config.keep_infield:
         failures = []
         for fname in result.out_files:
@@ -1227,6 +1260,18 @@ def _render_results(run_dir: Path, study: str, run_id: str, status: str):
     """
     rows, warnings, plan_fractions = reporting.result_rows(run_dir, study, studies_root())
     groups = reporting.group_rows(rows)
+    # Only a finished run has every field's cube, and only a run that scored the in-field grid
+    # has any cube at all.  This is independent of `groups`: a dose-only run -- no structures
+    # ticked -- has a cube and no scorer rows, and used to be reported as having produced
+    # nothing at all because the download lived inside the `groups` branch (#105).
+    can_export_dose = status == executor.COMPLETED and bool(rtdose.field_cubes(run_dir))
+    # Whether the user asked for structure scorers at all.  `groups` cannot answer that: it is
+    # equally empty when scorers *were* requested and their CSVs are missing or unreadable, and
+    # telling that run "no structure scorers were selected" would be a lie.  The mask pre-pass
+    # input is written if and only if at least one structure was ticked
+    # (structure_metrics.write_prepass_input) and survives a rerun (_clear_run_outputs keeps
+    # .txt files), so it is the durable record of the selection.
+    dose_only = not (run_dir / structure_metrics.MASK_PREPASS_FILE).is_file()
     html = render_template(
         "_run_results.html",
         study=study,
@@ -1234,9 +1279,16 @@ def _render_results(run_dir: Path, study: str, run_id: str, status: str):
         status=status,
         groups=groups,
         plan_fractions=plan_fractions,
-        # Only a finished run has every field's cube, and only a run that scored the in-field
-        # grid has any cube at all.
-        can_export_dose=status == executor.COMPLETED and bool(rtdose.field_cubes(run_dir)),
+        can_export_dose=can_export_dose,
+        dose_only=dose_only,
+        # A completed run can still be short a cube; the export would then sum what is there and
+        # call it the whole course.  Say so next to the button, not only at download time.
+        missing_cubes=rtdose.missing_field_cubes(run_dir) if can_export_dose else [],
+        dose_bundle_name=rtdose.PLAN_IMPORT_BUNDLE_NAME,
+        # The UIDs are minted when the export is built, which happens on first download and
+        # not here -- rewriting six 11M-voxel grids on a page render would stall it.  So they
+        # are shown once they exist, and the page says so in the meantime.
+        dose_identity=rtdose.plan_dose_identity(run_dir) if can_export_dose else None,
     )
     return html, warnings
 
