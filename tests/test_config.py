@@ -284,6 +284,106 @@ def test_port_outside_the_valid_range_is_an_error(write_config, port):
 
 
 # ---------------------------------------------------------------------------
+# [auth]: an optional login is only safe if it cannot be half-configured
+# ---------------------------------------------------------------------------
+
+def test_unknown_auth_method_is_an_error_with_a_suggestion(write_config):
+    write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "fiel"\n')
+    with pytest.raises(config.ConfigError, match="did you mean 'file'"):
+        config.load()
+
+
+@pytest.mark.parametrize("entry", ["3", '""', "true"])
+def test_allow_users_entries_must_be_non_empty_strings(write_config, entry):
+    """The per-key check cannot see inside a TOML array, and a stray integer would simply
+    never match a username -- locking out whoever wrote it, silently."""
+    write_config(f'[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "file"\nallow_users = [{entry}]\n')
+    with pytest.raises(config.ConfigError, match="allow_users"):
+        config.load()
+
+
+def test_an_allowlist_without_a_method_is_an_error(write_config):
+    """The dangerous asymmetry: it enforces nothing, and the admin who wrote it has every
+    reason to believe the server is now protected."""
+    write_config('[auth]\nmethod = "none"\nallow_users = ["alice"]\n')
+    with pytest.raises(config.ConfigError, match="nothing is enforced"):
+        config.load()
+
+
+def test_a_method_with_no_allowlist_is_accepted(write_config):
+    """Empty means every account the backend accepts -- the documented default, and the
+    decision taken for DCPT.  Not an error."""
+    write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "file"\n')
+
+    assert config.load().auth.allow_users == []
+
+
+def test_session_hours_must_be_at_least_one(write_config):
+    write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "file"\nsession_hours = 0\n')
+    with pytest.raises(config.ConfigError, match="session_hours"):
+        config.load()
+
+
+def test_idle_minutes_zero_means_no_idle_timeout(write_config):
+    write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "file"\nidle_minutes = 0\n')
+
+    assert config.load().auth.idle_minutes == 0
+
+
+def test_negative_idle_minutes_is_rejected_with_what_zero_means(write_config):
+    write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "file"\nidle_minutes = -1\n')
+    with pytest.raises(config.ConfigError, match="idle_minutes: -1"):
+        config.load()
+
+
+# -- a login must not send passwords in clear -------------------------------
+
+def test_a_login_on_a_public_interface_without_tls_is_an_error(write_config):
+    write_config('[server]\nhost = "0.0.0.0"\n[auth]\nmethod = "file"\n')
+    with pytest.raises(config.ConfigError, match="in clear"):
+        config.load()
+
+
+@pytest.mark.parametrize("body", [
+    # TLS terminated here
+    '[server]\nhost = "0.0.0.0"\nssl_cert = "/c.pem"\nssl_key = "/k.pem"\n[auth]\nmethod = "file"\n',
+    # loopback only, with a reverse proxy in front
+    '[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "file"\n',
+    '[server]\nhost = "localhost"\n[auth]\nmethod = "file"\n',
+    # deliberate opt-out, for a container behind a TLS-terminating proxy
+    '[server]\nhost = "0.0.0.0"\n[auth]\nmethod = "file"\nallow_insecure_http = true\n',
+])
+def test_the_three_ways_out_of_the_plain_http_rule(write_config, body):
+    write_config(body)
+
+    config.load()       # raises if any of these stopped being accepted
+
+
+def test_no_tls_is_still_fine_while_there_is_no_login(write_config):
+    """The rule is about passwords crossing the network, not about TLS in general -- PregDos
+    has always served plain HTTP and must keep being able to."""
+    write_config('[server]\nhost = "0.0.0.0"\n[auth]\nmethod = "none"\n')
+
+    config.load()
+
+
+@pytest.mark.parametrize("host, expected", [
+    ("0.0.0.0", True),
+    ("10.141.32.194", True),
+    ("exrhel0583.it.rm.dk", True),
+    ("127.0.0.1", False),
+    ("::1", False),
+    ("localhost", False),
+])
+def test_insecure_auth_reason_judges_the_host_it_is_given(host, expected):
+    """A module-level helper precisely so main() can re-check the host --host actually bound,
+    which never passes through config validation at all."""
+    reason = config.insecure_auth_reason("file", host, ssl_cert="", allow_insecure_http=False)
+
+    assert bool(reason) is expected
+
+
+# ---------------------------------------------------------------------------
 # The shipped example must not drift from the dataclasses
 # ---------------------------------------------------------------------------
 
@@ -340,3 +440,45 @@ def test_uncommented_example_loads_cleanly(tmp_path, monkeypatch):
     config.reset_cache()
 
     config.load()   # raises ConfigError if the example names anything unknown
+
+
+# -- method = "smb": the share is load-bearing --------------------------------
+
+def test_smb_without_a_share_is_refused(write_config):
+    """IPC$ would be the convenient default and the wrong one: no `valid users`, and an
+    anonymous session setup against it can succeed on a standalone server."""
+    write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "smb"\n')
+    with pytest.raises(config.ConfigError, match="smb_share"):
+        config.load()
+
+
+def test_smb_with_a_share_is_accepted(write_config):
+    write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "smb"\nsmb_share = "users"\n')
+
+    assert config.load().auth.smb_share == "users"
+
+
+def test_the_smb_refusal_names_ipc_as_the_thing_not_to_do(write_config):
+    write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "smb"\n')
+    with pytest.raises(config.ConfigError, match="IPC"):
+        config.load()
+
+
+@pytest.mark.parametrize("share", ["IPC$", "ipc$", "Ipc$", " IPC$ "])
+def test_ipc_is_refused_and_not_merely_warned_about(write_config, share):
+    """Naming IPC$ in the error message for a *missing* share is not the same as refusing it.
+
+    IPC$ carries no `valid users`, so a site that configures it gets a login gate admitting
+    every account in the passdb -- and, on a standalone server, an anonymous session.  Share
+    names are case-insensitive in SMB, so `ipc$` has to be the same door.
+    """
+    write_config(f'[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "smb"\nsmb_share = "{share}"\n')
+    with pytest.raises(config.ConfigError, match="IPC"):
+        config.load()
+
+
+def test_a_share_merely_containing_ipc_is_still_allowed(write_config):
+    """The refusal is the exact name, not a substring: `ipcs` is an ordinary share."""
+    write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "smb"\nsmb_share = "ipcs"\n')
+
+    assert config.load().auth.smb_share == "ipcs"

@@ -104,9 +104,10 @@
 ## Where the web interface listens.
 ##
 ## The default binds EVERY interface, which is what the shipped container needs to be
-## reachable through `docker run -p`.  PregDos has no authentication, so on a shared network
-## anyone who can reach this port can read every study on the server: if a reverse proxy
-## fronts PregDos, bind the loopback instead and let the proxy be the only way in.
+## reachable through `docker run -p`.  Authentication is [auth] below and is OFF BY DEFAULT,
+## so on a default install anyone who can reach this port can read every study on the server:
+## if a reverse proxy fronts PregDos, bind the loopback instead and let the proxy be the only
+## way in.
 # host = "0.0.0.0"
 
 ## TCP port.  Change it when something else already listens on 5000 -- PregDos binds all
@@ -117,13 +118,97 @@
 ## Setting only one is a startup error rather than a silent fall back to plain HTTP.
 ##
 ## This makes the DEVELOPMENT server speak HTTPS.  It is encryption, not a production
-## deployment, and it is not authentication: a self-signed certificate also trains users to
-## click through browser warnings.  Prefer a certificate from the site's own CA, and put a
-## real WSGI server in front for anything beyond a trial.
+## deployment, and it is encryption rather than authentication -- [auth] below is the other
+## half, and the two are checked together at startup: turning a login on over plain HTTP on a
+## non-loopback address is a startup error.  A self-signed certificate also trains users to
+## click through browser warnings, so prefer one from the site's own CA, and put a real WSGI
+## server in front for anything beyond a trial.
 ##
 ## The key must be readable by the user running PregDos and by nobody else (0600).
 # ssl_cert = ""
 # ssl_key = ""
+
+[auth]
+
+## OPTIONAL LOGIN.  Off by default, which is exactly how PregDos has always behaved: no login
+## page, no session, and anyone who can reach the port reads every study.  That is fine for
+## the container and for a single-user workstation.  It is not fine for a shared host holding
+## non-anonymized patient DICOM.
+##
+##   "none" - no authentication (the default)
+##   "file" - a password file PregDos manages itself, written with `pregdos-passwd`.  Works
+##            everywhere, including the container.  It also means a NEW password for every
+##            user, which is the wrong answer at a site that already has a credential store.
+##   "smb"  - the site's own Samba, checked by doing an SMB session setup.  Users sign in with
+##            the password they already use for the file shares, so no new credential and
+##            nothing for anyone else to administer.  Needs smb_share below.
+##
+## AUTHENTICATION IS NOT SEGREGATION.  Everyone who signs in sees every study and every
+## patient; PregDos has no per-user ownership.  What a login buys is keeping strangers out
+## and, with the audit log in the journal, a record of who saw what.
+# method = "none"
+
+## A NARROWING filter on top of the method, not the access list itself.  Empty -- the default
+## -- means every account the backend accepts may sign in, which for "file" is exactly the
+## set of accounts in the password file.  Set it only to admit fewer than that, e.g.
+##
+##     allow_users = ["nbassler", "oncall"]
+##
+## Setting it while method = "none" is a startup error: it would quietly do nothing, and the
+## admin who wrote it would have every reason to think the server was protected.
+# allow_users = []
+
+## One line shown on the sign-in form saying WHICH password is being asked for.  At a site
+## with more than one credential store this is the first support question people ask, so it
+## is worth wording precisely -- name the actual share or server, and write it in the language
+## the people typing it read.  Empty means the method's own default wording.
+# login_hint = ""
+
+## How long one sign-in lasts at most, and how long a tab may sit untouched before it is
+## signed out.  The 5 s task-page poller deliberately does NOT count as activity, so a screen
+## left unattended still times out.  idle_minutes = 0 disables the idle timeout; there is no
+## way to express a session that never expires.
+# session_hours = 12
+# idle_minutes = 60
+
+## method = "smb": which server, and WHICH SHARE.
+##
+## The share is not cosmetic.  IPC$ carries no `valid users`, so it admits every account in
+## the passdb -- and on a standalone server an anonymous session setup against it can succeed
+## outright.  Name a real share whose `valid users` already lists the people who should reach
+## PregDos, and Samba does the authorisation for you, with nothing to maintain twice.  There is
+## no default, so the choice has to be deliberate; PregDos refuses to start without it.
+##
+## The cost, stated plainly: renaming that share in smb.conf breaks sign-in.  It is reported as
+## a backend failure naming the share, never as a wrong password.
+##
+##     smb_server = "localhost"
+##     smb_share  = "users"
+##
+## smb_domain is for a server that wants one; leave it empty for a standalone Samba.
+## smb_timeout is how long to wait for the server before calling it unavailable -- which is
+## reported as an outage, not as everybody's password suddenly being wrong.
+# smb_server = "localhost"
+# smb_share = ""
+# smb_domain = ""
+# smb_timeout = 10
+
+## Where method = "file" keeps its accounts.  Empty means $STATE_DIRECTORY/users, which
+## systemd creates as /var/lib/pregdos (StateDirectory=pregdos in the shipped unit), or
+## $XDG_STATE_HOME/pregdos/users outside systemd.  Manage it with `pregdos-passwd`, never by
+## hand; it stores scrypt hashes, not passwords, and must stay 0600.
+# password_file = ""
+
+## Where the session-signing key is kept.  Empty means $STATE_DIRECTORY/secret_key, beside the
+## password file.  It is generated 0600 on first start and MUST persist: a key that changes
+## signs everybody out on every restart, and two worker processes with different keys reject
+## each other's sessions.  $PREGDOS_SECRET_KEY still wins over both.
+# secret_key_file = ""
+
+## Allow a login over plain HTTP on a non-loopback address.  Normally a startup error, for the
+## same reason half a TLS pair is: the password would cross the network in clear.  The one
+## legitimate case is a container whose only route in is a proxy that terminates TLS.
+# allow_insecure_http = false
 
 [network]
 

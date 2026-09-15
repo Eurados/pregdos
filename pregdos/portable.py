@@ -72,6 +72,66 @@ def exclusive_lock(handle: IO) -> Iterator[None]:
         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
+@contextlib.contextmanager
+def lock_file(path: Path) -> Iterator[None]:
+    """Serialize a critical section across processes, on a sibling ``<path>.lock``.
+
+    A *sibling* because the writers this guards publish with ``os.replace``, which swaps the
+    guarded file's inode out from under any lock held on the file itself -- two processes
+    would then hold locks on different inodes and both proceed.
+
+    The lock file is only a rendezvous; its contents are never read, and it is left behind on
+    purpose, since deleting it would let the next process lock a different inode.  Opened
+    ``a+`` because :func:`exclusive_lock` needs a writable handle on Windows.
+    """
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as handle:
+        with exclusive_lock(handle):
+            yield
+
+
+def _no_posix_mode_bits() -> bool:
+    """Whether ``st_mode`` on this platform says nothing about who may read a file.
+
+    Named rather than inline so a test can flip it for the two callers below without patching
+    ``sys.platform``, which would also send :func:`exclusive_lock` down its ``msvcrt`` branch.
+    """
+    return sys.platform == "win32"
+
+
+def readable_by_others(path: Path) -> str | None:
+    """``"0644"`` -- the offending mode -- if other accounts can read ``path``, else None.
+
+    Guards the two secrets PregDos keeps in files: the password hashes and the session signing
+    key.  On POSIX, ``st_mode & 0o077`` answers this exactly.
+
+    **On Windows it always returns None, deliberately.**  There are no POSIX permission bits
+    there -- ``os.stat`` synthesises ``st_mode`` from the read-only attribute, so an ordinary
+    file reports 0666 -- and testing ``& 0o077`` would reject every file rather than measure
+    access.  The real question needs the DACL and so ``pywin32``, a dependency this project
+    does not carry for a platform where PregDos runs as one person on their own desktop.  The
+    check is skipped rather than faked; the caller says so in the log, and
+    ``%LOCALAPPDATA%``'s inherited ACL is what protects the file.
+    """
+    if _no_posix_mode_bits():
+        return None
+    mode = path.stat().st_mode & 0o777
+    return f"{mode:04o}" if mode & 0o077 else None
+
+
+def permission_check_note() -> str:
+    """Why a secret file's permissions were not verified, or ``""`` when they were.
+
+    Returned rather than logged here so the caller decides the level and the wording; see
+    :func:`readable_by_others`.
+    """
+    if _no_posix_mode_bits():
+        return ("file permissions are not checked on Windows (no POSIX mode bits); the "
+                "per-user state directory's own ACL is what protects the secret files")
+    return ""
+
+
 def running_as_root() -> bool:
     """True only where the process can drop privileges with ``runuser`` -- i.e. root on POSIX.
 

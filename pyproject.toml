@@ -41,6 +41,7 @@ dev = ["ruff>=0.15.7", "pytest>=7.2.1", "pytest-mock>=3.10.0", "pyright>=1.1.400
 
 [project.scripts]
 pregdos-web = "pregdos.webserver:main"
+pregdos-passwd = "pregdos.passwd:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

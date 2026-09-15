@@ -6,6 +6,7 @@
 {% block content %}
 <section class="card">
   <form method="post" enctype="multipart/form-data" class="form-grid">
+    {{ csrf_field() }}
     <div class="form-row">
       <label>DICOM Study</label>
       <div class="upload-split">
