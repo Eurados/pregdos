@@ -198,6 +198,29 @@ def _write_plan_import_bundle(run_dir: Path, plan_path: Path, dose_path: Path) -
     return out
 
 
+def plan_dose_identity(run_dir: str | Path) -> Optional[dict]:
+    """``{"series_uid": ..., "sop_uid": ...}`` of the exported PLAN dose, or None if unbuilt.
+
+    These are the two identifiers someone importing the cube into a TPS needs in order to find
+    the object again afterwards, so the results page shows them next to the download.
+
+    Read back from the file rather than predicted: :func:`postprocess` derives the plan dose
+    with ``preserve_identity=True``, so its UIDs are the *clinical* RTDOSE's (Eclipse is strict
+    about reconnecting cloned doses) and not the freshly minted ones each per-field cube gets.
+    Only the written file can say which.
+
+    Never raises and never builds anything.  It is called at render time, where the export may
+    simply not exist yet -- it is generated on first download -- and where a truncated or
+    unreadable file has to read as "no identity to show" rather than as a 500.
+    """
+    path = Path(run_dir) / PLAN_DOSE_NAME
+    try:
+        ds = pydicom.dcmread(path, stop_before_pixels=True)
+        return {"series_uid": str(ds.SeriesInstanceUID), "sop_uid": str(ds.SOPInstanceUID)}
+    except Exception:  # noqa: BLE001 - absent, truncated or not DICOM all mean the same here
+        return None
+
+
 def exported_files(run_dir: str | Path) -> List[Path]:
     """The importable RTDOSE files already generated for this run, in import order."""
     run_dir = Path(run_dir)

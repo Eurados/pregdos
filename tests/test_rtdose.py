@@ -73,6 +73,32 @@ def test_encode_writes_valid_ds_scaling_when_template_scaling_would_overflow():
     assert ds.pixel_array.max() <= 2**16 - 1
 
 
+def test_plan_dose_identity_is_none_until_the_export_has_been_built(tmp_path):
+    """The export is on-demand, so an unexported run simply has no identity to show yet."""
+    assert rtdose.plan_dose_identity(tmp_path) is None
+
+
+def test_plan_dose_identity_reads_the_uids_off_the_written_file(tmp_path):
+    """Read back, not predicted: the plan dose preserves the clinical RTDOSE's identity, so
+    only the file itself can say which UIDs the imported object will carry."""
+    ds = _template()
+    ds.SeriesInstanceUID = "1.2.3.4"
+    ds.save_as(tmp_path / rtdose.PLAN_DOSE_NAME, enforce_file_format=True)
+
+    assert rtdose.plan_dose_identity(tmp_path) == {
+        "series_uid": "1.2.3.4",
+        "sop_uid": str(ds.SOPInstanceUID),
+    }
+
+
+def test_plan_dose_identity_survives_a_file_it_cannot_read(tmp_path):
+    """Called on every render of a finished run, so a truncated export has to degrade to
+    "nothing to show" rather than take the results page down."""
+    (tmp_path / rtdose.PLAN_DOSE_NAME).write_bytes(b"not dicom at all")
+
+    assert rtdose.plan_dose_identity(tmp_path) is None
+
+
 def test_plan_derive_can_preserve_eclipse_identity():
     template = _template()
     template.SeriesInstanceUID = "1.2.3.4"

@@ -108,6 +108,47 @@
     </ul>
   {% elif status in ('running', 'queued') %}
     <p>No results yet — the run is still going.</p>
+  {% elif can_export_dose %}
+    {# A dose-only recalculation: no structures were ticked, so there is no scorer table --
+       but the run did produce its in-field dose cube, and that is the whole point of it.
+       Offering the RTDOSE export here, and only it, is deliberate: the CSV and PDF reports
+       summarise structure scorers, so with none they would be empty reports (#105). #}
+    <p><strong>No structure scorers were selected for this run</strong>, so there is nothing to
+      tabulate here. The run did produce its in-field dose cube, which can be exported for
+      import into a treatment planning system.</p>
+
+    <p class="hint retention-notice">
+      ⚠ PregDos is under active development and validation is ongoing; results should be
+      checked independently.
+    </p>
+    <p class="hint retention-notice">
+      ⚠ Runs are temporary and are automatically deleted after {{ run_retention_days }} days.
+      Download anything you need to keep.
+    </p>
+    <div class="download-panel">
+      <span class="download-label">Downloads</span>
+      <div class="download-actions">
+        <a class="btn primary"
+           href="{{ url_for('download_rtdose_bundle', study=study, run_id=run_id) }}"
+           title="DICOM dose export for TPS import">RTDOSE</a>
+      </div>
+    </div>
+    <ul class="download-notes">
+      <li><strong>RTDOSE</strong>: <code>{{ dose_bundle_name }}</code> — the summed plan dose
+        <code>rtdose_plan.dcm</code> plus the RTPLAN needed to connect it on import, in Gy(RBE)
+        for the whole course.</li>
+      <li>No CSV or PDF report: both summarise structure scorers, and this run has none.</li>
+    </ul>
+    {% if dose_identity %}
+      <div class="hint-box">
+        The exported dose object is identified by
+        SeriesInstanceUID <code>{{ dose_identity.series_uid }}</code> and
+        SOPInstanceUID <code>{{ dose_identity.sop_uid }}</code>.
+      </div>
+    {% else %}
+      <p class="hint">The cube is built the first time it is downloaded; its
+        SeriesInstanceUID and SOPInstanceUID are shown here once it exists.</p>
+    {% endif %}
   {% else %}
     <p>No scorer output found in this run.</p>
   {% endif %}
