@@ -42,6 +42,8 @@ from . import results
 # TOPAS writes the in-field cube as ``topas_field<n>.dcm`` (no zero padding), while the input
 # it came from is ``topas_field<nn>.txt`` (zero padded).  Both are keyed on the field number.
 _CUBE_RE = re.compile(r"^topas_field(\d+)\.dcm$")
+# The generated inputs, which say which fields the run *has*.  Zero-padded, unlike the cube.
+_INPUT_RE = re.compile(r"^topas_field(\d+)\.txt$")
 
 FIELD_DOSE_PREFIX = "rtdose_field"
 PLAN_DOSE_NAME = "rtdose_plan.dcm"
@@ -86,6 +88,27 @@ def field_cubes(run_dir: str | Path) -> list[tuple[int, Path]]:
         if match:
             out.append((int(match.group(1)), path))
     return sorted(out)
+
+
+def missing_field_cubes(run_dir: str | Path) -> list[int]:
+    """Field numbers whose TOPAS input exists but whose dose cube does not.
+
+    A run reports COMPLETED once every field has *exited cleanly*, which is not the same as
+    every field having written its cube: the file can be removed afterwards, or a write can
+    fail without a non-zero exit.  :func:`postprocess` then sums whichever cubes it finds and
+    the PLAN dose silently omits those fields -- while still describing itself as the whole
+    course, which is what makes it dangerous rather than merely incomplete.
+
+    The generated inputs are the authority for which fields the run has; :func:`_plan_scale`
+    already treats ``topas_field<nn>.txt`` that way, so this introduces no second convention.
+    """
+    run_dir = Path(run_dir)
+    expected = {
+        int(match.group(1))
+        for path in run_dir.glob("topas_field*.txt")
+        if (match := _INPUT_RE.match(path.name))
+    }
+    return sorted(expected - {number for number, _ in field_cubes(run_dir)})
 
 
 def _plan_scale(run_dir: Path, field_number: int) -> float:
@@ -281,6 +304,17 @@ def postprocess(run_dir: str | Path) -> List[Path]:
     cubes = field_cubes(run_dir)
     if not cubes:
         return []
+
+    # Refuse rather than sum what happens to be there.  A PLAN dose short of a field is not a
+    # smaller dose, it is a wrong one that describes itself as the whole course -- and it looks
+    # entirely plausible in a TPS.  Callers turn this into a message; see ensure_dose_export.
+    if missing := missing_field_cubes(run_dir):
+        fields = ", ".join(str(number) for number in missing)
+        raise RTDoseError(
+            f"field(s) {fields} produced no dose cube, so the plan dose would be the sum of the "
+            f"remaining fields only while still describing itself as the whole course. Rerun the "
+            f"missing field(s) before exporting."
+        )
 
     plan_path = _rtplan_path(run_dir)
     template_path = _clinical_rtdose(run_dir)

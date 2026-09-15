@@ -1265,6 +1265,13 @@ def _render_results(run_dir: Path, study: str, run_id: str, status: str):
     # ticked -- has a cube and no scorer rows, and used to be reported as having produced
     # nothing at all because the download lived inside the `groups` branch (#105).
     can_export_dose = status == executor.COMPLETED and bool(rtdose.field_cubes(run_dir))
+    # Whether the user asked for structure scorers at all.  `groups` cannot answer that: it is
+    # equally empty when scorers *were* requested and their CSVs are missing or unreadable, and
+    # telling that run "no structure scorers were selected" would be a lie.  The mask pre-pass
+    # input is written if and only if at least one structure was ticked
+    # (structure_metrics.write_prepass_input) and survives a rerun (_clear_run_outputs keeps
+    # .txt files), so it is the durable record of the selection.
+    dose_only = not (run_dir / structure_metrics.MASK_PREPASS_FILE).is_file()
     html = render_template(
         "_run_results.html",
         study=study,
@@ -1273,6 +1280,10 @@ def _render_results(run_dir: Path, study: str, run_id: str, status: str):
         groups=groups,
         plan_fractions=plan_fractions,
         can_export_dose=can_export_dose,
+        dose_only=dose_only,
+        # A completed run can still be short a cube; the export would then sum what is there and
+        # call it the whole course.  Say so next to the button, not only at download time.
+        missing_cubes=rtdose.missing_field_cubes(run_dir) if can_export_dose else [],
         dose_bundle_name=rtdose.PLAN_IMPORT_BUNDLE_NAME,
         # The UIDs are minted when the export is built, which happens on first download and
         # not here -- rewriting six 11M-voxel grids on a page render would stall it.  So they

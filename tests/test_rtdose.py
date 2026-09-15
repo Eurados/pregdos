@@ -1,3 +1,4 @@
+import pytest
 import zipfile
 
 import numpy as np
@@ -71,6 +72,55 @@ def test_encode_writes_valid_ds_scaling_when_template_scaling_would_overflow():
     assert ds.HighBit == 15
     assert ds.pixel_array.dtype == np.uint16
     assert ds.pixel_array.max() <= 2**16 - 1
+
+
+def test_postprocess_refuses_a_run_that_is_short_a_cube(tmp_path):
+    """Summing what happens to be there would yield a plausible-looking dose that is not the
+    whole course, which is worse than no export at all."""
+    for n in (1, 2, 3):
+        (tmp_path / f"topas_field{n:02d}.txt").write_text("input")
+    (tmp_path / "topas_field2.dcm").write_bytes(b"cube")
+
+    with pytest.raises(rtdose.RTDoseError, match=r"field\(s\) 1, 3 produced no dose cube"):
+        rtdose.postprocess(tmp_path)
+
+
+def test_ensure_dose_export_turns_the_refusal_into_a_warning(tmp_path):
+    """The web layer must get a message, not a traceback."""
+    (tmp_path / "topas_field01.txt").write_text("input")
+    (tmp_path / "topas_field02.txt").write_text("input")
+    (tmp_path / "topas_field1.dcm").write_bytes(b"cube")
+
+    paths, warnings = rtdose.ensure_dose_export(tmp_path)
+
+    assert paths == []
+    assert len(warnings) == 1 and "produced no dose cube" in warnings[0]
+
+
+def test_missing_field_cubes_is_empty_when_every_field_wrote_one(tmp_path):
+    for n in (1, 2):
+        (tmp_path / f"topas_field{n:02d}.txt").write_text("input")
+        (tmp_path / f"topas_field{n}.dcm").write_bytes(b"cube")
+
+    assert rtdose.missing_field_cubes(tmp_path) == []
+
+
+def test_missing_field_cubes_names_the_fields_that_did_not(tmp_path):
+    """The inputs say which fields the run has; the cubes say which ones produced dose."""
+    for n in (1, 2, 3):
+        (tmp_path / f"topas_field{n:02d}.txt").write_text("input")
+    (tmp_path / "topas_field2.dcm").write_bytes(b"cube")
+
+    assert rtdose.missing_field_cubes(tmp_path) == [1, 3]
+
+
+def test_missing_field_cubes_ignores_the_mask_prepass_input(tmp_path):
+    """structure_mask_prepass.txt is a TOPAS input but not a field, and has no cube of its own."""
+    (tmp_path / "topas_field01.txt").write_text("input")
+    (tmp_path / "topas_field1.dcm").write_bytes(b"cube")
+    (tmp_path / "structure_mask_prepass.txt").write_text("prepass")
+
+    assert rtdose.missing_field_cubes(tmp_path) == []
 
 
 def test_plan_dose_identity_is_none_until_the_export_has_been_built(tmp_path):

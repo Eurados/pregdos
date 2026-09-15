@@ -109,14 +109,32 @@
   {% elif status in ('running', 'queued') %}
     <p>No results yet — the run is still going.</p>
   {% elif can_export_dose %}
-    {# A dose-only recalculation: no structures were ticked, so there is no scorer table --
-       but the run did produce its in-field dose cube, and that is the whole point of it.
-       Offering the RTDOSE export here, and only it, is deliberate: the CSV and PDF reports
-       summarise structure scorers, so with none they would be empty reports (#105). #}
-    <p><strong>No structure scorers were selected for this run</strong>, so there is nothing to
-      tabulate here. The run did produce its in-field dose cube, which can be exported for
-      import into a treatment planning system.</p>
+    {# The run produced a dose cube but no scorer rows.  Two different situations, and the
+       template must not guess: `dose_only` comes from whether structures were ticked at all,
+       not from the table being empty, because a requested scorer whose CSV is missing or
+       unreadable leaves it just as empty (#105). #}
+    {% if dose_only %}
+      <p><strong>No structure scorers were selected for this run</strong>, so there is nothing to
+        tabulate here. The run did produce its in-field dose cube, which can be exported for
+        import into a treatment planning system.</p>
+    {% else %}
+      <p><strong>Structure scorers were requested, but no results could be read</strong> — so
+        this table is empty for a reason worth looking into. See any messages above, and the
+        run's log files under <strong>Files</strong>. The in-field dose cube was produced and
+        can still be exported.</p>
+    {% endif %}
 
+    {% if missing_cubes %}
+      {# Every field exited cleanly, yet a cube is absent.  rtdose.postprocess refuses such a
+         set outright, so say why here rather than offering a button that cannot work. #}
+      <div class="hint-box">
+        ⚠ <strong>The dose export is unavailable for this run.</strong>
+        Field{{ 's' if missing_cubes|length > 1 }} {{ missing_cubes|join(', ') }} produced no dose
+        cube. A plan dose built from the remaining fields would not be the whole course, though
+        the exported object would still describe itself as one, so PregDos refuses to build it.
+        Rerun the missing field{{ 's' if missing_cubes|length > 1 }}, then export.
+      </div>
+    {% else %}
     <p class="hint retention-notice">
       ⚠ PregDos is under active development and validation is ongoing; results should be
       checked independently.
@@ -137,7 +155,9 @@
       <li><strong>RTDOSE</strong>: <code>{{ dose_bundle_name }}</code> — the summed plan dose
         <code>rtdose_plan.dcm</code> plus the RTPLAN needed to connect it on import, in Gy(RBE)
         for the whole course.</li>
-      <li>No CSV or PDF report: both summarise structure scorers, and this run has none.</li>
+      {% if dose_only %}
+        <li>No CSV or PDF report: both summarise structure scorers, and this run has none.</li>
+      {% endif %}
     </ul>
     {% if dose_identity %}
       <div class="hint-box">
@@ -148,6 +168,7 @@
     {% else %}
       <p class="hint">The cube is built the first time it is downloaded; its
         SeriesInstanceUID and SOPInstanceUID are shown here once it exists.</p>
+    {% endif %}
     {% endif %}
   {% else %}
     <p>No scorer output found in this run.</p>

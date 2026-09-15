@@ -9,7 +9,8 @@ from unittest.mock import MagicMock
 import pydicom
 import pytest
 
-from pregdos import dicom_intake, executor, reporting, results, studies, webserver
+from pregdos import (dicom_intake, executor, reporting, results, structure_metrics,
+                     studies, webserver)
 from tests import dicom_factory
 from pregdos.webserver import app
 from pregdos.models import ConversionParameters, ConversionResult
@@ -1867,6 +1868,55 @@ def test_a_dose_only_run_that_is_still_going_says_so(client, tmp_path):
 
     assert "No results yet" in body
     assert f"/studies/alpha/{run_id}/rtdose" not in body
+
+
+def test_a_run_whose_scorers_produced_nothing_is_not_called_dose_only(client, tmp_path):
+    """`groups` is empty both when no structures were ticked and when a requested scorer's CSV
+    is missing, so the page must not infer the first from the second (Copilot on #105)."""
+    run_id, run_dir = _dose_only_run(tmp_path)
+    # the marker convert() writes when at least one structure was ticked
+    (run_dir / structure_metrics.MASK_PREPASS_FILE).write_text("prepass\n")
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    assert "No structure scorers were selected" not in body
+    assert "Structure scorers were requested, but no results could be read" in body
+    assert f"/studies/alpha/{run_id}/rtdose" in body        # the cube is still exportable
+
+
+def test_a_completed_run_missing_a_cube_says_the_export_is_incomplete(client, tmp_path):
+    """COMPLETED means every field exited cleanly, not that every field wrote a cube. The plan
+    dose would sum only what exists while still calling itself the whole course."""
+    run_id, run_dir = _dose_only_run(tmp_path)
+    (run_dir / "topas_field02.txt").write_text("a second field, whose cube never appeared\n")
+
+    # collapse the template's line wrapping before matching on a sentence
+    body = " ".join(client.get(f"/studies/alpha/{run_id}").data.decode().split())
+
+    assert "The dose export is unavailable for this run" in body
+    assert "Field 2 produced no dose cube" in body
+    # no button, because the export would refuse
+    assert f"/studies/alpha/{run_id}/rtdose" not in body
+
+
+def test_a_complete_run_does_not_claim_to_be_incomplete(client, tmp_path):
+    run_id, run_dir = _dose_only_run(tmp_path)
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+    assert "This export would be incomplete" not in body
+
+
+def test_downloading_an_incomplete_export_is_refused(client, tmp_path):
+    """The /rtdose URL is reachable without rendering the page, so hiding the button is not
+    the guarantee -- rtdose.postprocess refusing the set is."""
+    run_id, run_dir = _dose_only_run(tmp_path)
+    (run_dir / "topas_field02.txt").write_text("second field, no cube\n")
+
+    resp = client.get(f"/studies/alpha/{run_id}/rtdose", follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert b"produced no dose cube" in resp.data
+    assert b"describing itself as the whole course" in resp.data
+    assert not (run_dir / "rtdose_plan_eclipse_import.zip").exists()
 
 
 # --- studies-root resolution (issue #71) ---
