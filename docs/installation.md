@@ -185,7 +185,12 @@ ssl_key  = "/etc/pregdos/key.pem"
 ```
 
 Both keys or neither — setting one is a startup error rather than a quiet fall back to plain
-HTTP. A self-signed certificate works and is generated in one line:
+HTTP. TLS handshakes run in individual request threads and time out after five seconds, so a
+client that connects without completing TLS cannot block other clients. This deadline applies
+only to the handshake, not to uploads or downloads. The built-in server remains a development
+server; migration to a production WSGI server is tracked in #90.
+
+A self-signed certificate works and is generated in one line:
 
 ```bash
 sudo openssl req -x509 -newkey rsa:4096 -nodes -days 825 \

@@ -35,6 +35,7 @@ from . import (audit, auth, config, dicom_intake, executor, portable, report_pdf
 from .models import ConversionParameters, ConversionResult
 from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
+from .tls import TLSRequestHandler, server_context
 
 
 # How long a run is expected to survive on the server before the OS janitor reaps it.  This
@@ -1837,12 +1838,16 @@ def main(argv: list[str] | None = None):
         for role, value in (("ssl_cert", cfg.server.ssl_cert), ("ssl_key", cfg.server.ssl_key)):
             if not Path(value).is_file():
                 parser.error(f"[server] {role}: {value} does not exist or is not a file")
-        ssl_context = (cfg.server.ssl_cert, cfg.server.ssl_key)
+        try:
+            ssl_context = server_context(cfg.server.ssl_cert, cfg.server.ssl_key)
+        except (OSError, ValueError) as exc:
+            parser.error(f"[server] could not load TLS certificate/key: {exc}")
 
     # Debug is OFF by default: the Werkzeug debugger is an interactive console, and the app
     # binds all interfaces by default, so debug=True on a shared network is remote code
     # execution.  Opt in explicitly with PREGDOS_DEBUG=1 for local development only.
-    app.run(debug=_env_flag("PREGDOS_DEBUG"), host=host, port=port, ssl_context=ssl_context)
+    app.run(debug=_env_flag("PREGDOS_DEBUG"), host=host, port=port, ssl_context=ssl_context,
+            threaded=True, request_handler=TLSRequestHandler)
 
 
 if __name__ == "__main__":
