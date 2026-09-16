@@ -165,8 +165,12 @@ class ReportPDF(FPDF):
         self.set_font(self._font_family, "", 8)
         self.set_x(self.l_margin + 4)
         self.multi_cell(
-            0, 4.5, self._safe("- " + text),
-            new_x="LMARGIN", new_y="NEXT", markdown=markdown,
+            0,
+            4.5,
+            self._safe("- " + text),
+            new_x="LMARGIN",
+            new_y="NEXT",
+            markdown=markdown,
         )
 
     def kv_table(self, items: list[tuple[str, Any]], cols: int = 2):
@@ -175,7 +179,7 @@ class ReportPDF(FPDF):
         row_h = 5.2
         self.set_font(self._font_family, "", 8)
         for i in range(0, len(items), cols):
-            row = items[i:i + cols]
+            row = items[i : i + cols]
             for label, value in row:
                 self.set_fill_color(238, 241, 245)
                 self.set_font(self._font_family, "B", 7.5)
@@ -231,9 +235,9 @@ class ReportPDF(FPDF):
                     "structure_mass_normalized": False,
                     "structure_volume_normalized": False,
                     "simulated_histories": sum(
-                        r.get("simulated_histories") or 0 for r in group["rows"]
-                        if r.get("simulated_histories") is not None
-                    ) or None,
+                        r.get("simulated_histories") or 0 for r in group["rows"] if r.get("simulated_histories") is not None
+                    )
+                    or None,
                     "csv_name": "",
                 }
                 self._result_row(widths, total, fill, bold=True, include_status=include_status)
@@ -279,9 +283,7 @@ class ReportPDF(FPDF):
         else:
             formatted = results.humanize_dose(row["sum"], row.get("sd"), row.get("unit", ""))
             dose = " ".join(part for part in (formatted["value"], formatted["unit"]) if part)
-            uncertainty = _format_uncertainty(
-                row.get("sd"), row.get("unit", ""), formatted["unit"] or "", formatted["sd"]
-            )
+            uncertainty = _format_uncertainty(row.get("sd"), row.get("unit", ""), formatted["unit"] or "", formatted["sd"])
         field = row.get("field")
         field_text = "-" if field is None else str(field)
         if row.get("field_name"):
@@ -331,6 +333,10 @@ def build_report_pdf(
         ("dicomexport", provenance.get("dicomexport", "")),
         ("Geant4", provenance.get("geant4", "")),
     ])
+    # A last row of the same table, full width: the filename is user-chosen and can be long, and
+    # `_clip` would eat the hash off the end -- leaving something that looks like it identifies
+    # the table but does not.  Same reasoning as the RTPLAN UID row above.
+    pdf.kv_table([("Material table", provenance.get("material_table", "unavailable"))], cols=1)
 
     if warnings:
         pdf.heading("Warnings")
@@ -344,8 +350,7 @@ def build_report_pdf(
         pdf.paragraph("No scorer output found in this run.")
 
     pdf.heading("Notes")
-    pdf.bullet("PregDos is under active development and validation is ongoing; results should "
-               "be checked independently.")
+    pdf.bullet("PregDos is under active development and validation is ongoing; results should be checked independently.")
     if plan_fractions:
         pdf.bullet("Reported values are scaled to total course dose using the planned fraction count.")
     else:
@@ -353,8 +358,10 @@ def build_report_pdf(
     pdf.bullet("The uncertainty is the 1-sigma Monte-Carlo statistical error.")
     has_dose_to_water = any(group.get("quantity") == "DoseToWater" for group in groups)
     if has_dose_to_water:
-        pdf.bullet("DoseToWater is **physical** absorbed dose in Gy; the proton RBE of 1.1 is "
-                   "**not** applied to these values.", markdown=True)
+        pdf.bullet(
+            "DoseToWater is **physical** absorbed dose in Gy; the proton RBE of 1.1 is **not** applied to these values.",
+            markdown=True,
+        )
     pdf.funding_footer()
 
     return bytes(pdf.output())

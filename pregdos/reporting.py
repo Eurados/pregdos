@@ -21,7 +21,7 @@ import datetime
 import io
 import math
 from pathlib import Path
-from . import results, structure_metrics, studies, versions
+from . import executor, results, structure_metrics, studies, versions
 from .studies import StudyError
 
 
@@ -298,13 +298,28 @@ def result_rows(run_dir: Path, study: str, root: str | Path):
         })
     return rows, warnings, plan_fractions
 
-def report_provenance() -> dict[str, str]:
+def _material_table_field(info: executor.RunInfo | None) -> str:
+    """The conversion table as one reportable string: ``filename (12345678)``.
+
+    A user-supplied file can have any name and can change between runs, so the name alone
+    does not identify the table that produced the run; the hash prefix does.  Eight
+    characters are enough to tell two tables apart by eye and short enough to keep the
+    whole thing on one line -- ``run.json`` keeps the full SHA-256 for anyone who needs to
+    verify the bytes.  A run submitted before this was recorded has no honest answer.
+    """
+    if not info or not info.material_table or not info.material_table_sha256:
+        return "unavailable"
+    return f"{info.material_table} ({info.material_table_sha256[:8]})"
+
+
+def report_provenance(run_dir: Path) -> dict[str, str]:
     repo_root = Path(__file__).resolve().parent.parent
     return {
         "pregdos": versions.canonical_package_version("pregdos", repo_root),
         "dicomexport": versions.dicomexport_version(),
         "topas": versions.topas_version(),
         "geant4": versions.geant4_version(),
+        "material_table": _material_table_field(executor.read_run_metadata(run_dir)),
     }
 
 
@@ -316,7 +331,7 @@ def build_report_csv(run_dir: Path, study: str, run_id: str, root: str | Path) -
     """
     rows, warnings, plan_fractions = result_rows(run_dir, study, root)
     generated_at = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-    provenance = report_provenance()
+    provenance = report_provenance(run_dir)
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["# PregDos Dose Report"])
@@ -336,6 +351,7 @@ def build_report_csv(run_dir: Path, study: str, run_id: str, root: str | Path) -
     # Prefix the Geant4 version with "v" so spreadsheets do not coerce e.g. "11.3" into a date.
     geant4 = provenance.get("geant4", "")
     writer.writerow(["# Geant4", f"v{geant4}" if geant4 else ""])
+    writer.writerow(["# Material table", provenance.get("material_table", "")])
     for warning in warnings:
         writer.writerow(["# Warning", warning])
     writer.writerow(["# Note", "PregDos is under active development and validation is ongoing; "
