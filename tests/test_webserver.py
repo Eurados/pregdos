@@ -1587,9 +1587,9 @@ def test_pdf_reports_the_rtplan_uid_at_full_width(monkeypatch):
     calls = []
     original = report_pdf.ReportPDF.kv_table
 
-    def spy(self, items, cols=2):
+    def spy(self, items, cols=2, **kwargs):
         calls.append((items, cols))
-        return original(self, items, cols=cols)
+        return original(self, items, cols=cols, **kwargs)
 
     monkeypatch.setattr(report_pdf.ReportPDF, "kv_table", spy)
     uid = "1.2.246.352.71.5.37402163639.265919.20240227185649"

@@ -4,6 +4,21 @@ import threading
 from pregdos import structure_metrics
 
 
+@pytest.mark.parametrize("value, expected", [
+    # A Windows run generates backslash separators (os.path.relpath on nt).  Parsing these
+    # with shlex would eat the separator as an escape and silently lose the table.
+    (r"..\HUtoMaterialSchneider.txt", r"..\HUtoMaterialSchneider.txt"),
+    (r'"..\HUtoMaterial Site.txt"', r"..\HUtoMaterial Site.txt"),
+    (r'"..\HUtoMaterial Site.txt"  # selected', r"..\HUtoMaterial Site.txt"),
+    # POSIX, the common case, with and without quoting and a trailing comment.
+    ("../HUtoMaterialSchneider.txt", "../HUtoMaterialSchneider.txt"),
+    ('"../HUtoMaterialSchneider.txt"', "../HUtoMaterialSchneider.txt"),
+    ("../HUtoMaterialSchneider.txt  # selected", "../HUtoMaterialSchneider.txt"),
+])
+def test_quoted_or_raw_keeps_windows_separators_and_drops_comments(value, expected):
+    assert structure_metrics.quoted_or_raw(value) == expected
+
+
 def test_write_mask_prepass_reuses_generated_topas_paths(tmp_path):
     topas = tmp_path / "topas_field01.txt"
     topas.write_text(

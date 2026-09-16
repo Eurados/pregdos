@@ -4,7 +4,9 @@ The parser's tests live in ``test_results.py``; these cover what a reader is sho
 separate decision from what TOPAS wrote.
 """
 
-from pregdos import reporting
+import pytest
+
+from pregdos import executor, report_pdf, reporting
 
 
 # --- display scorer name ---
@@ -145,3 +147,37 @@ def test_group_falls_back_when_a_row_carries_no_annotation():
            "field": 1, "sum": 1.0, "sd": 0.1, "problem": None}
     (group,) = reporting.group_rows([row])
     assert group["display_quantity"] == "DoseToWater"
+
+
+# --- material table provenance field ---
+
+def test_material_table_field_pairs_the_name_with_a_short_hash():
+    info = executor.RunInfo(
+        backend=executor.LOCAL, submitted="", material_table="HUtoMaterialSchneider.txt",
+        material_table_sha256="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    )
+    assert reporting._material_table_field(info) == "HUtoMaterialSchneider.txt (ba7816bf)"
+
+
+@pytest.mark.parametrize("info", [
+    None,
+    executor.RunInfo(backend=executor.LOCAL, submitted=""),
+    executor.RunInfo(backend=executor.LOCAL, submitted="", material_table="table.txt"),
+])
+def test_material_table_field_is_unavailable_without_both_halves(info):
+    """A name with no hash does not identify a table, so it is not half-reported as if it did."""
+    assert reporting._material_table_field(info) == "unavailable"
+
+
+@pytest.mark.parametrize("name_len", [25, 93, 400])
+def test_pdf_keeps_the_hash_when_the_filename_is_too_long_to_fit(name_len):
+    """The hash is the half that identifies the table, so the filename is what gets elided."""
+    pdf = report_pdf.ReportPDF("t", "r")
+    pdf.add_page()
+    pdf.set_font(pdf._font_family, "", 7.5)
+    width = pdf.epw - 32
+
+    clipped = pdf._clip_keeping_suffix(f"{'H' * name_len}.txt (ba7816bf)", width)
+
+    assert clipped.endswith("(ba7816bf)")
+    assert pdf.get_string_width(clipped) <= width - 2

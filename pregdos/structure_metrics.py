@@ -38,7 +38,13 @@ def _sanitize_name(name: str) -> str:
     return result or "unknown"
 
 
-def _parameter_value(text: str, parameter: str) -> str | None:
+def parameter_value(text: str, parameter: str) -> str | None:
+    """The raw right-hand side of a TOPAS parameter line, with or without its type prefix.
+
+    Public because :mod:`pregdos.executor` reads ``includeFile`` out of the same generated
+    files to record which conversion table produced a run (#108); one parser for that line,
+    not two.
+    """
     pattern = re.compile(rf"^\s*\w+:{re.escape(parameter)}\s*=\s*(?P<value>.+?)\s*$", re.MULTILINE)
     match = pattern.search(text)
     if not match:
@@ -47,11 +53,21 @@ def _parameter_value(text: str, parameter: str) -> str | None:
     return match.group("value").strip() if match else None
 
 
-def _quoted_or_raw(value: str) -> str:
+def quoted_or_raw(value: str) -> str:
+    """Unwrap a TOPAS value that may be quoted, else take its first whitespace-run token.
+
+    Deliberately not ``shlex.split``: TOPAS paths are not shell words, and on Windows the
+    generated ``..\\HUtoMaterial.txt`` would have its separator eaten as an escape.
+    """
     value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] == '"':
-        return value[1:-1]
-    return value.split()[0]
+    if value.startswith('"'):
+        # End at the closing quote, not at the end of the line: a quoted path may be
+        # followed by a trailing `# comment`, and it may legitimately contain spaces.
+        closing = value.find('"', 1)
+        if closing > 0:
+            return value[1:closing]
+    # Unquoted, so the path cannot contain spaces -- and the first token drops any comment.
+    return value.split()[0] if value.split() else ""
 
 
 def _copy_parameters(source: str, names: Iterable[str]) -> list[str]:
@@ -258,7 +274,7 @@ def _density_from_hu(hu: np.ndarray, material_table: Path) -> np.ndarray:
 def _resolve_topas_path(run_dir: Path, value: str | None) -> Path:
     if not value:
         raise StructureMetricsError("required path parameter is missing")
-    path = Path(_quoted_or_raw(value))
+    path = Path(quoted_or_raw(value))
     return path if path.is_absolute() else (run_dir / path).resolve()
 
 
@@ -282,7 +298,7 @@ def _prepass_structures(run_dir: Path) -> list[tuple[str, str]]:
             if name_match:
                 entry["name"] = name_match.group("name")
         elif param == "OutputFile":
-            output = _quoted_or_raw(value)
+            output = quoted_or_raw(value)
             if output.startswith("structure_mask_"):
                 entry["safe"] = output.removeprefix("structure_mask_")
 
@@ -306,8 +322,8 @@ def compute_metrics(run_dir: str | Path) -> dict:
     if not prepass.is_file():
         raise StructureMetricsError(f"{PREPASS_FILE} not found")
     text = read_text_lenient(prepass)
-    dicom_dir = _resolve_topas_path(run_dir, _parameter_value(text, "Ge/Patient/DicomDirectory"))
-    material_table = _resolve_topas_path(run_dir, _parameter_value(text, "includeFile"))
+    dicom_dir = _resolve_topas_path(run_dir, parameter_value(text, "Ge/Patient/DicomDirectory"))
+    material_table = _resolve_topas_path(run_dir, parameter_value(text, "includeFile"))
     ct = _load_ct(dicom_dir)
     densities = _density_from_hu(ct.hu, material_table)
 

@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from . import config, portable
+from . import config, portable, structure_metrics
 from .textio import read_text_lenient
 
 # Backend identifiers, also written into run.json.
@@ -542,13 +542,10 @@ def _material_table_identity(run_dir: Path, topas_files: List[str]) -> tuple[str
         return "", ""
     try:
         text = read_text_lenient(run_dir / topas_files[0])
-        match = re.search(r"^\s*includeFile\s*=\s*(.+)$", text, re.MULTILINE)
-        if not match:
+        value = structure_metrics.parameter_value(text, "includeFile")
+        if not value:
             return "", ""
-        paths = shlex.split(match.group(1), comments=True)
-        if len(paths) != 1:
-            return "", ""
-        table = run_dir / paths[0]
+        table = run_dir / structure_metrics.quoted_or_raw(value)
         return table.name, hashlib.sha256(table.read_bytes()).hexdigest()
     except (OSError, ValueError):
         return "", ""

@@ -173,10 +173,13 @@ class ReportPDF(FPDF):
             markdown=markdown,
         )
 
-    def kv_table(self, items: list[tuple[str, Any]], cols: int = 2):
+    def kv_table(self, items: list[tuple[str, Any]], cols: int = 2, *, keep_suffix: bool = False):
+        """Label/value rows.  ``keep_suffix`` elides the middle of an over-long value rather
+        than its end, for values whose tail is the part that identifies them."""
         label_w = 32
         value_w = (self.epw / cols) - label_w
         row_h = 5.2
+        clip = self._clip_keeping_suffix if keep_suffix else self._clip
         self.set_font(self._font_family, "", 8)
         for i in range(0, len(items), cols):
             row = items[i : i + cols]
@@ -185,7 +188,7 @@ class ReportPDF(FPDF):
                 self.set_font(self._font_family, "B", 7.5)
                 self.cell(label_w, row_h, self._safe(label), border=1, fill=True)
                 self.set_font(self._font_family, "", 7.5)
-                self.cell(value_w, row_h, self._clip(value, value_w), border=1)
+                self.cell(value_w, row_h, clip(value, value_w), border=1)
             if len(row) < cols:
                 self.cell(label_w + value_w, row_h, "", border=1)
             self.ln(row_h)
@@ -198,6 +201,26 @@ class ReportPDF(FPDF):
         while value and self.get_string_width(value + ellipsis) > width - 2:
             value = value[:-1]
         return value + ellipsis
+
+    def _clip_keeping_suffix(self, text: Any, width: float) -> str:
+        """Clip a ``head (suffix)`` value in the middle, so the bracketed suffix survives.
+
+        The material table reads ``filename (a1b2c3d4)``, and the hash is the half that
+        actually identifies it -- a plain right-clip would drop exactly that and leave a
+        bare filename looking like the whole answer.  Falls back to :meth:`_clip` when
+        there is no suffix to protect, or when the suffix alone will not fit.
+        """
+        value = self._safe(text)
+        if self.get_string_width(value) <= width - 2:
+            return value
+        head, sep, suffix = value.rpartition(" (")
+        if not sep:
+            return self._clip(value, width)
+        suffix = sep + suffix
+        ellipsis = "..."
+        while head and self.get_string_width(head + ellipsis + suffix) > width - 2:
+            head = head[:-1]
+        return head + ellipsis + suffix if head else self._clip(value, width)
 
     def result_table(self, groups: list[dict[str, Any]]):
         for group in groups:
@@ -333,10 +356,11 @@ def build_report_pdf(
         ("dicomexport", provenance.get("dicomexport", "")),
         ("Geant4", provenance.get("geant4", "")),
     ])
-    # A last row of the same table, full width: the filename is user-chosen and can be long, and
-    # `_clip` would eat the hash off the end -- leaving something that looks like it identifies
-    # the table but does not.  Same reasoning as the RTPLAN UID row above.
-    pdf.kv_table([("Material table", provenance.get("material_table", "unavailable"))], cols=1)
+    # A last row of the same table, full width, and clipped in the middle if it comes to that:
+    # the filename is user-chosen and can be arbitrarily long, and it is the hash on the end
+    # that says *which* table this was.  Same reasoning as the RTPLAN UID row above.
+    pdf.kv_table([("Material table", provenance.get("material_table", "unavailable"))],
+                 cols=1, keep_suffix=True)
 
     if warnings:
         pdf.heading("Warnings")
