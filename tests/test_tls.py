@@ -14,15 +14,13 @@ from werkzeug.serving import make_server
 
 from pregdos.tls import TLSRequestHandler, server_context
 
-# These need a certificate, and `openssl` is the one way to make one without adding a
-# dependency.  PregDos supports the local backend on a plain Windows workstation (#91),
-# where it is usually absent -- skip there rather than fail the whole module on a missing
-# binary that has nothing to do with what is being tested.
-pytestmark = pytest.mark.skipif(shutil.which("openssl") is None, reason="needs openssl to make a certificate")
-
 
 @pytest.fixture(scope="module")
 def certificate(tmp_path_factory):
+    # OpenSSL may be absent on Windows. Only TLS cases need this fixture; plain HTTP
+    # regressions must still run there without a certificate-generation dependency.
+    if shutil.which("openssl") is None:
+        pytest.skip("needs openssl to make a certificate")
     directory = tmp_path_factory.mktemp("tls")
     cert, key = directory / "cert.pem", directory / "key.pem"
     subprocess.run([
@@ -30,6 +28,11 @@ def certificate(tmp_path_factory):
         "-keyout", str(key), "-out", str(cert), "-subj", "/CN=localhost",
     ], check=True, capture_output=True)
     return str(cert), str(key)
+
+
+@pytest.fixture
+def transport_certificate(request, tls):
+    return request.getfixturevalue("certificate") if tls else None
 
 
 @contextmanager
@@ -88,8 +91,8 @@ def fetch(port, *, tls=True):
 
 
 @pytest.mark.parametrize("tls", [True, False])
-def test_silent_clients_do_not_block_other_requests(certificate, tls):
-    with serving(certificate, tls=tls) as (port, entered):
+def test_silent_clients_do_not_block_other_requests(transport_certificate, tls):
+    with serving(transport_certificate, tls=tls) as (port, entered):
         # Five seconds per silent peer would exceed the real request's one-second timeout.
         with socket.create_connection(("127.0.0.1", port), timeout=2):
             assert entered.wait(2), "connection never reached its request thread"
@@ -159,8 +162,8 @@ def connected(port, tls):
     b"GET / HTTP/1.1\r\nHost: localhost\r\nX-Unfinished:",
     b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10\r\n\r\nx",
 ])
-def test_stalled_http_request_is_closed(certificate, tls, payload):
-    with serving(certificate, tls=tls, io_timeout=0.2) as (port, entered):
+def test_stalled_http_request_is_closed(transport_certificate, tls, payload):
+    with serving(transport_certificate, tls=tls, io_timeout=0.2) as (port, entered):
         with connected(port, tls) as peer:
             if payload:
                 peer.sendall(payload)
@@ -173,8 +176,8 @@ def test_stalled_http_request_is_closed(certificate, tls, payload):
 
 
 @pytest.mark.parametrize("tls", [True, False])
-def test_io_timeout_allows_progress_and_long_response_generation(certificate, tls):
-    with serving(certificate, tls=tls, io_timeout=0.4, delay=0.6) as (port, entered):
+def test_io_timeout_allows_progress_and_long_response_generation(transport_certificate, tls):
+    with serving(transport_certificate, tls=tls, io_timeout=0.4, delay=0.6) as (port, entered):
         with connected(port, tls) as peer:
             peer.sendall(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 8\r\n\r\n")
             assert entered.wait(2)
