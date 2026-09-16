@@ -22,9 +22,12 @@ class ThreadedTLSContext(ssl.SSLContext):
 
 
 class TLSRequestHandler(WSGIRequestHandler):
-    """Handshake in the request thread, with a deadline only for the handshake."""
+    """Bound TLS handshakes and subsequent blocking HTTP socket operations."""
 
     handshake_timeout = 5.0
+    # StreamRequestHandler.setup applies this to HTTP and HTTPS alike. After TLS,
+    # handle restores it. This is an I/O timeout, not a total request deadline.
+    timeout = 120.0
 
     def handle(self):
         if isinstance(self.connection, ssl.SSLSocket):
@@ -39,7 +42,16 @@ class TLSRequestHandler(WSGIRequestHandler):
                 return
             finally:
                 self.connection.settimeout(previous_timeout)
-        super().handle()
+        try:
+            super().handle()
+        except OSError as exc:
+            # Werkzeug catches ConnectionError and socket.timeout, but it does not close the
+            # connection, so the keep-alive loop reads again -- and a socket whose read has
+            # timed out poisons its buffered reader, making that second read raise a plain
+            # OSError("cannot read from timed out object").  That escapes to socketserver,
+            # which prints a traceback.  A peer that stalls mid-request is routine, not a
+            # crash, and #110 is precisely about this server's logs misreporting its state.
+            self.log_error("connection closed: %s", exc)
 
 
 def server_context(cert: str, key: str) -> ssl.SSLContext:

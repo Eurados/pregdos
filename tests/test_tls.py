@@ -33,17 +33,22 @@ def certificate(tmp_path_factory):
 
 
 @contextmanager
-def serving(certificate, *, tls=True, timeout=5.0, delay=0):
+def serving(certificate, *, tls=True, timeout=5.0, io_timeout=TLSRequestHandler.timeout, delay=0):
     entered = threading.Event()
+    handshake_deadline = timeout
 
     class Handler(TLSRequestHandler):
-        handshake_timeout = timeout
+        handshake_timeout = handshake_deadline
+        timeout = io_timeout
 
         def handle(self):
             entered.set()
             super().handle()
 
     def app(environ, start_response):
+        if environ.get("CONTENT_LENGTH"):
+            length = int(environ["CONTENT_LENGTH"])
+            assert environ["wsgi.input"].read(length) == b"x" * length
         # Exercise response streaming beyond the handshake deadline, too.
         start_response("200 OK", [("Content-Type", "text/plain")])
         yield b"hello "
@@ -133,3 +138,51 @@ def test_handshake_deadline_does_not_limit_http_reads(certificate):
                     response.begin()
                     assert response.status == 200
                     assert response.read() == b"hello world"
+
+
+@contextmanager
+def connected(port, tls):
+    with socket.create_connection(("127.0.0.1", port), timeout=3) as raw:
+        if tls:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            with context.wrap_socket(raw, server_hostname="localhost") as peer:
+                yield peer
+        else:
+            yield raw
+
+
+@pytest.mark.parametrize("tls", [True, False])
+@pytest.mark.parametrize("payload", [
+    b"",
+    b"GET / HTTP/1.1\r\nHost: localhost\r\nX-Unfinished:",
+    b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10\r\n\r\nx",
+])
+def test_stalled_http_request_is_closed(certificate, tls, payload):
+    with serving(certificate, tls=tls, io_timeout=0.2) as (port, entered):
+        with connected(port, tls) as peer:
+            if payload:
+                peer.sendall(payload)
+            assert entered.wait(2)
+            # A response is permitted, but the server must close instead of retaining
+            # the request thread forever. The client's longer timeout bounds the test.
+            while peer.recv(4096):
+                pass
+        fetch(port, tls=tls)
+
+
+@pytest.mark.parametrize("tls", [True, False])
+def test_io_timeout_allows_progress_and_long_response_generation(certificate, tls):
+    with serving(certificate, tls=tls, io_timeout=0.4, delay=0.6) as (port, entered):
+        with connected(port, tls) as peer:
+            peer.sendall(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 8\r\n\r\n")
+            assert entered.wait(2)
+            # Total upload time exceeds the timeout, but each read makes progress.
+            for _ in range(8):
+                peer.sendall(b"x")
+                time.sleep(0.1)
+            with http.client.HTTPResponse(peer) as response:
+                response.begin()
+                assert response.status == 200
+                assert response.read() == b"hello world"
