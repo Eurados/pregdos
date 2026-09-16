@@ -10,29 +10,21 @@ authors = [
 ]
 license = { text = "MIT" }
 readme = "README.md"
-# 3.11 for stdlib tomllib, which pregdos/config.py reads the site config with.  CI has only
-# ever tested 3.11, so the previous >=3.10 claim was unverified rather than supported.
+# 3.11 for stdlib tomllib, which pregdos/config.py reads the site config with.
 requires-python = ">=3.11"
-# Exactly what pregdos imports, and nothing else.  Transitive dependencies are the resolver's
-# job: scipy and pandas arrive because dicomexport declares them, and werkzeug is here only
-# because pregdos imports secure_filename itself rather than reaching through Flask.
+# Exactly what pregdos imports, and nothing else; transitive dependencies are the resolver's
+# job.  werkzeug is direct because pregdos imports secure_filename, and is also what Flask
+# itself is built on -- gunicorn replaced werkzeug's dev *server*, not the library.
 dependencies = [
     "pydicom>=2.3.1",
     "numpy",
     "flask>=3.1.0",
     "werkzeug",
-    # The bounded gthread connection adapter is tested against this version.
+    # Pinned: pregdos subclasses gthread's TConn to bound TLS handshakes and socket I/O
+    # (#110), which reaches into gunicorn internals.  Re-run tests/test_tls.py on a bump.
     "gunicorn==26.2.0",
     "requests",
     "fpdf2>=2.8.7",
-    # >=1.4.3: emits relative DicomDirectory/CloneRTDoseGridFrom (keeps studies relocatable,
-    # pregdos #41), points DicomDirectory at the CT dir (nested-CT #52), sizes the World from
-    # the CT + isocenter, and writes DicomOrigin so the patient is placed correctly.
-    # >=1.5.0: names field outputs by DICOM BeamNumber and skips beams without BeamMeterset.
-    # >=1.5.1: corrects two catalogued range shifter thicknesses -- CCB's RS_Block from
-    # 39.936 to a centre-confirmed 36.5 mm, and WPE's RS51 from a guessed 51.0 to a stated
-    # 44.4 mm -- so an older dicomexport computes a different range for those centres.  Also
-    # adds an optional stated density per shifter (dicomexport #92).
     "dicomexport @ git+https://github.com/nbassler/dicomexport@v1.5.1",
 ]
 dynamic = ["version"]
@@ -43,10 +35,8 @@ dev = [
     "ruff>=0.15.7",
     "pytest>=7.2.1",
     "pytest-mock>=3.10.0",
-    # Pinned, not a floor: pyright enables new checks in new releases, so an unpinned
-    # upgrade turns a green branch red for reasons that have nothing to do with the branch.
-    # Dependabot raises the bump as its own PR, where CI runs the new version in isolation --
-    # a release that finds new problems fails that PR, not somebody else's.
+    # Pinned, not a floor: new releases enable new checks, so an unpinned upgrade would fail
+    # unrelated branches.  Dependabot raises the bump as its own PR for CI to judge.
     "pyright==1.1.411",
 ]
 
