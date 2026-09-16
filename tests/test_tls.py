@@ -14,6 +14,12 @@ import time
 import pytest
 from pregdos.server import Application, Connection, IO_TIMEOUT, Worker, options
 
+# Every case here forks a real Gunicorn and reaps it by process group, which needs POSIX --
+# and `pregdos-web` refuses to start on Windows anyway (Gunicorn is Unix-only), so there is
+# nothing here Windows could exercise.  Skip as a platform, rather than failing at
+# `get_context("fork")` with an error that looks like a broken test.
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="Gunicorn socket tests require POSIX")
+
 
 @pytest.fixture(scope="module")
 def certificate(tmp_path_factory):

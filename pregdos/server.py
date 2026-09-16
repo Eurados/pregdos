@@ -4,6 +4,9 @@ The CLI validates the effective listener before calling this module. Using BaseA
 keeps gunicorn.conf.py and GUNICORN_CMD_ARGS from silently overriding that listener.
 """
 
+import logging
+import ssl
+
 from gunicorn import http, sock
 from gunicorn.app.base import BaseApplication
 from gunicorn.workers.gthread import TConn, ThreadWorker
@@ -29,7 +32,23 @@ class Connection(TConn):
             self.sock.settimeout(self.handshake_timeout)
             if self.cfg.is_ssl:
                 # do_handshake_on_connect=True: the handshake inherits the timeout.
-                self.sock = sock.ssl_wrap_socket(self.sock, self.cfg)
+                try:
+                    self.sock = sock.ssl_wrap_socket(self.sock, self.cfg)
+                except TimeoutError as exc:
+                    # A peer that stalls part-way through its ClientHello is routine on a
+                    # public listener.  But TimeoutError is an OSError carrying errno None,
+                    # and gthread only forgives EPIPE/ECONNRESET/ENOTCONN -- everything else
+                    # goes to log.exception, so each slow client would print a traceback that
+                    # reads like a server fault.  #110 is about this server's log misreporting
+                    # its own state, so report it as the one-line event it is, the way
+                    # gunicorn already reports a malformed ClientHello, and re-raise as the
+                    # SSL close it is so gthread drops the connection quietly.
+                    # `client` is an (address, port) tuple over TCP, but gunicorn also binds
+                    # Unix sockets, where it is not.  Match gunicorn's own "from ip=%s".
+                    peer = self.client[0] if isinstance(self.client, tuple) else self.client
+                    logging.getLogger("gunicorn.error").warning(
+                        "TLS handshake timed out from ip=%s", peer)
+                    raise ssl.SSLError(ssl.SSL_ERROR_EOF, "TLS handshake timed out") from exc
             self.parser = http.get_parser(self.cfg, self.sock, self.client)
             self.initialized = True
         # gthread switches back to blocking mode before each call to init, including

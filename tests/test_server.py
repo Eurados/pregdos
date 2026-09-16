@@ -3,16 +3,32 @@
 import hashlib
 import http.client
 import json
+import logging
 import os
 from pathlib import Path
 import signal
+import ssl
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
+from pregdos import server
 from pregdos.server import Application, Worker, options
+
+# Launches the real `pregdos-web` in its own session and reaps it by process group: POSIX
+# only, and the launcher itself refuses to run on Windows.  See tests/test_tls.py.
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="Gunicorn socket tests require POSIX")
+
+
+class _FakeSocket:
+    """Just enough socket for Connection.init: it never reaches real I/O."""
+
+    def setblocking(self, _flag): pass
+
+    def settimeout(self, _seconds): pass
 
 
 SCRIPT = '''
@@ -177,3 +193,27 @@ def test_sessions_survive_worker_replacement(running_server):
     assert len(pids) == 2, "both replacement and surviving worker should serve the same session"
     assert first_pid not in pids
     assert master.poll() is None
+
+
+def test_stalled_handshake_is_one_line_not_a_traceback(monkeypatch, caplog):
+    """A peer too slow to finish its ClientHello is routine, not a server fault.
+
+    gthread forgives only EPIPE/ECONNRESET/ENOTCONN and sends every other OSError to
+    `log.exception`.  TimeoutError carries errno None, so an unconverted handshake timeout
+    prints a full traceback per slow client -- #110 all over again, in the log this time.
+    """
+    def timeout(*_args, **_kwargs):
+        raise TimeoutError("_ssl.c:1012: The handshake operation timed out")
+
+    monkeypatch.setattr(server.sock, "ssl_wrap_socket", timeout)
+    conn = server.Connection(
+        SimpleNamespace(is_ssl=True), _FakeSocket(), ("10.0.0.5", 44444), object(),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="gunicorn.error"):
+        with pytest.raises(ssl.SSLError) as raised:
+            conn.init()
+
+    # An SSLError is what gthread already treats as a connection event rather than a fault.
+    assert raised.value.args[0] == ssl.SSL_ERROR_EOF
+    assert "TLS handshake timed out from ip=10.0.0.5" in caplog.text
