@@ -6,13 +6,19 @@ import shutil
 import socket
 import ssl
 import subprocess
-import threading
+import multiprocessing
+import os
+import signal
 import time
 
 import pytest
-from werkzeug.serving import make_server
+from pregdos.server import Application, Connection, IO_TIMEOUT, Worker, options
 
-from pregdos.tls import TLSRequestHandler, server_context
+# Every case here forks a real Gunicorn and reaps it by process group, which needs POSIX --
+# and `pregdos-web` refuses to start on Windows anyway (Gunicorn is Unix-only), so there is
+# nothing here Windows could exercise.  Skip as a platform, rather than failing at
+# `get_context("fork")` with an error that looks like a broken test.
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="Gunicorn socket tests require POSIX")
 
 
 @pytest.fixture(scope="module")
@@ -36,41 +42,53 @@ def transport_certificate(request, tls):
 
 
 @contextmanager
-def serving(certificate, *, tls=True, timeout=5.0, io_timeout=TLSRequestHandler.timeout, delay=0):
-    entered = threading.Event()
-    handshake_deadline = timeout
+def serving(certificate, *, tls=True, timeout=5.0, io_timeout=IO_TIMEOUT, delay=0):
+    process_context = multiprocessing.get_context("fork")
+    entered = process_context.Event()
+    ready_parent, ready_child = process_context.Pipe(duplex=False)
 
-    class Handler(TLSRequestHandler):
-        handshake_timeout = handshake_deadline
-        timeout = io_timeout
+    class TimedConnection(Connection):
+        handshake_timeout = timeout
 
-        def handle(self):
+        def init(self):
             entered.set()
-            super().handle()
+            super().init()
+
+    TimedConnection.io_timeout = io_timeout
+
+    class TestWorker(Worker):
+        connection_class = TimedConnection
 
     def app(environ, start_response):
         if environ.get("CONTENT_LENGTH"):
             length = int(environ["CONTENT_LENGTH"])
             assert environ["wsgi.input"].read(length) == b"x" * length
-        # Exercise response streaming beyond the handshake deadline, too.
         start_response("200 OK", [("Content-Type", "text/plain")])
         yield b"hello "
         time.sleep(delay)
         yield b"world"
 
-    server = make_server(
-        "127.0.0.1", 0, app, threaded=True, request_handler=Handler,
-        ssl_context=server_context(*certificate) if tls else None,
-    )
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    def child():
+        os.setsid()
+        settings = options("127.0.0.1", 0, *(certificate if tls else (None, None)), workers=1, threads=4)
+        settings.update(worker_class=TestWorker, graceful_timeout=1,
+                        when_ready=lambda server: ready_child.send(server.LISTENERS[0].getsockname()[1]))
+        Application(app, settings).run()
+
+    process = process_context.Process(target=child)
+    process.start()
+    ready_child.close()
     try:
-        yield server.server_port, entered
+        assert ready_parent.poll(10), "Gunicorn did not start"
+        yield ready_parent.recv(), entered
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=3)
-        assert not thread.is_alive()
+        process.terminate()
+        process.join(5)
+        if process.is_alive():
+            os.killpg(process.pid, signal.SIGKILL)
+            process.join(5)
+        ready_parent.close()
+        assert not process.is_alive()
 
 
 def fetch(port, *, tls=True):
@@ -95,26 +113,22 @@ def test_silent_clients_do_not_block_other_requests(transport_certificate, tls):
     with serving(transport_certificate, tls=tls) as (port, entered):
         # Five seconds per silent peer would exceed the real request's one-second timeout.
         with socket.create_connection(("127.0.0.1", port), timeout=2):
-            assert entered.wait(2), "connection never reached its request thread"
-            entered.clear()
             with socket.create_connection(("127.0.0.1", port), timeout=2):
-                assert entered.wait(2)
                 fetch(port, tls=tls)
 
 
 @pytest.mark.parametrize("payload", [b"", b"\x16\x03\x01\x00\x80"])
-def test_silent_or_incomplete_handshake_is_closed(certificate, payload, caplog):
+def test_silent_or_incomplete_handshake_is_closed(certificate, payload):
     with serving(certificate, timeout=0.2) as (port, entered):
         with socket.create_connection(("127.0.0.1", port), timeout=2) as peer:
             if payload:
                 peer.sendall(payload)
-            assert entered.wait(2)
+            peer.settimeout(10)  # bare TCP: initial data wait plus poller expiry
             assert peer.recv(1) == b""
         fetch(port)
-    assert "TLS handshake failed" in caplog.text
 
 
-def test_malformed_handshake_does_not_break_server(certificate, caplog):
+def test_malformed_handshake_does_not_break_server(certificate):
     with serving(certificate) as (port, entered):
         with socket.create_connection(("127.0.0.1", port), timeout=2) as peer:
             peer.sendall(b"GET / HTTP/1.0\r\n\r\n")
@@ -124,7 +138,6 @@ def test_malformed_handshake_does_not_break_server(certificate, caplog):
             except ConnectionResetError:
                 pass
         fetch(port)
-    assert "TLS handshake failed" in caplog.text
 
 
 def test_handshake_deadline_does_not_limit_http_reads(certificate):
@@ -167,7 +180,7 @@ def test_stalled_http_request_is_closed(transport_certificate, tls, payload):
         with connected(port, tls) as peer:
             if payload:
                 peer.sendall(payload)
-            assert entered.wait(2)
+            peer.settimeout(10)
             # A response is permitted, but the server must close instead of retaining
             # the request thread forever. The client's longer timeout bounds the test.
             while peer.recv(4096):

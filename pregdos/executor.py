@@ -436,7 +436,7 @@ def _launch_local_worker(run_dir: Path, studies_root: Path, info: RunInfo) -> No
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         # Detach from the webserver's lifetime: the run must outlive a Ctrl-C or a reload of
-        # the Flask dev server (a new session on POSIX, a new process group on Windows).
+        # the web server (a new session on POSIX, a new process group on Windows).
         **portable.detach_kwargs(),
     )
     for job in info.fields:

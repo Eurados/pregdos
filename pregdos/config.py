@@ -108,8 +108,7 @@ class Server:
     default**, so on a default install anyone who can reach the port can read every study on
     the server.
 
-    ``ssl_cert``/``ssl_key`` make the *development* server speak HTTPS.  That is encryption,
-    not a production deployment -- see issue #90.  Both or neither.
+    ``ssl_cert``/``ssl_key`` let Gunicorn terminate TLS directly. Both or neither.
     """
 
     host: str = "0.0.0.0"

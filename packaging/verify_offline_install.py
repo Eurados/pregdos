@@ -16,7 +16,12 @@ broken page at the hospital, not an ImportError in CI.  Only a request catches i
 from __future__ import annotations
 
 import sys
+import http.client
+import os
+import re
+import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 FAILURES: list[str] = []
@@ -41,6 +46,47 @@ def _same_version(a: str, b: str) -> bool:
     return a.lower().replace("_", "-") == b.lower().replace("_", "-")
 
 
+def check_server(work: Path, config_path: Path) -> None:
+    """Start the installed launcher, including Gunicorn and its worker adapter."""
+    log_path = work / "gunicorn.log"
+    env = os.environ.copy()
+    env.update(PREGDOS_CONFIG=str(config_path), STATE_DIRECTORY=str(work / "state"))
+    with log_path.open("w") as log:
+        process = subprocess.Popen(
+            [sys.executable, "-m", "pregdos.webserver", "--host", "127.0.0.1", "--port", "0"],
+            env=env, stdout=log, stderr=log,
+        )
+        try:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise RuntimeError(log_path.read_text())
+                match = re.search(r"Listening at: http://127\.0\.0\.1:(\d+)", log_path.read_text())
+                if match:
+                    connection = http.client.HTTPConnection("127.0.0.1", int(match[1]), timeout=10)
+                    try:
+                        connection.request("GET", "/")
+                        response = connection.getresponse()
+                        body = response.read()
+                        check("installed Gunicorn serves HTTP", response.status == 200 and b"<html" in body.lower())
+                    finally:
+                        connection.close()
+                    break
+                time.sleep(0.1)
+            else:
+                raise RuntimeError("Gunicorn did not start within 30 seconds")
+        except (OSError, RuntimeError, http.client.HTTPException) as exc:
+            check("installed Gunicorn serves HTTP", False, str(exc))
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+                check("Gunicorn shuts down", False, "did not exit after SIGTERM")
+
+
 def main() -> int:
     # An airgapped site's config, exercised for real: this both switches off the update check
     # (which would otherwise wait on a DNS lookup that cannot succeed) and proves the config
@@ -51,7 +97,6 @@ def main() -> int:
         f'[paths]\nwork_dir = "{work / "studies"}"\n\n[network]\nupdate_check = false\n',
         encoding="utf-8",
     )
-    import os
     os.environ["PREGDOS_CONFIG"] = str(config_path)
 
     print("Imports and package data:")
@@ -79,6 +124,8 @@ def main() -> int:
 
     check("dicomexport is installed", bool(importlib.metadata.version("dicomexport")),
           importlib.metadata.version("dicomexport"))
+    check("gunicorn is installed", bool(importlib.metadata.version("gunicorn")),
+          importlib.metadata.version("gunicorn"))
     check("config.toml.example ships", "[scheduler]" in config.example_text())
     check("config file is honoured", config.load().network.update_check is False)
 
@@ -112,6 +159,8 @@ def main() -> int:
         check("/about reports a dicomexport version", "dicomexport" in about)
         check("/about shows the update check is off", "update check disabled" in about)
 
+    print("\nInstalled web server:")
+    check_server(work, config_path)
     print()
     if FAILURES:
         print(f"FAILED: {len(FAILURES)} check(s): {', '.join(FAILURES)}")

@@ -3,7 +3,7 @@
 Single Docker container running the full PregDos pipeline:
 - **OpenTOPAS** (Geant4 + TOPAS Monte Carlo simulation)
 - **SLURM** (job scheduling, compiled without systemd)
-- **Pregdos webserver** (Flask frontend)
+- **PregDos webserver** (Flask application served by Gunicorn)
 
 The pregdos image does **not** recompile Geant4 or OpenTOPAS — it reuses a
 pre-built OpenTOPAS image. Build that first, then build this one.
@@ -55,7 +55,10 @@ To debug interactively:
 docker exec -it $(docker ps -q --filter ancestor=pregdos) /bin/bash
 ```
 
-The webserver starts automatically and is available at http://localhost:5000.
+The webserver starts automatically and is available at http://localhost:5000. Gunicorn runs
+in the foreground with one worker and eight threads; flags after the image name go to
+`pregdos-web`, for example `--workers 2`. Use `docker stop --time 130` to allow the
+120-second graceful shutdown period for in-flight requests.
 
 ## Submit jobs
 

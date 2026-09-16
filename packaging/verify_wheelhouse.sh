@@ -14,6 +14,7 @@
 set -euo pipefail
 
 TARGET="${1:?usage: verify_wheelhouse.sh <tarball|directory>}"
+PYTHON="${PYTHON:-python3}"
 
 # A directory is accepted because the caller often has one tarball in a known place but not
 # its exact name (the version is derived by setuptools-scm).  Globbing at the call site does
@@ -47,7 +48,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 echo "== confirming this environment really has no network =="
-python3 - <<'PY'
+"$PYTHON" - <<'PY'
 import socket
 try:
     socket.create_connection(("pypi.org", 443), timeout=5)
@@ -70,7 +71,6 @@ echo "   all files match sha256sums"
 # before installing: on RHEL 9 `python3` is 3.9, and pip's failure for a cp311-only wheel is
 # "No matching distribution found for numpy", which reads like a missing wheel rather than
 # the wrong interpreter.  $PYTHON overrides the interpreter used.
-PYTHON="${PYTHON:-python3}"
 case "$(basename "$TARBALL")" in
     *-cp3*) tag=$(basename "$TARBALL" | sed -n 's/.*-cp3\([0-9]*\)-.*/3.\1/p') ;;
     *)      tag="" ;;
@@ -85,9 +85,9 @@ if [ -n "$tag" ]; then
 fi
 
 echo "== installing offline =="
-"$PYTHON" -m venv "$WORK/venv"
-"$WORK/venv/bin/pip" install --no-index --find-links=wheelhouse pregdos
-"$WORK/venv/bin/pip" check
+"$PYTHON" -m venv "$WORK/.venv"
+"$WORK/.venv/bin/pip" install --no-index --find-links=wheelhouse pregdos
+"$WORK/.venv/bin/pip" check
 
 echo "== verifying the install serves pages =="
-"$WORK/venv/bin/python" verify_offline_install.py
+"$WORK/.venv/bin/python" verify_offline_install.py

@@ -14,6 +14,6 @@ service munge start
 slurmctld
 runuser -u slurm -- slurmd
 
-pregdos-web &
-
-exec "$@"
+# Gunicorn is the foreground process: container signals reach its master, and a server
+# failure stops the container instead of leaving a healthy-looking idle shell behind.
+exec pregdos-web "$@"

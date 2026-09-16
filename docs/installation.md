@@ -14,6 +14,7 @@ SLURM is not required: if `sbatch` is unavailable, PregDos uses its local FIFO e
 
 ### Prerequisites
 
+- Linux or macOS; on Windows, use WSL2 or Docker. Gunicorn does not run natively on Windows.
 - Python 3.11 or newer. (On RHEL 9 the system `python3` is 3.9 — install the `python3.11`
   AppStream package and build the venv with it.)
 - A working OpenTOPAS 4.2.3+ installation.
@@ -57,6 +58,13 @@ pregdos-web
 
 Open http://localhost:5000.
 
+`pregdos-web` runs Gunicorn with **one worker and eight request threads**. Use `--workers N`
+and `--threads N` to tune concurrency. It keeps the existing configuration and validates the
+effective listener, TLS files, and authentication backend before Gunicorn starts. Do not
+replace it with a bare `gunicorn pregdos.webserver:app` command, which bypasses those checks.
+`GUNICORN_CMD_ARGS` and `gunicorn.conf.py` are intentionally not read by this launcher.
+`PREGDOS_DEBUG` no longer enables a debugger; it is ignored with a warning.
+
 ### Airgapped Install (No Network At All)
 
 Releases carry an **offline wheelhouse**: one tarball with PregDos, `dicomexport`, and every
@@ -79,7 +87,7 @@ sudo /opt/pregdos/venv/bin/pip install --no-index --find-links=wheelhouse pregdo
 /opt/pregdos/venv/bin/python verify_offline_install.py
 ```
 
-The last step renders real pages rather than only importing the module — the bundled
+The last step starts the installed Gunicorn server on loopback and renders real pages — the bundled
 templates, beam models and CT-number-to-material tables resolve at runtime, so a packaging gap shows up as a
 broken page, not an import error. CI runs the same script against the same tarball, in a
 container with no network, before the release is published.
@@ -175,8 +183,7 @@ port = 8080
 `pregdos-web --host ADDR --port N` overrides the file for one invocation, the same way
 `--config` overrides `$PREGDOS_CONFIG`.
 
-The built-in server can also terminate TLS, which is worth doing even for a trial on a shared
-network:
+Gunicorn can terminate TLS directly, without requiring nginx:
 
 ```toml
 [server]
@@ -185,12 +192,19 @@ ssl_key  = "/etc/pregdos/key.pem"
 ```
 
 Both keys or neither — setting one is a startup error rather than a quiet fall back to plain
-HTTP. TLS handshakes run in individual request threads and time out after five seconds, so a
-client that connects without completing TLS cannot block other clients. Subsequent socket
-reads and writes time out after 120 seconds; this also applies to plain HTTP. This bounds
-blocking I/O operations, not the total duration of an upload, download, or server-side
-processing. The built-in server remains a development server; migration to a production
-WSGI server is tracked in #90.
+HTTP. TLS handshakes run in request threads and time out after five seconds once data arrives.
+A completely silent TCP connection is deferred and closed by Gunicorn's initial-data and
+keepalive timers (about seven seconds). Subsequent socket reads and writes time out after
+120 seconds, including plain HTTP. These are I/O limits, not total request deadlines:
+large uploads and streamed downloads can run longer while making progress. The worker
+watchdog and graceful shutdown allowance are also 120 seconds, with different purposes:
+the watchdog detects a stalled worker process, and shutdown allows in-flight requests to finish.
+
+There is no aggregate upload byte limit: studies larger than 100 MB are supported. Folder
+uploads allow up to 20,000 multipart parts (files plus form controls); ZIP uploads count as
+one file part. Provide temporary disk space for uploaded files as well as the study directory.
+If a site adds nginx, its upload-size limit and request/response buffering must be configured
+for these large transfers; nginx is not included or required by the wheelhouse.
 
 A self-signed certificate works and is generated in one line:
 
@@ -207,10 +221,8 @@ reject a certificate without a matching SAN outright (`ERR_CERT_COMMON_NAME_INVA
 than offering the usual "proceed anyway" — so a CN-only certificate fails in a way that looks
 like a server fault. List every name users will type, including the bare hostname and the IP.
 
-Be clear about what that buys: encryption on the wire, from the **development** server. It is
-not a production WSGI deployment (issue #90), and encryption is not authentication — that is
-[Authentication](#authentication) below, which is optional and off by default, so on a default
-install anyone who can reach the port can read every study on the server. The two are checked
+TLS provides encryption on the wire. [Authentication](#authentication) is optional and off
+by default, so anyone who can reach a default install can read every study on the server. The two are checked
 together at startup: turning a login on over plain HTTP on a non-loopback address is refused.
 A self-signed certificate also
 shows every user a browser warning, which trains exactly the wrong reflex for a clinical tool;
@@ -358,14 +370,8 @@ sudo -u pregdos /opt/pregdos/venv/bin/pregdos-passwd --config /etc/pregdos/confi
 `add` on an existing account changes its password. The file must stay mode 0600; PregDos
 refuses to read it otherwise.
 
-**On Windows that check is skipped**, and this is worth knowing rather than discovering.
-Windows has no POSIX permission bits — `os.stat` reports 0666 for any ordinary file — so the
-test cannot distinguish a protected file from an exposed one, and PregDos does not fake an
-answer it cannot compute. Answering it properly means reading the DACL, which needs a
-dependency this project does not carry for a platform where PregDos runs as one person on
-their own desktop. Keep the password file and the session key under `%LOCALAPPDATA%`, whose
-inherited ACL is what actually protects them there. The startup log says when the check was
-skipped. The same applies to the session signing key.
+On Windows, run the server under WSL2 or Docker and store the password file and session
+key in the Linux filesystem, where the same 0600 permission checks apply.
 
 **Order matters.** Create the first account *before* restarting with `[auth]` enabled: with
 the method set and no accounts present, the server refuses to start rather than come up with
@@ -472,11 +478,9 @@ An unknown key, an unknown section or a wrong type is a startup error naming the
 key — a typo never silently does nothing. `pregdos-web --config PATH` validates before binding
 a port, so a bad file fails immediately rather than on whichever page first reads it.
 
-> `--config` is a CLI flag, so a WSGI server, which imports the app rather than running the
-> `pregdos-web` entry point, never sees it. Use `PREGDOS_CONFIG` in the unit file for those
-> deployments — and serve **`pregdos.wsgi:app`**, not `pregdos.webserver:app`. Only the former
-> provisions the persistent session key; the latter leaves each worker on a fresh deployment to
-> invent its own, so cookies signed by one worker are rejected by the next.
+`pregdos-web --config PATH` and `PREGDOS_CONFIG` both work with the Gunicorn launcher.
+The shipped systemd unit uses the environment variable and keeps the same `pregdos-web`
+command, so an offline package upgrade requires no new service command or proxy.
 
 The sections are `[paths]` (`work_dir`, `topas_bin`, `dicomexport`, `dicomexport_timeout`),
 `[scheduler]` (see below), `[server]` (`host`, `port`, `ssl_cert`, `ssl_key`), `[auth]` (see
@@ -545,7 +549,7 @@ Environment variables override the config file. Set these before running `pregdo
 | `TOPAS_BIN` | `topas` | TOPAS executable used by local runs and version checks. |
 | `PREGDOS_EXECUTOR` | `auto` | `auto`, `local`, or `slurm`. `auto` uses SLURM when `sbatch` exists, otherwise local execution. |
 | `PREGDOS_SECRET_KEY` | see below | Flask session signing key. Usually you do not need to set it: `pregdos-web` generates one at `$STATE_DIRECTORY/secret_key` (`/var/lib/pregdos/secret_key` under the shipped systemd unit) on first start, mode 0600, and reuses it forever after. Set this variable only where there is no persistent state directory — the container being the case it exists for. |
-| `PREGDOS_DEBUG` | unset | Set to `1` only for local Flask debugging. |
+| `PREGDOS_DEBUG` | ignored | Legacy flag; Gunicorn never exposes the Flask debugger. |
 
 Example local setup:
 

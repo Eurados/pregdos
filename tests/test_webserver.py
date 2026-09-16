@@ -420,20 +420,12 @@ def test_submit_refused_on_broken_toolchain(client, tmp_path, monkeypatch):
     assert not (run_dir / "run.json").exists()      # nothing was launched
 
 
-def test_debug_is_off_by_default(monkeypatch, mocker):
-    from pregdos import webserver
-    monkeypatch.delenv("PREGDOS_DEBUG", raising=False)
-    run = mocker.patch.object(webserver.app, "run")
-    webserver.main([])   # explicit argv: main() would otherwise parse pytest's own
-    assert run.call_args.kwargs["debug"] is False
-
-
-def test_debug_opt_in_via_env(monkeypatch, mocker):
-    from pregdos import webserver
+def test_debug_env_cannot_enable_an_interactive_debugger(monkeypatch, mocker, capsys):
     monkeypatch.setenv("PREGDOS_DEBUG", "1")
-    run = mocker.patch.object(webserver.app, "run")
-    webserver.main([])   # explicit argv: main() would otherwise parse pytest's own
-    assert run.call_args.kwargs["debug"] is True
+    run = mocker.patch("pregdos.server.serve")
+    webserver.main([])
+    assert "PREGDOS_DEBUG is ignored" in capsys.readouterr().err
+    assert "debug" not in run.call_args.kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -443,17 +435,18 @@ def test_debug_opt_in_via_env(monkeypatch, mocker):
 def test_listen_address_defaults_to_all_interfaces_on_5000(mocker):
     """The historical hard-coded values are still the defaults -- the container relies on them."""
     from pregdos import webserver
-    run = mocker.patch.object(webserver.app, "run")
+    run = mocker.patch("pregdos.server.serve")
     webserver.main([])
     assert run.call_args.kwargs["host"] == "0.0.0.0"
     assert run.call_args.kwargs["port"] == 5000
-    assert run.call_args.kwargs["ssl_context"] is None
+    assert run.call_args.kwargs["certfile"] is None
+    assert run.call_args.kwargs["keyfile"] is None
 
 
 def test_config_file_moves_the_listen_address(write_config, mocker):
     from pregdos import webserver
     write_config('[server]\nhost = "127.0.0.1"\nport = 8080\n')
-    run = mocker.patch.object(webserver.app, "run")
+    run = mocker.patch("pregdos.server.serve")
     webserver.main([])
     assert run.call_args.kwargs["host"] == "127.0.0.1"
     assert run.call_args.kwargs["port"] == 8080
@@ -462,7 +455,7 @@ def test_config_file_moves_the_listen_address(write_config, mocker):
 def test_flags_beat_the_config_file(write_config, mocker):
     from pregdos import webserver
     write_config('[server]\nhost = "127.0.0.1"\nport = 8080\n')
-    run = mocker.patch.object(webserver.app, "run")
+    run = mocker.patch("pregdos.server.serve")
     webserver.main(["--host", "10.0.0.1", "--port", "9999"])
     assert run.call_args.kwargs["host"] == "10.0.0.1"
     assert run.call_args.kwargs["port"] == 9999
@@ -471,14 +464,14 @@ def test_flags_beat_the_config_file(write_config, mocker):
 def test_port_zero_stays_expressible_on_the_command_line(mocker):
     """0 means "bind an ephemeral port", so the override cannot be a truthiness test."""
     from pregdos import webserver
-    run = mocker.patch.object(webserver.app, "run")
+    run = mocker.patch("pregdos.server.serve")
     webserver.main(["--port", "0"])
     assert run.call_args.kwargs["port"] == 0
 
 
 def test_out_of_range_port_flag_is_rejected_before_binding(mocker):
     from pregdos import webserver
-    run = mocker.patch.object(webserver.app, "run")
+    run = mocker.patch("pregdos.server.serve")
     with pytest.raises(SystemExit) as exc:
         webserver.main(["--port", "70000"])
     assert exc.value.code == 2
@@ -491,13 +484,12 @@ def test_tls_pair_is_passed_to_the_server(tmp_path, write_config, mocker):
     cert.write_text("-----BEGIN CERTIFICATE-----\n")
     key.write_text("-----BEGIN PRIVATE KEY-----\n")
     write_config(f'[server]\nssl_cert = "{cert}"\nssl_key = "{key}"\n')
-    context = mocker.patch.object(webserver, "server_context")
-    run = mocker.patch.object(webserver.app, "run")
+    context = mocker.patch("pregdos.webserver.ssl.SSLContext")
+    run = mocker.patch("pregdos.server.serve")
     webserver.main([])
-    context.assert_called_once_with(str(cert), str(key))
-    assert run.call_args.kwargs["ssl_context"] is context.return_value
-    assert run.call_args.kwargs["request_handler"] is webserver.TLSRequestHandler
-    assert run.call_args.kwargs["threaded"] is True
+    context.return_value.load_cert_chain.assert_called_once_with(str(cert), str(key))
+    assert run.call_args.kwargs["certfile"] == str(cert)
+    assert run.call_args.kwargs["keyfile"] == str(key)
 
 
 def test_invalid_certificate_is_rejected_before_binding(tmp_path, write_config, mocker, capsys):
@@ -505,7 +497,7 @@ def test_invalid_certificate_is_rejected_before_binding(tmp_path, write_config, 
     cert.write_text("not a certificate")
     key.write_text("not a key")
     write_config(f'[server]\nssl_cert = "{cert}"\nssl_key = "{key}"\n')
-    run = mocker.patch.object(webserver.app, "run")
+    run = mocker.patch("pregdos.server.serve")
     with pytest.raises(SystemExit) as exc:
         webserver.main([])
     assert exc.value.code == 2
@@ -519,7 +511,7 @@ def test_missing_certificate_file_is_named_before_binding(tmp_path, write_config
     key = tmp_path / "key.pem"
     key.write_text("-----BEGIN PRIVATE KEY-----\n")
     write_config(f'[server]\nssl_cert = "{tmp_path / "absent.pem"}"\nssl_key = "{key}"\n')
-    run = mocker.patch.object(webserver.app, "run")
+    run = mocker.patch("pregdos.server.serve")
     with pytest.raises(SystemExit) as exc:
         webserver.main([])
     assert exc.value.code == 2
@@ -2288,7 +2280,7 @@ def test_main_config_flag_is_applied_before_work_dir_is_read(tmp_path, monkeypat
     monkeypatch.delenv("PREGDOS_WORK_DIR", raising=False)
     path = tmp_path / "site.toml"
     path.write_text('[paths]\nwork_dir = "/srv/from-cli"\n')
-    mocker.patch.object(webserver.app, "run")
+    mocker.patch("pregdos.server.serve")
     try:
         webserver.main(["--config", str(path)])
         assert webserver.app.config["WORK_DIR"] == "/srv/from-cli"
@@ -2302,7 +2294,7 @@ def test_main_rejects_a_bad_config_before_binding_a_port(tmp_path, monkeypatch, 
 
     path = tmp_path / "bad.toml"
     path.write_text('[paths]\nwork_dr = "/typo"\n')
-    run = mocker.patch.object(webserver.app, "run")
+    run = mocker.patch("pregdos.server.serve")
     try:
         with pytest.raises(SystemExit) as exc:
             webserver.main(["--config", str(path)])
