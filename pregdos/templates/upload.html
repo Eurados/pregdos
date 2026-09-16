@@ -39,7 +39,8 @@
     </div>
 
     <div class="form-row">
-      <label for="spr_table_source">SPR-to-Material Table</label>
+      <label for="spr_table_source"
+             title="The bundled table converts Hounsfield units, which is what a conventional CT and a monoenergetic dual-energy reconstruction both hold. If you upload your own, it must expect the same quantity your images hold: HUtoMaterial* for Hounsfield units, SPRtoMaterial* for a stopping-power-ratio map. PregDos cannot check this — DICOM reports &quot;HU&quot; either way — and the wrong table gives a plausible, wrong dose.">Imaging-value-to-material table ⓘ</label>
       <select id="spr_table_source" name="spr_table_source" class="select-input" onchange="toggleUpload('spr_table', this.value)">
         {% for t in builtin_spr_tables %}
           <option value="{{ t.name }}">{{ t.label }}</option>
@@ -49,7 +50,9 @@
       <div id="spr_table_upload_row" style="display:none; margin-top:6px">
         <input id="spr_table" type="file" name="spr_table" accept=".txt,.csv" />
       </div>
-      <small class="hint">Choose a bundled table or upload your own.</small>
+      <small class="hint">The bundled table converts <strong>Hounsfield units</strong>. If you
+        upload your own, it must expect the quantity your images actually hold — PregDos cannot
+        check this for you.</small>
     </div>
 
     <div class="actions">
