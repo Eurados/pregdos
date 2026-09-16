@@ -30,6 +30,7 @@ references its DICOM and CT-number-to-material table by paths relative to that d
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -43,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from . import config, portable
+from . import config, portable, structure_metrics
 from .textio import read_text_lenient
 
 # Backend identifiers, also written into run.json.
@@ -203,6 +204,8 @@ class RunInfo:
     submitted: str
     fields: List[FieldJob] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+    material_table: str = ""
+    material_table_sha256: str = ""
 
 
 def _write_run_metadata(run_dir: Path, info: RunInfo) -> None:
@@ -224,6 +227,8 @@ def _write_run_metadata(run_dir: Path, info: RunInfo) -> None:
         "backend": info.backend,
         "submitted": info.submitted,
         "fields": [{"topas_file": f.topas_file, "ident": f.ident} for f in info.fields],
+        "material_table": info.material_table,
+        "material_table_sha256": info.material_table_sha256,
     }
     fd, tmp_name = tempfile.mkstemp(dir=str(run_dir), prefix=RUN_METADATA + ".", suffix=".tmp")
     tmp = Path(tmp_name)
@@ -276,10 +281,14 @@ def read_run_metadata(run_dir: str | os.PathLike) -> Optional[RunInfo]:
 
     backend = raw.get("backend")
     submitted = raw.get("submitted")
+    material_table = raw.get("material_table")
+    material_table_sha256 = raw.get("material_table_sha256")
     return RunInfo(
         backend=backend if backend in (SLURM, LOCAL) else LOCAL,
         submitted=submitted if isinstance(submitted, str) else "",
         fields=fields,
+        material_table=material_table if isinstance(material_table, str) else "",
+        material_table_sha256=material_table_sha256 if isinstance(material_table_sha256, str) else "",
     )
 
 
@@ -523,6 +532,25 @@ def _submit_local(run_dir: Path, topas_files: List[str], info: RunInfo) -> None:
         info.fields = refreshed.fields
 
 
+def _material_table_identity(run_dir: Path, topas_files: List[str]) -> tuple[str, str]:
+    """Snapshot the one table included by PregDos's generated fields and mask pre-pass.
+
+    Hash the bytes at submission, not when a report is downloaded: the study's table
+    could have been changed or removed by then. Missing inputs leave provenance unknown.
+    """
+    if not topas_files:
+        return "", ""
+    try:
+        text = read_text_lenient(run_dir / topas_files[0])
+        value = structure_metrics.parameter_value(text, "includeFile")
+        if not value:
+            return "", ""
+        table = run_dir / structure_metrics.quoted_or_raw(value)
+        return table.name, hashlib.sha256(table.read_bytes()).hexdigest()
+    except (OSError, ValueError):
+        return "", ""
+
+
 def submit_run(run_dir: str | os.PathLike, topas_files: List[str]) -> RunInfo:
     """Execute every field of a conversion, in the directory it was generated in.
 
@@ -533,6 +561,7 @@ def submit_run(run_dir: str | os.PathLike, topas_files: List[str]) -> RunInfo:
     run_dir = Path(run_dir)
     backend = select_backend()
     info = RunInfo(backend=backend, submitted=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    info.material_table, info.material_table_sha256 = _material_table_identity(run_dir, topas_files)
 
     # Do this here rather than at conversion time: the thread count has to match the CPUs
     # this run is about to be given, and `cpus_per_task` can change between converting a

@@ -37,7 +37,16 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 # web = ["streamlit>=1.12.0"]
-dev = ["ruff>=0.15.7", "pytest>=7.2.1", "pytest-mock>=3.10.0", "pyright>=1.1.400"]
+dev = [
+    "ruff>=0.15.7",
+    "pytest>=7.2.1",
+    "pytest-mock>=3.10.0",
+    # Pinned, not a floor: pyright enables new checks in new releases, so an unpinned
+    # upgrade turns a green branch red for reasons that have nothing to do with the branch.
+    # Dependabot raises the bump as its own PR, where CI runs the new version in isolation --
+    # a release that finds new problems fails that PR, not somebody else's.
+    "pyright==1.1.411",
+]
 
 [project.scripts]
 pregdos-web = "pregdos.webserver:main"

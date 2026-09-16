@@ -1402,7 +1402,7 @@ def download_pdf_report(study, run_id):
         plan_fractions=plan_fractions,
         plan_uid=results.plan_uid(run_dir),
         generated_at=datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"),
-        provenance=reporting.report_provenance(),
+        provenance=reporting.report_provenance(run_dir),
     )
     return Response(
         pdf,

@@ -369,8 +369,8 @@ def test_no_tls_is_still_fine_while_there_is_no_login(write_config):
 
 @pytest.mark.parametrize("host, expected", [
     ("0.0.0.0", True),
-    ("10.141.32.194", True),
-    ("exrhel0583.it.rm.dk", True),
+    ("10.0.0.1", True),
+    ("server.example.org", True),
     ("127.0.0.1", False),
     ("::1", False),
     ("localhost", False),

@@ -35,6 +35,9 @@ from . import config
 UNKNOWN = "unknown"
 
 # Minimum OpenTOPAS that reports a trustworthy scorer Sum and Standard_Deviation (#49).
+# DCPT's `module load opentopas/4.2` reports exactly 4.2.p3, so the site sits on the floor
+# with zero margin.  That is deliberate, not an oversight: 4.2.p3 *is* the build that fixed
+# #49, and any site on an older module should fail this check.  Confirmed 2026-09-09.
 MINIMUM_TOPAS = (4, 2, 3)
 
 # Minimum dicomexport PregDos will compute with.  1.5.0 brought the field-numbering contract

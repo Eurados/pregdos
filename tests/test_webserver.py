@@ -1368,7 +1368,26 @@ def test_report_csv_download(client, tmp_path):
     assert "DoseEquivNeutron_BrainStem" in body and "NeutronDoseEquivalent" in body
     assert "# PregDos Dose Report" in body
     assert "# PregDos" in body and "# TOPAS" in body
+    assert "# Material table,unavailable" in body
     assert "issue #50" in body
+
+
+def test_reports_show_saved_material_filename_and_short_hash(client, tmp_path):
+    run_id, run_dir = _completed_run(tmp_path)
+    info = executor.read_run_metadata(run_dir)
+    info.material_table = "HUtoMaterialSite.txt"
+    info.material_table_sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    executor._write_run_metadata(run_dir, info)
+    # A different file on disk must not replace the recorded submission-time identity.
+    (run_dir.parent / info.material_table).write_bytes(b"changed")
+
+    response = client.get(f"/studies/alpha/{run_id}/report.csv")
+    rows = list(csv.reader(io.StringIO(response.data.decode())))
+    assert ["# Material table", "HUtoMaterialSite.txt (ba7816bf)"] in rows
+
+    response = client.get(f"/studies/alpha/{run_id}/report.pdf")
+    assert response.status_code == 200
+    assert response.data.startswith(b"%PDF")
 
 
 def test_report_csv_includes_units_row_before_results(client, tmp_path):
@@ -1568,9 +1587,9 @@ def test_pdf_reports_the_rtplan_uid_at_full_width(monkeypatch):
     calls = []
     original = report_pdf.ReportPDF.kv_table
 
-    def spy(self, items, cols=2):
+    def spy(self, items, cols=2, **kwargs):
         calls.append((items, cols))
-        return original(self, items, cols=cols)
+        return original(self, items, cols=cols, **kwargs)
 
     monkeypatch.setattr(report_pdf.ReportPDF, "kv_table", spy)
     uid = "1.2.246.352.71.5.37402163639.265919.20240227185649"

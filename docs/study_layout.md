@@ -30,6 +30,11 @@ and auto-reaped after ~30 days so stale runs do not pile up.
 The exact files depend on selected scorers, executor backend, and whether DICOM RTDOSE export
 was requested.
 
+At submission, `run.json` records the material conversion table's filename and full SHA-256
+hash. CSV and PDF reports carry that as one field, `filename (12345678)`, where the hash is
+truncated to its first eight characters. Older runs without this metadata report the table
+as unavailable.
+
 ## Study Names And Run IDs
 
 Study names are sanitized into a single path component. Re-uploading a study with the same name

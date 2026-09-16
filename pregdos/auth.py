@@ -496,7 +496,7 @@ def login_hint(cfg: config.Config | None = None) -> str:
     """What to tell people on the sign-in form about *which* password to type.
 
     ``[auth] login_hint`` wins over the backend's own wording, so a site can name its actual
-    credential store -- "your Samba password for \\\\exrhel0583", say -- or write it in the
+    credential store -- "your Samba password for \\\\fileserver", say -- or write it in the
     language the people typing it read.  Rendered through Jinja, so it is escaped; it is text,
     not markup.
     """

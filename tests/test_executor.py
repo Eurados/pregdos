@@ -62,6 +62,30 @@ def test_field_command_quotes_hostile_names(monkeypatch):
 
 # --- local backend ---
 
+@pytest.mark.parametrize("backend", [executor.SLURM, executor.LOCAL])
+def test_submission_preserves_material_identity_after_file_changes(run_dir, monkeypatch, mocker, backend):
+    table = run_dir.parent / "HUtoMaterial Site.txt"
+    table.write_bytes(b"abc")
+    (run_dir / "topas_field01.txt").write_text(
+        'includeFile = "../HUtoMaterial Site.txt" # selected table\n'
+    )
+    monkeypatch.setenv("PREGDOS_EXECUTOR", backend)
+    mocker.patch.object(executor.subprocess, "run", return_value=mocker.Mock(
+        returncode=0, stdout="Submitted batch job 123\n"))
+    mocker.patch.object(executor, "start_next_local_run")
+
+    executor.submit_run(run_dir, ["topas_field01.txt"])
+    table.write_bytes(b"changed after submission")
+    saved = executor.read_run_metadata(run_dir)
+    assert saved.material_table == "HUtoMaterial Site.txt"
+    assert saved.material_table_sha256 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+    # The local scheduler rewrites run metadata as queued fields acquire process ids.
+    executor._write_run_metadata(run_dir, saved)
+    table.unlink()
+    assert executor.read_run_metadata(run_dir).material_table_sha256 == saved.material_table_sha256
+
+
 def _wait_for(path: Path, timeout=10.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
