@@ -164,7 +164,7 @@ def test_relative_to_run_points_out_of_the_run_dir(tmp_path):
     _, run_dir = studies.create_run(tmp_path, "s")
 
     assert studies.relative_to_run(studies.dicom_path(tmp_path, "s"), run_dir) == "../dicom"
-    assert studies.relative_to_run(studies.study_path(tmp_path, "s") / "spr.txt", run_dir) == "../spr.txt"
+    assert studies.relative_to_run(studies.study_path(tmp_path, "s") / "material.txt", run_dir) == "../material.txt"
 
 
 def test_find_rtstruct_searches_recursively(tmp_path):

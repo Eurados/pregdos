@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}New Simulation · PregDos{% endblock %}
 {% block heading %}New simulation{% endblock %}
-{% block subtitle %}Upload a DICOM study (ZIP or folder), beam model CSV, and imaging-value-to-material table{% endblock %}
+{% block subtitle %}Upload a DICOM study (ZIP or folder), beam model CSV, and CT-number-to-material table{% endblock %}
 
 {% block content %}
 <section class="card">
@@ -39,20 +39,19 @@
     </div>
 
     <div class="form-row">
-      <label for="spr_table_source"
-             title="The bundled table converts Hounsfield units, which is what a conventional CT and a monoenergetic dual-energy reconstruction both hold. If you upload your own, it must expect the same quantity your images hold: HUtoMaterial* for Hounsfield units, SPRtoMaterial* for a stopping-power-ratio map. PregDos cannot check this — DICOM reports &quot;HU&quot; either way — and the wrong table gives a plausible, wrong dose.">Imaging-value-to-material table ⓘ</label>
-      <select id="spr_table_source" name="spr_table_source" class="select-input" onchange="toggleUpload('spr_table', this.value)">
-        {% for t in builtin_spr_tables %}
+      <label for="material_table_source"
+             title="Supply a TOPAS Schneider table indexed by CT number (Hounsfield units), prepared for your site's calibration. You are responsible for matching the table to the images; DICOM labels alone cannot establish this.">CT-number-to-material table ⓘ</label>
+      <select id="material_table_source" name="material_table_source" class="select-input" onchange="toggleUpload('material_table', this.value)">
+        {% for t in builtin_material_tables %}
           <option value="{{ t.name }}">{{ t.label }}</option>
         {% endfor %}
         <option value="upload">Upload from computer…</option>
       </select>
-      <div id="spr_table_upload_row" style="display:none; margin-top:6px">
-        <input id="spr_table" type="file" name="spr_table" accept=".txt,.csv" />
+      <div id="material_table_upload_row" style="display:none; margin-top:6px">
+        <input id="material_table" type="file" name="material_table" accept=".txt,.csv" />
       </div>
-      <small class="hint">The bundled table converts <strong>Hounsfield units</strong>. If you
-        upload your own, it must expect the quantity your images actually hold — PregDos cannot
-        check this for you.</small>
+      <small class="hint">Upload a table prepared for your site's CT calibration. The bundled
+        HUtoMaterialSchneider.txt is an example with XiO-specific density corrections.</small>
     </div>
 
     <div class="actions">

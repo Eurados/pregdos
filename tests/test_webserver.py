@@ -41,7 +41,7 @@ def _make_study(tmp_path, name="mystudy"):
     """Create a study on disk as /upload would leave it."""
     _, path = studies.create_study(tmp_path, name)
     (path / "beam.csv").write_text("col1,col2")
-    (path / "spr.txt").write_text("hu,material")
+    (path / "material.txt").write_text("hu,material")
     return path
 
 
@@ -57,7 +57,7 @@ def test_upload_page_loads(client):
 def test_every_bundled_table_is_ct_number_indexed():
     """No bundled conversion table may expect a quantity other than CT number (#106).
 
-    `_builtin_spr_tables` globs the data directory, so restoring a deleted
+    `_builtin_material_tables` globs the data directory, so restoring a deleted
     `SPRtoMaterial__*.txt` puts it straight back into the upload dropdown with nothing
     objecting.  The filename prefix is the only thing that distinguishes the two --
     TOPAS's Schneider converter maps an integer to a material and is indifferent to what
@@ -67,7 +67,7 @@ def test_every_bundled_table_is_ct_number_indexed():
     Deliberately a prefix rule rather than an exact inventory: bundling a second
     HU-indexed table is a legitimate change, bundling an SPR-indexed one is not.
     """
-    names = [t["name"] for t in webserver._builtin_spr_tables()]
+    names = [t["name"] for t in webserver._builtin_material_tables()]
     assert names, "no bundled conversion table found at all"
     offenders = [n for n in names if not n.startswith("HUtoMaterial")]
     assert not offenders, (
@@ -93,7 +93,7 @@ def test_upload_missing_beam_model(client):
 def test_upload_missing_study(client):
     data = {
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
-        "spr_table": (io.BytesIO(b"data"), "spr.txt"),
+        "material_table": (io.BytesIO(b"data"), "material.txt"),
     }
     response = client.post("/upload", data=data, content_type="multipart/form-data", follow_redirects=True)
     assert response.status_code == 200
@@ -103,7 +103,7 @@ def test_upload_missing_study(client):
 def test_upload_both_zip_and_folder_rejected(client):
     data = {
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
-        "spr_table": (io.BytesIO(b"data"), "spr.txt"),
+        "material_table": (io.BytesIO(b"data"), "material.txt"),
         "study_zip": (io.BytesIO(b"PK\x03\x04"), "study.zip"),
         "study_dir": (io.BytesIO(b"data"), "study/file.dcm"),
     }
@@ -116,7 +116,7 @@ def test_upload_of_non_dicom_leaves_no_study_behind(client, tmp_path):
     """A failed upload must not leave a half-populated study directory."""
     data = {
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
-        "spr_table": (io.BytesIO(b"data"), "spr.txt"),
+        "material_table": (io.BytesIO(b"data"), "material.txt"),
         "study_dir": (io.BytesIO(b"data"), "study/CT.1.dcm"),
     }
     response = client.post("/upload", data=data, content_type="multipart/form-data", follow_redirects=True)
@@ -140,7 +140,7 @@ def _dir_upload(source_root, prefix="study"):
 def _upload_data(source_root, prefix="study"):
     return {
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
-        "spr_table": (io.BytesIO(b"data"), "spr.txt"),
+        "material_table": (io.BytesIO(b"data"), "material.txt"),
         "study_dir": _dir_upload(source_root, prefix),
     }
 
@@ -773,7 +773,7 @@ def _convert_form(tmp_path, overrides=None):
     data = {
         "study_name": "mystudy",
         "beam_model_name": "beam.csv",
-        "spr_table_name": "spr.txt",
+        "material_table_name": "material.txt",
         "nstat": "1000000",
         "output_basename": "topas",
         "keep_infield": "1",
@@ -880,7 +880,7 @@ def test_convert_accepts_the_in_field_scorer_alone(client, tmp_path, mocker):
 # mimic dicomexport echoing its arguments verbatim.
 _FAKE_TOPAS_TEMPLATE = (
     '# fake dicomexport output\n'
-    'includeFile                          = {spr}\n'
+    'includeFile                          = {material}\n'
     's:Ge/World/Type                      = "TsBox"\n'
     's:Ge/World/Material                  = "Air"\n'
     'd:Ge/World/HLX                       = 100 mm\n'
@@ -915,9 +915,9 @@ def _fake_dicomexport(cmd, *args, **kwargs):
     cwd = Path(kwargs["cwd"])
     output_base = cmd[-1]
     dicom_arg = cmd[-2]
-    spr_arg = cmd[cmd.index("-s") + 1]
+    material_arg = cmd[cmd.index("-s") + 1]
     (cwd / f"{output_base}_field01.txt").write_text(
-        _FAKE_TOPAS_TEMPLATE.format(spr=spr_arg, dicom=dicom_arg)
+        _FAKE_TOPAS_TEMPLATE.format(material=material_arg, dicom=dicom_arg)
     )
     result = MagicMock()
     result.returncode = 0
@@ -948,7 +948,7 @@ def test_convert_invokes_dicomexport_in_run_dir_with_relative_paths(client, tmp_
     cmd = mock_run.call_args[0][0]
     assert mock_run.call_args.kwargs["cwd"] == str(run_dir)
     assert cmd[-2] == "../dicom"
-    assert cmd[cmd.index("-s") + 1] == "../spr.txt"
+    assert cmd[cmd.index("-s") + 1] == "../material.txt"
     assert cmd[cmd.index("-b") + 1] == "../beam.csv"
 
 
@@ -962,7 +962,7 @@ def test_generated_topas_file_contains_no_absolute_paths(client, tmp_path, mocke
 
     assert str(tmp_path) not in text
     assert 's:Ge/Patient/DicomDirectory          = "../dicom"' in text
-    assert "includeFile                          = ../spr.txt" in text
+    assert "includeFile                          = ../material.txt" in text
 
 
 def test_convert_appends_selected_scorers_and_survives_rerun(client, tmp_path, mocker):
@@ -990,7 +990,7 @@ def test_convert_creates_structure_mask_prepass_from_generated_topas(client, tmp
     run_dir = studies.run_path(tmp_path, "mystudy", run_id)
     text = (run_dir / "structure_mask_prepass.txt").read_text()
 
-    assert 'includeFile                          = ../spr.txt' in text
+    assert 'includeFile                          = ../material.txt' in text
     assert 's:Ge/Patient/DicomDirectory          = "../dicom"' in text
     assert 'b:Sc/PregDosMask_CTV/SetBinToMinusOneIfNotInRTStructure = "True"' in text
     assert 'sv:Sc/PregDosMask_CTV/OnlyIncludeIfInRTStructure = 1 "CTV"' in text
@@ -1736,7 +1736,7 @@ def test_conversion_parameters_defaults():
         run_dir="/studies/mystudy/run_20260101_000000",
         dicom_rel="../dicom",
         beam_model_rel="../beam.csv",
-        spr_table_rel="../spr.txt",
+        material_table_rel="../material.txt",
         output_basename="topas",
     )
     assert p.field_nr is None
@@ -2195,7 +2195,7 @@ def _conversion_params(run_dir):
 
     return ConversionParameters(
         study_name="mystudy", run_dir=str(run_dir), dicom_rel="../dicom",
-        beam_model_rel="../bm.csv", spr_table_rel="../spr.txt", output_basename="topas",
+        beam_model_rel="../bm.csv", material_table_rel="../material.txt", output_basename="topas",
     )
 
 
@@ -2295,7 +2295,7 @@ def test_a_rejected_upload_is_not_recorded_as_an_upload(client, tmp_path, caplog
 
     data = {
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
-        "spr_table": (io.BytesIO(b"data"), "spr.txt"),
+        "material_table": (io.BytesIO(b"data"), "material.txt"),
         "study_dir": (io.BytesIO(b"data"), "study/CT.1.dcm"),
     }
     with caplog.at_level(logging.INFO, logger="pregdos.audit"):
@@ -2353,7 +2353,7 @@ def test_a_failed_conversion_is_not_recorded_as_a_conversion(client, tmp_path, m
     with caplog.at_level(logging.INFO, logger="pregdos.audit"):
         client.post("/convert", data={
             "study_name": "alpha", "beam_model_name": "beam.csv",
-            "spr_table_name": "spr.txt", "nstat": "1000",
+            "material_table_name": "material.txt", "nstat": "1000",
         }, follow_redirects=True)
 
     assert "run.convert" not in _audit_actions(caplog)
@@ -2371,7 +2371,7 @@ def test_a_successful_conversion_is_recorded(client, tmp_path, mocker, caplog):
     with caplog.at_level(logging.INFO, logger="pregdos.audit"):
         client.post("/convert", data={
             "study_name": "alpha", "beam_model_name": "beam.csv",
-            "spr_table_name": "spr.txt", "nstat": "1000", "keep_infield": "on",
+            "material_table_name": "material.txt", "nstat": "1000", "keep_infield": "on",
         }, follow_redirects=True)
 
     assert "run.convert" in _audit_actions(caplog)

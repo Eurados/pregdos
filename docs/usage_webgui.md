@@ -67,8 +67,10 @@ Provide:
 - A DICOM study, either as a ZIP or as a folder upload.
 - A beam model CSV. For the head phantom example, use one of the bundled DCPT beam models if
   offered by the UI, or upload a matching beam model CSV.
-- An SPR/material table. Use one of the bundled tables unless you are testing a specific
-  calibration.
+- A CT-number-to-material table in TOPAS Schneider format, indexed by Hounsfield units and
+  prepared for your site's CT calibration. Producing it is an external step. The bundled
+  `HUtoMaterialSchneider.txt` is an example with XiO-specific density corrections; see its
+  [input contract and numerical assumptions](../pregdos/data/ct_to_material/README.md).
 
 PregDos flattens nested uploads into a study directory while keeping the original DICOM files
 under that study's `dicom/` subdirectory.

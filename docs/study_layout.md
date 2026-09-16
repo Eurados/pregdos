@@ -15,7 +15,7 @@ and auto-reaped after ~30 days so stale runs do not pile up.
       RN...
       RD...
     <beam_model>.csv
-    <spr_table>.txt
+    <material_table>.txt
     run_<YYYYmmdd_HHMMSS>/
       run.json
       topas_field01.txt

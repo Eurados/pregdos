@@ -73,7 +73,7 @@ def test_compute_metrics_writes_the_json_and_keeps_the_masks(tmp_path, monkeypat
     _prepass_with_masks(tmp_path, structures=("CTV",))
     prepass = tmp_path / "structure_mask_prepass.txt"
     prepass.write_text(
-        "includeFile = ../spr.txt\n"
+        "includeFile = ../material.txt\n"
         's:Ge/Patient/DicomDirectory = "../dicom"\n' + prepass.read_text()
     )
     # One CT voxel outside the structure (-1) and three inside.
@@ -108,7 +108,7 @@ def test_ensure_metrics_recomputes_an_incomplete_cache_while_masks_remain(tmp_pa
     _prepass_with_masks(tmp_path, structures=("CTV",))
     prepass = tmp_path / "structure_mask_prepass.txt"
     prepass.write_text(
-        "includeFile = ../spr.txt\n"
+        "includeFile = ../material.txt\n"
         's:Ge/Patient/DicomDirectory = "../dicom"\n' + prepass.read_text()
     )
     (tmp_path / "structure_mask_CTV.bin").write_bytes(
@@ -144,7 +144,7 @@ def test_compute_metrics_rejects_a_mask_that_does_not_match_the_ct(tmp_path, mon
     _prepass_with_masks(tmp_path, structures=("CTV",))
     prepass = tmp_path / "structure_mask_prepass.txt"
     prepass.write_text(
-        "includeFile = ../spr.txt\n"
+        "includeFile = ../material.txt\n"
         's:Ge/Patient/DicomDirectory = "../dicom"\n' + prepass.read_text()
     )
     (tmp_path / "structure_mask_CTV.bin").write_bytes(
@@ -169,7 +169,7 @@ def _metrics_run_dir(root, monkeypatch, structures=("A_PTV1", "Ovary160")):
     _prepass_with_masks(root, structures=structures)
     prepass = root / "structure_mask_prepass.txt"
     prepass.write_text(
-        "includeFile = ../spr.txt\n"
+        "includeFile = ../material.txt\n"
         's:Ge/Patient/DicomDirectory = "../dicom"\n' + prepass.read_text()
     )
     for name in structures:

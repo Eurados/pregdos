@@ -259,18 +259,18 @@ def ensure_studies_root() -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Bundled beam models and SPR tables
+# Bundled beam models and CT-number-to-material tables
 # ---------------------------------------------------------------------------
 
-def _builtin_spr_tables() -> list[dict]:
-    """Return metadata for SPR tables bundled with the package.
+def _builtin_material_tables() -> list[dict]:
+    """Return metadata for CT-number-to-material tables bundled with the package.
 
     Each entry has ``name`` (filename) and ``label`` (display name for the UI).
-    Files live in ``pregdos/data/spr_tables/`` and are included as package data.
+    Files live in ``pregdos/data/ct_to_material/`` and are included as package data.
     """
-    spr_dir = importlib.resources.files("pregdos") / "data" / "spr_tables"
+    material_dir = importlib.resources.files("pregdos") / "data" / "ct_to_material"
     tables = []
-    for entry in spr_dir.iterdir():
+    for entry in material_dir.iterdir():
         if entry.name.endswith((".txt", ".csv")):
             tables.append({"name": entry.name, "label": entry.name})
     tables.sort(key=lambda t: t["name"])
@@ -289,7 +289,7 @@ def _builtin_beam_models() -> list[dict]:
 
 
 def _copy_builtin(kind: str, filename: str, dest_dir: Path) -> str:
-    """Copy a bundled beam model / SPR table into a study dir.  Return its basename."""
+    """Copy a bundled beam model / CT-number-to-material table into a study dir.  Return its basename."""
     safe = secure_filename(filename)
     src = importlib.resources.files("pregdos") / "data" / kind / safe
     if not src.is_file():
@@ -664,7 +664,7 @@ def favicon():
     return Response(svg, mimetype="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
 
 
-def _setup_page(root, study_name, beam_model_name, spr_table_name, form=None, structures=None):
+def _setup_page(root, study_name, beam_model_name, material_table_name, form=None, structures=None):
     """Render the setup page: structure/scorer matrix, in-field scorer, histories, basename.
 
     Reached twice -- straight after an upload, and again when :func:`convert` refuses a
@@ -680,7 +680,7 @@ def _setup_page(root, study_name, beam_model_name, spr_table_name, form=None, st
         structures=get_structures(root, study_name) if structures is None else structures,
         study_name=study_name,
         beam_model_name=beam_model_name,
-        spr_table_name=spr_table_name,
+        material_table_name=material_table_name,
         scorer_defs=SCORER_DEFS,
         output_basename=form.get("output_basename") or "topas",
         nstat=form.get("nstat") or "1000000",
@@ -698,24 +698,24 @@ def upload_files():
         flash(folder_err)
         return render_template("upload.html",
                                builtin_beam_models=_builtin_beam_models(),
-                               builtin_spr_tables=_builtin_spr_tables()), 500
+                               builtin_material_tables=_builtin_material_tables()), 500
 
     if request.method == "POST":
         study_zip = request.files.get("study_zip")
         study_dir_files = [f for f in (request.files.getlist("study_dir") or []) if f and f.filename]
 
-        # Beam model / SPR table: either a bundled file or an upload
+        # Beam model / CT-number-to-material table: either a bundled file or an upload
         bm_source = request.form.get("beam_model_source", "upload")
         beam_model = request.files.get("beam_model")
-        spr_source = request.form.get("spr_table_source", "upload")
-        spr_table = request.files.get("spr_table")
+        material_table_source = request.form.get("material_table_source", "upload")
+        material_table = request.files.get("material_table")
 
         # Validate input before creating anything on disk
         if bm_source == "upload" and not (beam_model and beam_model.filename):
             flash("Beam model required — choose a built-in model or upload one.")
             return redirect(request.url)
-        if spr_source == "upload" and not (spr_table and spr_table.filename):
-            flash("Imaging-value-to-material table required — choose a built-in table or upload one.")
+        if material_table_source == "upload" and not (material_table and material_table.filename):
+            flash("CT-number-to-material table required — choose a built-in table or upload one.")
             return redirect(request.url)
         if not study_zip and not study_dir_files:
             flash("Provide either a ZIP or a folder.")
@@ -750,17 +750,17 @@ def upload_files():
             notes = dicom_intake.warnings(intake)
             dicom_intake.flatten(intake)
 
-            # Copy beam model and SPR table into the study so it is self-contained:
+            # Copy beam model and CT-number-to-material table into the study so it is self-contained:
             # deleting the study removes every input it depends on, and the generated
-            # TOPAS file can reference the SPR table by a relative path.
+            # TOPAS file can reference the CT-number-to-material table by a relative path.
             if bm_source == "upload":
                 beam_model_name = save_single_file(beam_model, study_path)
             else:
                 beam_model_name = _copy_builtin("beam_models", bm_source, study_path)
-            if spr_source == "upload":
-                spr_table_name = save_single_file(spr_table, study_path)
+            if material_table_source == "upload":
+                material_table_name = save_single_file(material_table, study_path)
             else:
-                spr_table_name = _copy_builtin("spr_tables", spr_source, study_path)
+                material_table_name = _copy_builtin("ct_to_material", material_table_source, study_path)
 
             structures = get_structures(root, study_name)
             if not structures:
@@ -793,12 +793,12 @@ def upload_files():
             flash(note)
 
         # Render the combined setup page (structure inclusion + scorer selection)
-        return _setup_page(root, study_name, beam_model_name, spr_table_name,
+        return _setup_page(root, study_name, beam_model_name, material_table_name,
                            structures=structures)
     return render_template(
         "upload.html",
         builtin_beam_models=_builtin_beam_models(),
-        builtin_spr_tables=_builtin_spr_tables(),
+        builtin_material_tables=_builtin_material_tables(),
     )
 
 
@@ -814,7 +814,7 @@ def run_conversion(params: ConversionParameters, selected_structures: list) -> C
     are exactly this conversion's output -- no cross-directory search, no deduplication,
     and no way for a previous run's files to leak in (issue #41).
     """
-    cmd = _dicomexport_cmd_prefix() + ["-b", params.beam_model_rel, "-s", params.spr_table_rel]
+    cmd = _dicomexport_cmd_prefix() + ["-b", params.beam_model_rel, "-s", params.material_table_rel]
     if params.field_nr is not None:
         cmd += ["-f", str(params.field_nr)]
     if params.nstat is not None:
@@ -863,7 +863,7 @@ def convert():
     root = studies_root()
     study_name = request.form["study_name"]
     beam_model_name = secure_filename(request.form["beam_model_name"])
-    spr_table_name = secure_filename(request.form["spr_table_name"])
+    material_table_name = secure_filename(request.form["material_table_name"])
 
     # Any structure with at least one scorer checked is scored.  The matrix selection is
     # the selection mechanism: each checked cell becomes a scorer block carrying
@@ -901,7 +901,7 @@ def convert():
         flash("Nothing would be scored, so this run could produce no results at all. "
               "Tick the in-field dose scorer to get a dose cube, or at least one quantity "
               "for one structure to get scorer results.")
-        return _setup_page(root, study_name, beam_model_name, spr_table_name, request.form)
+        return _setup_page(root, study_name, beam_model_name, material_table_name, request.form)
 
     try:
         study_path = studies.study_path(root, study_name)
@@ -915,7 +915,7 @@ def convert():
         run_dir=str(run_dir),
         dicom_rel=studies.relative_to_run(studies.dicom_path(root, study_name), run_dir),
         beam_model_rel=studies.relative_to_run(study_path / beam_model_name, run_dir),
-        spr_table_rel=studies.relative_to_run(study_path / spr_table_name, run_dir),
+        material_table_rel=studies.relative_to_run(study_path / material_table_name, run_dir),
         output_basename=output_basename,
         field_nr=None,
         nstat=nstat,

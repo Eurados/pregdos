@@ -93,24 +93,26 @@ OpenTOPAS behind `module load opentopas/4.2`).  This branch stays open until the
 
 ## Webserver
 
+Keep the WebUI minimal: a compact results table and downloads for further analysis.
+Preserve this small interface when maintaining results; embedded charts and additional
+viewer controls are not planned.
+
 - [x] Wire job submission to `sbatch` (Submit Jobs button → `/submit` route)
 - [x] Add job status page (live `squeue` view on job_submitted page, auto-refresh every 5s)
 - [x] Add fetus dose scorer configuration (neutron H*(10), gamma, proton primary/secondary)
 - [x] Merge structure selection and scorer configuration into a single setup page
-- [x] Bundled SPR tables and beam models selectable from dropdown (upload still available)
-- [ ] **Results viewer** — expose scorer CSV outputs from job folders in the web UI:
-  - `/jobs/<name>` already lists files; extend it to parse and display scorer CSVs as a table
-  - Show one row per scorer (neutron H*(10), gamma, proton primary/secondary) with mean dose ± SD
-  - Add a "Delete job" button on the job page (gated by `[auth]` when it is configured, #103)
-  - Consider a simple bar chart per scorer using a lightweight JS library (Chart.js or similar)
-- [ ] Turn off `debug=True` in `webserver.py` for production/container use
-- [ ] Remove unused `StructureSelection` dataclass from `models.py` or wire it in
+- [x] Bundled CT-number-to-material tables and beam models selectable from dropdown (upload still available)
+- [x] **Results viewer** — the run page displays scorer results by field, statistical
+  uncertainties, and totals, with CSV/PDF reports and RTDOSE downloads where applicable.
+- [x] Study deletion is available from the study list, including cancellation of active runs.
+- [x] Debug mode is off by default; local development can opt in with `PREGDOS_DEBUG`.
+- [x] Remove unused `StructureSelection` dataclass from `models.py`.
 
 ## Docker — combined image (`docker/pregdos/`)
 
 - [ ] Remove `openssh-server` from production image (currently included for development convenience only)
 - [ ] Trim runtime apt dependencies — current list is conservative
-- [ ] Update Docker image to include new `pregdos/data/spr_tables/` and `pregdos/data/beam_models/` package data
+- [ ] Update Docker image to include new `pregdos/data/ct_to_material/` and `pregdos/data/beam_models/` package data
 
 ## Simulation workflow
 
@@ -127,4 +129,3 @@ OpenTOPAS behind `module load opentopas/4.2`).  This branch stays open until the
 ## Known issues
 
 - [ ] Qt OpenGL visualization fails in Docker with X11 forwarding ("failed to create drawable") — missing runtime Mesa/GLX packages. Workaround: use parameter files without visualization.
-- [ ] The pregdos webserver runs as `debug=True` — not suitable for any shared deployment

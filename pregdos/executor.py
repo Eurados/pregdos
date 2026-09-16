@@ -23,7 +23,7 @@ only to cancel a run, never to decide whether it finished.
 Working directory
 -----------------
 Every command runs with ``cwd`` set to the run directory.  The generated TOPAS input
-references its DICOM and SPR table by paths relative to that directory (see
+references its DICOM and CT-number-to-material table by paths relative to that directory (see
 :mod:`pregdos.studies`), so running it from anywhere else would not resolve.
 """
 
