@@ -491,9 +491,26 @@ def test_tls_pair_is_passed_to_the_server(tmp_path, write_config, mocker):
     cert.write_text("-----BEGIN CERTIFICATE-----\n")
     key.write_text("-----BEGIN PRIVATE KEY-----\n")
     write_config(f'[server]\nssl_cert = "{cert}"\nssl_key = "{key}"\n')
+    context = mocker.patch.object(webserver, "server_context")
     run = mocker.patch.object(webserver.app, "run")
     webserver.main([])
-    assert run.call_args.kwargs["ssl_context"] == (str(cert), str(key))
+    context.assert_called_once_with(str(cert), str(key))
+    assert run.call_args.kwargs["ssl_context"] is context.return_value
+    assert run.call_args.kwargs["request_handler"] is webserver.TLSRequestHandler
+    assert run.call_args.kwargs["threaded"] is True
+
+
+def test_invalid_certificate_is_rejected_before_binding(tmp_path, write_config, mocker, capsys):
+    cert, key = tmp_path / "cert.pem", tmp_path / "key.pem"
+    cert.write_text("not a certificate")
+    key.write_text("not a key")
+    write_config(f'[server]\nssl_cert = "{cert}"\nssl_key = "{key}"\n')
+    run = mocker.patch.object(webserver.app, "run")
+    with pytest.raises(SystemExit) as exc:
+        webserver.main([])
+    assert exc.value.code == 2
+    assert "could not load TLS certificate/key" in capsys.readouterr().err
+    run.assert_not_called()
 
 
 def test_missing_certificate_file_is_named_before_binding(tmp_path, write_config, mocker):
