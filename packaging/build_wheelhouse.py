@@ -83,7 +83,7 @@ describing the wrong build.
 ## Check the install actually works
 
 Run this after installing. It renders real pages rather than only importing the module,
-because the bundled templates, beam models and SPR tables are resolved at runtime -- a
+because the bundled templates, beam models and CT-number-to-material tables are resolved at runtime -- a
 packaging gap shows up as a broken page, not as an import error:
 
     /opt/pregdos/venv/bin/python verify_offline_install.py

@@ -226,10 +226,10 @@ def _array_values(text: str, parameter: str) -> list[float]:
     return payload[:count]
 
 
-def _density_from_hu(hu: np.ndarray, spr_table: Path) -> np.ndarray:
-    text = read_text_lenient(spr_table)
+def _density_from_hu(hu: np.ndarray, material_table: Path) -> np.ndarray:
+    text = read_text_lenient(material_table)
     if '"Schneider"' not in text:
-        raise StructureMetricsError(f"unsupported HU material converter in {spr_table}")
+        raise StructureMetricsError(f"unsupported HU material converter in {material_table}")
 
     boundaries = np.asarray(_array_values(text, "Ge/Patient/SchneiderHounsfieldUnitSections"), dtype=float)
     offsets = np.asarray(_array_values(text, "Ge/Patient/SchneiderDensityOffset"), dtype=float)
@@ -237,7 +237,7 @@ def _density_from_hu(hu: np.ndarray, spr_table: Path) -> np.ndarray:
     factor_offsets = np.asarray(_array_values(text, "Ge/Patient/SchneiderDensityFactorOffset"), dtype=float)
     corrections = np.asarray(_array_values(text, "Ge/Patient/DensityCorrection"), dtype=float)
     if not (len(boundaries) == len(offsets) + 1 == len(factors) + 1 == len(factor_offsets) + 1):
-        raise StructureMetricsError(f"inconsistent Schneider density sections in {spr_table}")
+        raise StructureMetricsError(f"inconsistent Schneider density sections in {material_table}")
 
     hu_min = boundaries[0]
     hu_max = boundaries[-1] - 1
@@ -307,9 +307,9 @@ def compute_metrics(run_dir: str | Path) -> dict:
         raise StructureMetricsError(f"{PREPASS_FILE} not found")
     text = read_text_lenient(prepass)
     dicom_dir = _resolve_topas_path(run_dir, _parameter_value(text, "Ge/Patient/DicomDirectory"))
-    spr_table = _resolve_topas_path(run_dir, _parameter_value(text, "includeFile"))
+    material_table = _resolve_topas_path(run_dir, _parameter_value(text, "includeFile"))
     ct = _load_ct(dicom_dir)
-    densities = _density_from_hu(ct.hu, spr_table)
+    densities = _density_from_hu(ct.hu, material_table)
 
     patient_voxels = int(ct.hu.size)
     patient_volume = patient_voxels * ct.voxel_volume_cm3
@@ -319,7 +319,7 @@ def compute_metrics(run_dir: str | Path) -> dict:
         "source": "TOPAS SetBinToMinusOneIfNotInRTStructure pre-pass",
         "prepass_file": PREPASS_FILE,
         "dicom_directory": str(dicom_dir),
-        "spr_table": str(spr_table),
+        "material_table": str(material_table),
         "ct_shape_zyx": list(ct.hu.shape),
         "voxel_volume_cm3": ct.voxel_volume_cm3,
         "patient": {

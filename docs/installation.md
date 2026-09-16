@@ -80,7 +80,7 @@ sudo /opt/pregdos/venv/bin/pip install --no-index --find-links=wheelhouse pregdo
 ```
 
 The last step renders real pages rather than only importing the module — the bundled
-templates, beam models and SPR tables resolve at runtime, so a packaging gap shows up as a
+templates, beam models and CT-number-to-material tables resolve at runtime, so a packaging gap shows up as a
 broken page, not an import error. CI runs the same script against the same tarball, in a
 container with no network, before the release is published.
 

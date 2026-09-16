@@ -34,8 +34,8 @@ class ConversionParameters:
     beam_model_rel: str
     """Pencil-beam model CSV, relative to ``run_dir``.  Read by dicomexport at
     generation time only; its path is never embedded in the TOPAS input."""
-    spr_table_rel: str
-    """HU-to-material (SPR) table, relative to ``run_dir``.  Embedded verbatim into
+    material_table_rel: str
+    """CT-number-to-material table, relative to ``run_dir``.  Embedded verbatim into
     the generated file as ``includeFile``, so it must stay relative."""
     output_basename: str
     """Base name for output files; dicomexport appends ``_fieldNN.txt`` suffixes."""

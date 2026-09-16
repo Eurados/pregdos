@@ -8,7 +8,7 @@ step that makes the artifact trustworthy: the alternative is discovering the gap
 airgapped machine, where it cannot be investigated.
 
 **It renders pages, it does not merely import.**  Everything under ``templates/``,
-``static/``, ``data/spr_tables/`` and ``data/beam_models/`` is resolved at runtime through
+``static/``, ``data/ct_to_material/`` and ``data/beam_models/`` is resolved at runtime through
 ``importlib.resources.files("pregdos")``, so a package-data glob that failed to ship is a
 broken page at the hospital, not an ImportError in CI.  Only a request catches it.
 """
@@ -82,8 +82,8 @@ def main() -> int:
     check("config.toml.example ships", "[scheduler]" in config.example_text())
     check("config file is honoured", config.load().network.update_check is False)
 
-    tables = webserver._builtin_spr_tables()
-    check("data/spr_tables/ ships", len(tables) > 0, f"{len(tables)} tables")
+    tables = webserver._builtin_material_tables()
+    check("data/ct_to_material/ ships", len(tables) > 0, f"{len(tables)} tables")
     models = webserver._builtin_beam_models()
     check("data/beam_models/ ships", len(models) > 0, f"{len(models)} models")
     check("data/*.csv ships", len(topas_scorer.SCORER_DEFS) > 0)

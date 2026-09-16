@@ -5,7 +5,7 @@ under the *studies root*::
 
     <studies_root>/<study_name>/
         dicom/                    pristine upload -- nothing else is EVER written here
-        <spr_table>.txt           copy of the chosen SPR-to-material table
+        <material_table>.txt           copy of the chosen CT-number-to-material table
         <beam_model>.csv          copy of the chosen beam model (provenance only)
         run_<YYYYmmdd_HHMMSS>/    one directory per conversion, created by /convert
             topas_field01.txt     generated TOPAS input

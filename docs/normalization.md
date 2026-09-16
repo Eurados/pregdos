@@ -164,7 +164,7 @@ This is `structure_metrics.energy_deposit_to_gy()`:
 factor = MEV_PER_G_TO_GY / mass_g
 ```
 
-The mass is the ROI's real mass — HU → density via the SPR table, summed over the RTSTRUCT
+The mass is the ROI's real mass — HU → density via the CT-number-to-material table, summed over the RTSTRUCT
 mask from the pre-pass. This is not a correction. It is the physically correct denominator,
 being supplied for the first time.
 
