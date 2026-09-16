@@ -1,15 +1,24 @@
 name: Build and publish pregdos
+# Manual only.  It used to chain off "Build OpenTOPAS base image", which in turn fired on
+# `release: published` -- and that silently stopped working when releases began to be created
+# by `softprops/action-gh-release`: GitHub does not trigger workflows from events made with
+# the default GITHUB_TOKEN, so v0.6.0 and v0.7.0 both shipped with no image built and nothing
+# reported a failure (#119).  A dispatch is a human-authored event, so it always runs.
+#
+# Run it from the Actions tab, or:
+#
+#     gh workflow run "Build and publish pregdos" -f version=v0.7.0
+#
+# Dispatch from `main`, NOT by selecting the tag in the ref dropdown: GitHub runs the
+# workflow file as it exists on the chosen ref, so picking an old tag would run that tag's
+# workflow instead of this one.  `version` below is what decides the code that gets built.
 on:
-  workflow_run:
-    workflows: ["Build OpenTOPAS base image"]
-    types: [completed]
   workflow_dispatch:
     inputs:
-      run_heavy:
-        description: "Run heavy image build/publish"
-        type: boolean
+      version:
+        description: "PregDos git tag to build and tag the image with, e.g. v0.7.0"
+        type: string
         required: true
-        default: false
       topas_version:
         description: "TOPAS version to build"
         type: choice
@@ -17,30 +26,63 @@ on:
         default: "4.2.3"
         options:
           - "4.2.3"
+      mark_latest:
+        description: "Also move :latest-topas<version> to this build"
+        type: boolean
+        required: true
+        default: true
 
 jobs:
   build:
-    if: |
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'release') ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_heavy == true)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        topas_version: ["4.2.3"]
+        topas_version: ${{ fromJson(format('["{0}"]', inputs.topas_version)) }}
     permissions:
       contents: read
       packages: write
 
     steps:
-      - name: Checkout repository
+      # The tag, not the dispatch ref: this builds released code while the workflow logic
+      # above stays whatever `main` currently says.
+      #
+      # `refs/tags/` is load-bearing, not tidiness.  A bare `ref:` accepts any ref, so a
+      # dispatch naming a branch would publish unreleased code as `pregdos:main-topas4.2.3`
+      # labelled `version=main` -- while the package inside reported something else again,
+      # because setuptools_scm silently ignores a pretend version it cannot parse and derives
+      # one from git.  Three different answers to "which PregDos is this?", which is the
+      # question #119 exists to fix.  A branch name is not a tag, so checkout fails here
+      # instead, before anything is pushed.
+      - name: Checkout tag ${{ inputs.version }}
         uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.version }}
+          fetch-depth: 0
 
-      - name: Normalize image owner
-        id: owner
-        run: echo "owner_lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+      - name: Resolve image owner, tags and version
+        id: meta
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "owner_lc=$owner" >> "$GITHUB_OUTPUT"
+          # The image tag keeps the `v` because that is how the release is named; the Python
+          # package version must not, or it is not a valid PEP 440 version.
+          echo "pep440=${VERSION#v}" >> "$GITHUB_OUTPUT"
+          # `github.sha` is the ref this workflow was dispatched from -- `main` -- not the tag
+          # that was checked out, so read the revision from the working tree instead.
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          {
+            echo "tags<<EOF"
+            echo "ghcr.io/$owner/pregdos:${VERSION}-topas${TOPAS}"
+            # Opt-out, so rebuilding an *older* tag -- to reproduce a result, say -- does not
+            # quietly move `latest` backwards.
+            [ "$MARK_LATEST" = "true" ] && echo "ghcr.io/$owner/pregdos:latest-topas${TOPAS}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          VERSION: ${{ inputs.version }}
+          TOPAS: ${{ matrix.topas_version }}
+          MARK_LATEST: ${{ inputs.mark_latest }}
 
       - name: Free disk space
         uses: jlumbroso/free-disk-space@v1.3.1
@@ -60,17 +102,20 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        if: |
-          github.event_name == 'workflow_run' ||
-          inputs.topas_version == matrix.topas_version
         uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/pregdos/Dockerfile
           push: true
-          tags: |
-            ghcr.io/${{ steps.owner.outputs.owner_lc }}/pregdos:${{ github.event_name == 'workflow_run' && format('{0}-topas{1}', github.event.workflow_run.head_branch, matrix.topas_version) || format('manual-{0}-topas{1}', github.run_number, matrix.topas_version) }}
-            ghcr.io/${{ steps.owner.outputs.owner_lc }}/pregdos:latest-topas${{ matrix.topas_version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          # So `docker inspect` answers "which PregDos is this?" without parsing a tag name,
+          # which is the same argument #108 makes about conversion tables.
+          labels: |
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.revision=${{ steps.meta.outputs.revision }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.title=pregdos
+            org.opencontainers.image.description=PregDos with OpenTOPAS ${{ matrix.topas_version }}
           build-args: |
-            OPENTOPAS_IMAGE=ghcr.io/${{ steps.owner.outputs.owner_lc }}/pregdos-base-opentopas-v${{ matrix.topas_version }}:latest
-            PREGDOS_VERSION=${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || format('0+manual.{0}', github.run_number) }}
+            OPENTOPAS_IMAGE=ghcr.io/${{ steps.meta.outputs.owner_lc }}/pregdos-base-opentopas-v${{ matrix.topas_version }}:latest
+            PREGDOS_VERSION=${{ steps.meta.outputs.pep440 }}
