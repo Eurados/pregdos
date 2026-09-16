@@ -131,4 +131,4 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 EXPOSE 5000 22
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["/bin/bash"]
+CMD []

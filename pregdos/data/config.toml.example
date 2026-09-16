@@ -13,7 +13,7 @@
 ## Those two files merge per key.  `pregdos-web --config PATH` or $PREGDOS_CONFIG instead
 ## REPLACES both, so one deliberate file is the whole story.  Environment variables win over
 ## every file: TOPAS_BIN, PREGDOS_WORK_DIR, PREGDOS_EXECUTOR, PREGDOS_SECRET_KEY,
-## PREGDOS_DEBUG, TOPAS_VERSION, GEANT4_VERSION, TOPAS_G4_DATA_DIR.
+## TOPAS_VERSION, GEANT4_VERSION, TOPAS_G4_DATA_DIR.
 ##
 ## An unknown key, an unknown section or a wrong type is a startup error naming this file and
 ## the key -- a typo here never silently does nothing.
@@ -114,15 +114,12 @@
 ## interfaces, so a clash is an immediate "Address already in use" at startup.
 # port = 5000
 
-## TLS for the built-in server: PEM certificate and its private key, BOTH or NEITHER.
+## TLS for Gunicorn: PEM certificate and its private key, BOTH or NEITHER.
 ## Setting only one is a startup error rather than a silent fall back to plain HTTP.
 ##
-## This makes the DEVELOPMENT server speak HTTPS.  It is encryption, not a production
-## deployment, and it is encryption rather than authentication -- [auth] below is the other
-## half, and the two are checked together at startup: turning a login on over plain HTTP on a
-## non-loopback address is a startup error.  A self-signed certificate also trains users to
-## click through browser warnings, so prefer one from the site's own CA, and put a real WSGI
-## server in front for anything beyond a trial.
+## pregdos-web runs Gunicorn directly; nginx is not required. Encryption and authentication
+## are checked together at startup: enabling a login over plain HTTP on a non-loopback
+## address is a startup error. Prefer a certificate from the site's own CA.
 ##
 ## The key must be readable by the user running PregDos and by nobody else (0600).
 # ssl_cert = ""

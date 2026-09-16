@@ -40,7 +40,8 @@ grid and a TOPAS mask pre-pass. The details live in
 
 ## Running the webserver locally (development)
 
-Requires Python 3.11 or newer. To run simulations, also install OpenTOPAS 4.2.3 or newer;
+Requires Python 3.11 or newer on Linux/macOS (Windows: WSL2 or Docker).
+To run simulations, also install OpenTOPAS 4.2.3 or newer;
 see the [installation guide](docs/installation.md#local-workstation-install).
 
 ```bash
@@ -63,9 +64,11 @@ The Flask session signing key is generated on first start and reused across rest
 `[auth] secret_key_file` selects its location; otherwise it lives under `$STATE_DIRECTORY`
 (set to `/var/lib/pregdos` by the shipped systemd service), or
 `${XDG_STATE_HOME:-~/.local/state}/pregdos/secret_key` outside systemd. Files are created with
-mode 0600 on POSIX; Windows permissions are not checked. Use `PREGDOS_SECRET_KEY` to supply
+mode 0600 in the Linux/macOS filesystem (including WSL2). Use `PREGDOS_SECRET_KEY` to supply
 the key through the environment, or persist the state directory when recreating containers.
-For a WSGI server, use `pregdos.wsgi:app` so startup provisions the persistent key.
+`pregdos-web` runs Gunicorn with one worker and eight request threads; it provisions the
+key and validates the listener before starting. Existing `[server]` host/port/TLS settings
+and `--config`, `--host`, and `--port` flags continue to work.
 
 See the [web UI guide](docs/usage_webgui.md) for the complete workflow.
 

@@ -24,6 +24,7 @@ import time
 import zipfile
 import os
 import secrets
+import ssl
 from werkzeug.utils import secure_filename
 from pathlib import Path
 import subprocess
@@ -35,7 +36,6 @@ from . import (audit, auth, config, dicom_intake, executor, portable, report_pdf
 from .models import ConversionParameters, ConversionResult
 from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
-from .tls import TLSRequestHandler, server_context
 
 
 # How long a run is expected to survive on the server before the OS janitor reaps it.  This
@@ -71,6 +71,10 @@ def _apply_config() -> None:
     app.config.update(
         SESSION_COOKIE_NAME="pregdos_session",
         SESSION_COOKIE_HTTPONLY=True,
+        # Folder uploads contain one multipart part per DICOM instance, plus controls.
+        # Flask's default of 1,000 is too small for large CT studies. File bytes spool
+        # through Werkzeug's upload streams; no aggregate upload byte limit is imposed.
+        MAX_FORM_PARTS=20_000,
     )
 
     # The rest depends on whether the cookie confers authority or merely carries a flash.
@@ -1765,10 +1769,6 @@ def download_rtdose_bundle(study, run_id):
     return send_from_directory(str(run_dir), rtdose.PLAN_IMPORT_BUNDLE_NAME, as_attachment=True)
 
 
-def _env_flag(name: str) -> bool:
-    return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
-
-
 def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(
         prog="pregdos-web",
@@ -1782,7 +1782,13 @@ def main(argv: list[str] | None = None):
     )
     parser.add_argument("--host", metavar="ADDR", help="Interface to bind. Overrides [server] host.")
     parser.add_argument("--port", type=int, metavar="N", help="TCP port to listen on. Overrides [server] port.")
+    parser.add_argument("--workers", type=int, default=1, help="Gunicorn worker processes (default: 1).")
+    parser.add_argument("--threads", type=int, default=8, help="Request threads per worker (default: 8).")
     args = parser.parse_args(argv)
+    if os.name == "nt":
+        parser.error("Gunicorn requires Unix; run pregdos-web under WSL2 or Docker on Windows.")
+    if args.workers < 1 or not 1 <= args.threads <= 128:
+        parser.error("--workers must be positive and --threads must be between 1 and 128")
     if args.config:
         config.set_config_path(args.config)
 
@@ -1833,21 +1839,21 @@ def main(argv: list[str] | None = None):
     # Read the certificate before binding, for the same reason the config is validated first:
     # a missing file should name itself, not surface as a Werkzeug traceback on the first
     # HTTPS request.  config._validate_values has already refused half a pair.
-    ssl_context = None
     if cfg.server.ssl_cert:
         for role, value in (("ssl_cert", cfg.server.ssl_cert), ("ssl_key", cfg.server.ssl_key)):
             if not Path(value).is_file():
                 parser.error(f"[server] {role}: {value} does not exist or is not a file")
         try:
-            ssl_context = server_context(cfg.server.ssl_cert, cfg.server.ssl_key)
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(cfg.server.ssl_cert, cfg.server.ssl_key)
         except (OSError, ValueError) as exc:
             parser.error(f"[server] could not load TLS certificate/key: {exc}")
 
-    # Debug is OFF by default: the Werkzeug debugger is an interactive console, and the app
-    # binds all interfaces by default, so debug=True on a shared network is remote code
-    # execution.  Opt in explicitly with PREGDOS_DEBUG=1 for local development only.
-    app.run(debug=_env_flag("PREGDOS_DEBUG"), host=host, port=port, ssl_context=ssl_context,
-            threaded=True, request_handler=TLSRequestHandler)
+    if os.environ.get("PREGDOS_DEBUG"):
+        logging.getLogger(__name__).warning("PREGDOS_DEBUG is ignored; pregdos-web uses Gunicorn.")
+    from .server import serve
+    serve(app, host=host, port=port, certfile=cfg.server.ssl_cert or None,
+          keyfile=cfg.server.ssl_key or None, workers=args.workers, threads=args.threads)
 
 
 if __name__ == "__main__":

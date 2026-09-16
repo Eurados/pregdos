@@ -19,8 +19,10 @@ requires-python = ">=3.11"
 dependencies = [
     "pydicom>=2.3.1",
     "numpy",
-    "flask>=2.0.0",
+    "flask>=3.1.0",
     "werkzeug",
+    # The bounded gthread connection adapter is tested against this version.
+    "gunicorn==26.2.0",
     "requests",
     "fpdf2>=2.8.7",
     # >=1.4.3: emits relative DicomDirectory/CloneRTDoseGridFrom (keeps studies relocatable,

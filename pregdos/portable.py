@@ -187,7 +187,7 @@ def terminate_worker(ident: str) -> None:
 def detach_kwargs() -> dict:
     """:class:`subprocess.Popen` kwargs that detach a run from the webserver's lifetime.
 
-    The run must outlive a Ctrl-C or a reload of the Flask dev server.  On POSIX that means a
+    The run must outlive a Ctrl-C or a restart of the web server. On POSIX that means a
     new session (its own process group); on Windows, a new process group via a creation flag.
     """
     if sys.platform == "win32":

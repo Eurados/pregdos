@@ -1,22 +1,8 @@
-"""The WSGI entry point.  Use this, not ``pregdos.webserver:app``, under a WSGI server.
+"""Legacy importable WSGI application.
 
-    gunicorn -k gthread -w 2 --threads 8 pregdos.wsgi:app
-
-The difference is two lines, and they are the ones that make sessions and the audit log work.
-``pregdos-web`` does both in :func:`pregdos.webserver.main`, which a WSGI server never calls:
-
-* **The session signing key.**  On a fresh deployment every worker would otherwise fall back
-  to its own random key, so a cookie signed by one is rejected by the next and a user sees a
-  login that works or does not depending on which worker answers -- with nothing in the log,
-  because each worker did something reasonable.
-
-* **Logging.**  Nothing else configures the root logger, so every audit event is dropped, and
-  that log is the whole record of who saw which patient's study.
-
-Both run at import, before the first request and before any worker forks.
-
-``pregdos.webserver:app`` still works and is not deprecated; it simply cannot provision, and
-says so in the log if it is used where it matters.
+Deploy with ``pregdos-web``: it runs Gunicorn after validating the actual listener,
+certificates, and authentication backend. This import path provisions the session key and
+logging for existing integrations, but cannot validate an external server's bind options.
 """
 
 from __future__ import annotations

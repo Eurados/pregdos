@@ -388,8 +388,8 @@ def test_the_session_cookie_is_hardened_once_it_confers_authority(auth_client):
 # ---------------------------------------------------------------------------
 
 def _run_main(mocker, argv):
-    """Call main() with app.run patched out, so nothing binds a port."""
-    run = mocker.patch.object(webserver.app, "run")
+    """Call main() with Gunicorn serving patched out, so nothing binds a port."""
+    run = mocker.patch("pregdos.server.serve")
     try:
         webserver.main(argv)
     finally:

@@ -46,7 +46,8 @@ BOOTSTRAP = ["pip", "setuptools", "wheel"]
 README = """\
 # PregDos offline wheelhouse
 
-Everything needed to install PregDos on a machine with no network access.
+Everything needed to install PregDos, including Gunicorn, on a machine with no network access.
+Transfer this complete tarball: the PregDos wheel alone does not contain its dependencies.
 
     Target:  Python {python_dotted} on {platform}
     Version: pregdos {version}
@@ -82,7 +83,7 @@ describing the wrong build.
 
 ## Check the install actually works
 
-Run this after installing. It renders real pages rather than only importing the module,
+Run this after installing. It starts the installed Gunicorn server on loopback and renders pages,
 because the bundled templates, beam models and CT-number-to-material tables are resolved at runtime -- a
 packaging gap shows up as a broken page, not as an import error:
 
@@ -113,6 +114,10 @@ update check that an airgapped site wants turned off:
         | sudo tee /etc/pregdos/config.toml
 
 `requirements.txt` records the exact pinned set this tarball contains.
+
+`pregdos-web` runs Gunicorn with one worker and eight request threads. Existing `[server]`
+host/port/TLS settings still apply; nginx is not needed. Windows users must run under WSL2
+or Docker. Flask remains the application framework; its development server is not used.
 
 ## Running it as a service
 
