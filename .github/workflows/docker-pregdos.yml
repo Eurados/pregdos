@@ -46,10 +46,18 @@ jobs:
     steps:
       # The tag, not the dispatch ref: this builds released code while the workflow logic
       # above stays whatever `main` currently says.
-      - name: Checkout ${{ inputs.version }}
+      #
+      # `refs/tags/` is load-bearing, not tidiness.  A bare `ref:` accepts any ref, so a
+      # dispatch naming a branch would publish unreleased code as `pregdos:main-topas4.2.3`
+      # labelled `version=main` -- while the package inside reported something else again,
+      # because setuptools_scm silently ignores a pretend version it cannot parse and derives
+      # one from git.  Three different answers to "which PregDos is this?", which is the
+      # question #119 exists to fix.  A branch name is not a tag, so checkout fails here
+      # instead, before anything is pushed.
+      - name: Checkout tag ${{ inputs.version }}
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.version }}
+          ref: refs/tags/${{ inputs.version }}
           fetch-depth: 0
 
       - name: Resolve image owner, tags and version
