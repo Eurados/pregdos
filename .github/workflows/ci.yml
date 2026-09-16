@@ -34,3 +34,28 @@ jobs:
     - name: Run tests
       run: |
         pytest --maxfail=2 --disable-warnings
+
+  types:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+
+    - name: Set up Python
+      uses: actions/setup-python@v7
+      with:
+        python-version: '3.11'
+
+    # `[tool.pyright]` resolves imports through `.venv`, so build a real one rather than
+    # installing into the runner's Python: without it every third-party import (flask,
+    # pydicom, fpdf2) reports as missing and the run is pure noise.  This also means a
+    # local `pyright` and this job see exactly the same thing.
+    - name: Install dependencies into .venv
+      run: |
+        python -m venv .venv
+        .venv/bin/python -m pip install --upgrade pip
+        .venv/bin/python -m pip install ".[dev]"
+
+    - name: Type-check with pyright
+      run: .venv/bin/python -m pyright
