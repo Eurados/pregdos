@@ -715,7 +715,7 @@ def upload_files():
             flash("Beam model required — choose a built-in model or upload one.")
             return redirect(request.url)
         if spr_source == "upload" and not (spr_table and spr_table.filename):
-            flash("SPR table required — choose a built-in table or upload one.")
+            flash("Imaging-value-to-material table required — choose a built-in table or upload one.")
             return redirect(request.url)
         if not study_zip and not study_dir_files:
             flash("Provide either a ZIP or a folder.")

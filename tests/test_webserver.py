@@ -54,6 +54,27 @@ def test_upload_page_loads(client):
     assert b'href="/favicon.ico"' in response.data
 
 
+def test_every_bundled_table_is_ct_number_indexed():
+    """No bundled conversion table may expect a quantity other than CT number (#106).
+
+    `_builtin_spr_tables` globs the data directory, so restoring a deleted
+    `SPRtoMaterial__*.txt` puts it straight back into the upload dropdown with nothing
+    objecting.  The filename prefix is the only thing that distinguishes the two --
+    TOPAS's Schneider converter maps an integer to a material and is indifferent to what
+    the integer means, and DICOM reports `RescaleType` "HU" either way -- so the prefix
+    is what this guards.
+
+    Deliberately a prefix rule rather than an exact inventory: bundling a second
+    HU-indexed table is a legitimate change, bundling an SPR-indexed one is not.
+    """
+    names = [t["name"] for t in webserver._builtin_spr_tables()]
+    assert names, "no bundled conversion table found at all"
+    offenders = [n for n in names if not n.startswith("HUtoMaterial")]
+    assert not offenders, (
+        f"bundled tables must be CT-number indexed and named HUtoMaterial*: {offenders}"
+    )
+
+
 def test_favicon_loads(client):
     response = client.get("/favicon.ico")
     assert response.status_code == 200
