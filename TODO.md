@@ -34,9 +34,7 @@ viewer controls are not planned.
 
 ## Docker — combined image (`docker/pregdos/`)
 
-- [ ] Remove `openssh-server` from production image (currently included for development convenience only)
 - [ ] Trim runtime apt dependencies — current list is conservative
-- [ ] Update Docker image to include new `pregdos/data/ct_to_material/` and `pregdos/data/beam_models/` package data
 
 ## Simulation workflow
 

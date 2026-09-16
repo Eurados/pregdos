@@ -1,7 +1,9 @@
 name: Build OpenTOPAS base image
+# Manual only, deliberately.  This image is the OpenTOPAS/Geant4 build: it is large, slow,
+# and pinned to an OpenTOPAS version that changes far more rarely than PregDos does, so it
+# has no business rebuilding on every PregDos release.  Publish a PregDos image with
+# "Build and publish pregdos", which FROMs whatever this last pushed.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       run_heavy:
@@ -19,12 +21,12 @@ on:
 
 jobs:
   build:
-    if: github.event_name == 'release' || inputs.run_heavy == true
+    if: inputs.run_heavy == true
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        opentopas_version: ${{ github.event_name == 'release' && fromJson('["4.2.3"]') || fromJson(format('["{0}"]', inputs.version)) }}
+        opentopas_version: ${{ fromJson(format('["{0}"]', inputs.version)) }}
     permissions:
       contents: read
       packages: write

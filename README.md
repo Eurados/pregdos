@@ -97,8 +97,9 @@ because older multithreaded scorer statistics can be corrupted (issue #49).
 |-----|-----------|--------|
 | `latest-topas4.2.3` | v4.2.3 | 11.3.2 |
 
-For release-pinned tags (e.g. `v0.2.1-topas4.2.3`) see the
-[Packages](https://github.com/Eurados/pregdos/pkgs/container/pregdos) page.
+For release-pinned tags (e.g. `v0.7.0-topas4.2.3`) see the
+[Packages](https://github.com/Eurados/pregdos/pkgs/container/pregdos) page. Pin one for
+anything you need to reproduce later; `latest-topas4.2.3` moves.
 
 ### Building from source
 
