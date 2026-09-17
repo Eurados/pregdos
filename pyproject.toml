@@ -37,7 +37,7 @@ dev = [
     "pytest-mock>=3.10.0",
     # Pinned, not a floor: new releases enable new checks, so an unpinned upgrade would fail
     # unrelated branches.  Dependabot raises the bump as its own PR for CI to judge.
-    "pyright==1.1.411",
+    "pyright==1.1.414",
 ]
 
 [project.scripts]
