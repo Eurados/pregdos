@@ -367,3 +367,21 @@ def test_ensure_metrics_reports_failed_prepass(tmp_path):
 
     assert metrics is None
     assert warnings and "pre-pass failed" in warnings[0]
+
+
+def test_a_table_topas_would_read_out_of_bounds_gives_no_mass(tmp_path):
+    """#131: rather than a mass that disagrees with the run.  The old parser guessed where the
+    correction vector starts; this table's sections start at -1024 without MinImagingValue."""
+    import numpy as np
+
+    table = tmp_path / "SPRtoMaterial.txt"
+    table.write_text(
+        's:Ge/Patient/ImagingToMaterialConverter = "Schneider"\n'
+        "iv:Ge/Patient/SchneiderHounsfieldUnitSections = 2 -1024 -1022\n"
+        "uv:Ge/Patient/SchneiderDensityOffset = 1 1.0\n"
+        "uv:Ge/Patient/SchneiderDensityFactor = 1 0.0\n"
+        "uv:Ge/Patient/SchneiderDensityFactorOffset = 1 0.0\n"
+        "uv:Ge/Patient/DensityCorrection = 2 1.0 1.0\n")
+
+    with pytest.raises(structure_metrics.StructureMetricsError, match="MinImagingValue = -1024"):
+        structure_metrics._density_from_hu(np.zeros(3), table)

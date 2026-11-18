@@ -19,7 +19,7 @@ from typing import Iterable
 import numpy as np
 import pydicom
 
-from . import portable, topas_include
+from . import ct_table, portable, topas_include
 from .textio import read_text_lenient
 
 
@@ -230,60 +230,24 @@ def _load_ct(dicom_dir: Path) -> CTData:
     return CTData(hu=hu, voxel_volume_cm3=voxel_volume_cm3, dicom_directory=dicom_dir)
 
 
-_PARAM_LINE_RE = re.compile(r"^\s*\w+:[^=\n]+=", re.MULTILINE)
-_FLOAT_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
-
-
-def _array_values(text: str, parameter: str) -> list[float]:
-    match = re.search(rf"^\s*\w+:{re.escape(parameter)}\s*=\s*", text, re.MULTILINE)
-    if not match:
-        raise StructureMetricsError(f"{parameter} missing from HU table")
-    next_param = _PARAM_LINE_RE.search(text, match.end())
-    raw = text[match.end() : next_param.start() if next_param else len(text)]
-    raw = "\n".join(line.split("#", 1)[0] for line in raw.splitlines())
-    values = [float(x) for x in _FLOAT_RE.findall(raw)]
-    if not values:
-        raise StructureMetricsError(f"{parameter} has no numeric values")
-    count = int(values[0])
-    payload = values[1:]
-    if len(payload) < count:
-        raise StructureMetricsError(f"{parameter} expected {count} values, found {len(payload)}")
-    return payload[:count]
-
-
 def _density_from_hu(hu: np.ndarray, material_table: topas_include.InlineInclude | Path) -> np.ndarray:
     """Mass density per voxel, from the table pasted into the pre-pass or, for a run
-    converted by dicomexport 1.x, the file its ``includeFile`` names."""
+    converted by dicomexport 1.x, the file its ``includeFile`` names.
+
+    The table is checked as TOPAS would read it (:mod:`pregdos.ct_table`, #131): the correction
+    vector starts at the table's own ``MinImagingValue``, not at a guess.  A table TOPAS would
+    read out of bounds gives no mass at all rather than one that disagrees with the run.
+    """
     if isinstance(material_table, topas_include.InlineInclude):
         text = material_table.content
-        material_table = Path(material_table.path)      # for the messages below
+        name = material_table.path
     else:
         text = read_text_lenient(material_table)
-    if '"Schneider"' not in text:
-        raise StructureMetricsError(f"unsupported HU material converter in {material_table}")
-
-    boundaries = np.asarray(_array_values(text, "Ge/Patient/SchneiderHounsfieldUnitSections"), dtype=float)
-    offsets = np.asarray(_array_values(text, "Ge/Patient/SchneiderDensityOffset"), dtype=float)
-    factors = np.asarray(_array_values(text, "Ge/Patient/SchneiderDensityFactor"), dtype=float)
-    factor_offsets = np.asarray(_array_values(text, "Ge/Patient/SchneiderDensityFactorOffset"), dtype=float)
-    corrections = np.asarray(_array_values(text, "Ge/Patient/DensityCorrection"), dtype=float)
-    if not (len(boundaries) == len(offsets) + 1 == len(factors) + 1 == len(factor_offsets) + 1):
-        raise StructureMetricsError(f"inconsistent Schneider density sections in {material_table}")
-
-    hu_min = boundaries[0]
-    hu_max = boundaries[-1] - 1
-    hu_clipped = np.clip(hu, hu_min, hu_max)
-    section = np.searchsorted(boundaries[1:], hu_clipped, side="right")
-    section = np.clip(section, 0, len(offsets) - 1)
-
-    density = offsets[section] + factors[section] * (factor_offsets[section] + hu_clipped)
-
-    correction_origin = hu_min if int(round(boundaries[-1] - boundaries[0])) == len(corrections) else -1000.0
-    correction_max = correction_origin + len(corrections) - 1
-    corr_index = np.rint(
-        np.clip(hu_clipped, correction_origin, correction_max) - correction_origin
-    ).astype(int)
-    return density * corrections[corr_index]
+        name = str(material_table)
+    try:
+        return ct_table.parse(text).density(hu)
+    except ct_table.TableError as e:
+        raise StructureMetricsError(f"CT-number-to-material table {name}: {e}") from e
 
 
 def _resolve_topas_path(run_dir: Path, value: str | None) -> Path:

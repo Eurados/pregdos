@@ -38,6 +38,18 @@ def _allow_submit(monkeypatch):
     monkeypatch.setattr("pregdos.webserver.versions.submit_blocker", lambda: None)
 
 
+# The smallest table the upload accepts (#131): Schneider, two sections, a correction vector as
+# long as they span, and MinImagingValue left at TOPAS's -1000, where the sections start.
+VALID_TABLE = b"""\
+s:Ge/Patient/ImagingToMaterialConverter = "Schneider"
+iv:Ge/Patient/SchneiderHounsfieldUnitSections = 2 -1000 -998
+uv:Ge/Patient/SchneiderDensityOffset = 1 1.0
+uv:Ge/Patient/SchneiderDensityFactor = 1 0.0
+uv:Ge/Patient/SchneiderDensityFactorOffset = 1 0.0
+uv:Ge/Patient/DensityCorrection = 2 1.0 1.0
+"""
+
+
 def _make_study(tmp_path, name="mystudy"):
     """Create a study on disk as /upload would leave it."""
     _, path = studies.create_study(tmp_path, name)
@@ -62,7 +74,10 @@ def _site_config(root, beam_models=("A.csv", "B.csv"), tables=("HUtoMaterialSite
     for sub, names in (("beam_models", beam_models), ("ct_to_material", tables)):
         (root / sub).mkdir(parents=True)
         for name in names:
-            (root / sub / name).write_text(f"contents of {name}")
+            if sub == "ct_to_material":
+                (root / sub / name).write_bytes(VALID_TABLE)        # checked at upload (#131)
+            else:
+                (root / sub / name).write_text(f"contents of {name}")
     return root
 
 
@@ -120,7 +135,7 @@ def test_upload_copies_the_chosen_files_from_the_site_directory(client, tmp_path
     assert b"CTV" in resp.data                              # the setup page rendered
     study = studies.study_path(tmp_path, "study")
     assert (study / "B.csv").read_text() == "contents of B.csv"
-    assert (study / "HUtoMaterialSite.txt").read_text() == "contents of HUtoMaterialSite.txt"
+    assert (study / "HUtoMaterialSite.txt").read_bytes() == VALID_TABLE
 
 
 @pytest.mark.parametrize("name", ["C.csv", "../../etc/passwd", "/etc/passwd"])
@@ -136,6 +151,41 @@ def test_upload_refuses_a_file_the_site_directory_does_not_list(client, tmp_path
     }, content_type="multipart/form-data", follow_redirects=True)
 
     assert b"is not in the dicomexport configuration directory" in resp.data
+    assert studies.list_studies(tmp_path) == []
+
+
+BAD_TABLE = VALID_TABLE.replace(b"Sections = 2 -1000 -998", b"Sections = 2 -1024 -1022")
+
+
+def test_an_uploaded_table_topas_would_read_out_of_bounds_is_refused(client, tmp_path):
+    """#131: checked as it is uploaded, before anything is created, with the fix named."""
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+    data = _upload_data(source)
+    data["material_table"] = (io.BytesIO(BAD_TABLE), "SPRtoMaterial.txt")
+
+    body = client.post("/upload", data=data, content_type="multipart/form-data",
+                       follow_redirects=True).data.decode()
+
+    assert "CT-number-to-material table SPRtoMaterial.txt cannot be used" in body
+    assert "set i:Ge/Patient/MinImagingValue = -1024" in body
+    assert studies.list_studies(tmp_path) == []
+
+
+def test_a_site_table_topas_would_read_out_of_bounds_is_refused(client, tmp_path, monkeypatch):
+    """The site's directory is no exception: a table there is checked when it is chosen."""
+    site = _site_config(tmp_path / "site")
+    (site / "ct_to_material" / "HUtoMaterialSite.txt").write_bytes(BAD_TABLE)
+    monkeypatch.setenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", str(site))
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+
+    body = client.post("/upload", data={
+        "beam_model_source": "A.csv", "material_table_source": "HUtoMaterialSite.txt",
+        "study_dir": _dir_upload(source),
+    }, content_type="multipart/form-data", follow_redirects=True).data.decode()
+
+    assert "HUtoMaterialSite.txt cannot be used" in body
     assert studies.list_studies(tmp_path) == []
 
 
@@ -162,7 +212,7 @@ def test_upload_missing_beam_model(client):
 def test_upload_missing_study(client):
     data = {
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
-        "material_table": (io.BytesIO(b"data"), "material.txt"),
+        "material_table": (io.BytesIO(VALID_TABLE), "material.txt"),
     }
     response = client.post("/upload", data=data, content_type="multipart/form-data", follow_redirects=True)
     assert response.status_code == 200
@@ -172,7 +222,7 @@ def test_upload_missing_study(client):
 def test_upload_both_zip_and_folder_rejected(client):
     data = {
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
-        "material_table": (io.BytesIO(b"data"), "material.txt"),
+        "material_table": (io.BytesIO(VALID_TABLE), "material.txt"),
         "study_zip": (io.BytesIO(b"PK\x03\x04"), "study.zip"),
         "study_dir": (io.BytesIO(b"data"), "study/file.dcm"),
     }
@@ -185,7 +235,7 @@ def test_upload_of_non_dicom_leaves_no_study_behind(client, tmp_path):
     """A failed upload must not leave a half-populated study directory."""
     data = {
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
-        "material_table": (io.BytesIO(b"data"), "material.txt"),
+        "material_table": (io.BytesIO(VALID_TABLE), "material.txt"),
         "study_dir": (io.BytesIO(b"data"), "study/CT.1.dcm"),
     }
     response = client.post("/upload", data=data, content_type="multipart/form-data", follow_redirects=True)
@@ -209,7 +259,7 @@ def _dir_upload(source_root, prefix="study"):
 def _upload_data(source_root, prefix="study"):
     return {
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
-        "material_table": (io.BytesIO(b"data"), "material.txt"),
+        "material_table": (io.BytesIO(VALID_TABLE), "material.txt"),
         "study_dir": _dir_upload(source_root, prefix),
     }
 
@@ -2659,7 +2709,7 @@ def test_a_rejected_upload_is_not_recorded_as_an_upload(client, tmp_path, caplog
 
     data = {
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
-        "material_table": (io.BytesIO(b"data"), "material.txt"),
+        "material_table": (io.BytesIO(VALID_TABLE), "material.txt"),
         "study_dir": (io.BytesIO(b"data"), "study/CT.1.dcm"),
     }
     with caplog.at_level(logging.INFO, logger="pregdos.audit"):
