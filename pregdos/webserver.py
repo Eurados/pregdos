@@ -811,15 +811,20 @@ def run_conversion(params: ConversionParameters, selected_structures: list) -> C
     """Run dicomexport inside the run directory and collect the TOPAS files it wrote.
 
     dicomexport is invoked with ``cwd=params.run_dir`` and relative arguments, so the
-    ``DicomDirectory`` and ``includeFile`` paths it bakes into the generated TOPAS input
-    are relative and already correct for a TOPAS run started from that same directory.
-    Nothing needs to be rewritten afterwards, and the study directory stays movable.
+    ``DicomDirectory`` path it bakes into the generated TOPAS input is relative and already
+    correct for a TOPAS run started from that same directory.  The material table is pasted
+    into each field (``-S``), so TOPAS never reads it from disk.  Nothing needs to be
+    rewritten afterwards, and the study directory stays movable.
 
     Because the run directory was created empty moments ago, its ``*_field*.txt`` files
     are exactly this conversion's output -- no cross-directory search, no deduplication,
     and no way for a previous run's files to leak in (issue #41).
     """
-    cmd = _dicomexport_cmd_prefix() + ["-b", params.beam_model_rel, "-s", params.material_table_rel]
+    # -S pastes the table into each field, with its SHA-256, so the run's provenance and the
+    # structure masses read what TOPAS reads (pregdos.topas_include).  It must be the first
+    # -S: that is how the readers find it.  Once any -s/-S is given, dicomexport adds no
+    # table of its own, so the table is always named.
+    cmd = _dicomexport_cmd_prefix() + ["-b", params.beam_model_rel, "-S", params.material_table_rel]
     # One Geant4 run per spot, with the weights in `uv:Tf/spotWeight/Values`.  Progress
     # (executor) and plan scaling (results) read that line.  dicomexport 2.0 defaults to
     # `sources`, which writes no such line; moving to it is #130.  Passed explicitly so a
@@ -1001,9 +1006,10 @@ def download_file(study, run_id, filename):
 def submit_job():
     """Execute each generated TOPAS file, in place, in the run directory.
 
-    The files are *not* copied anywhere.  Their ``DicomDirectory`` and ``includeFile``
-    entries are relative to the run directory they were generated in, so TOPAS must run
-    with that directory as its working directory (see :mod:`pregdos.executor`).
+    The files are *not* copied anywhere.  Their ``DicomDirectory`` entry (and the
+    ``includeFile`` of a field converted by dicomexport 1.x) is relative to the run directory
+    they were generated in, so TOPAS must run with that directory as its working directory
+    (see :mod:`pregdos.executor`).
     """
     root = studies_root()
     study_name = request.form["study_name"]

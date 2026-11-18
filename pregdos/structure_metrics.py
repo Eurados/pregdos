@@ -19,7 +19,7 @@ from typing import Iterable
 import numpy as np
 import pydicom
 
-from . import portable
+from . import portable, topas_include
 from .textio import read_text_lenient
 
 
@@ -94,8 +94,16 @@ def write_prepass_input(run_dir: str | Path, reference_topas: str | Path, struct
 
     run_dir = Path(run_dir)
     source = read_text_lenient(reference_topas)
+    # The material table, pasted by dicomexport >= 2.0, is copied as a whole and exactly
+    # once: TOPAS stops on a parameter defined twice in one file.  Parameters are then read
+    # from the rest of the file only, so a line inside the table -- an `includeFile` of its
+    # own, say -- is never copied a second time.  The other pasted files (materials for
+    # overrides, free TOPAS code) are left out: the masks need the geometry and the table,
+    # and free code could add sources or scorers to a pass that must stay cheap.
+    table = topas_include.material_table(source)
+    own = topas_include.without_inline_includes(source)
     parameters = [
-        "includeFile",
+        "includeFile",          # dicomexport 1.x named the table instead of pasting it
         "Rt/Plan/IsoCenterX",
         "Rt/Plan/IsoCenterY",
         "Rt/Plan/IsoCenterZ",
@@ -127,7 +135,8 @@ def write_prepass_input(run_dir: str | Path, reference_topas: str | Path, struct
         "# PregDos RTSTRUCT mask pre-pass",
         f"# Generated from {Path(reference_topas).name}",
         "",
-        *_copy_parameters(source, parameters),
+        *([table.block.rstrip("\n"), ""] if table else []),
+        *_copy_parameters(own, parameters),
         "",
         'i:Ts/NumberOfThreads = 1',
         'b:Ts/DumpParameters = "False"',
@@ -242,8 +251,14 @@ def _array_values(text: str, parameter: str) -> list[float]:
     return payload[:count]
 
 
-def _density_from_hu(hu: np.ndarray, material_table: Path) -> np.ndarray:
-    text = read_text_lenient(material_table)
+def _density_from_hu(hu: np.ndarray, material_table: topas_include.InlineInclude | Path) -> np.ndarray:
+    """Mass density per voxel, from the table pasted into the pre-pass or, for a run
+    converted by dicomexport 1.x, the file its ``includeFile`` names."""
+    if isinstance(material_table, topas_include.InlineInclude):
+        text = material_table.content
+        material_table = Path(material_table.path)      # for the messages below
+    else:
+        text = read_text_lenient(material_table)
     if '"Schneider"' not in text:
         raise StructureMetricsError(f"unsupported HU material converter in {material_table}")
 
@@ -323,7 +338,8 @@ def compute_metrics(run_dir: str | Path) -> dict:
         raise StructureMetricsError(f"{PREPASS_FILE} not found")
     text = read_text_lenient(prepass)
     dicom_dir = _resolve_topas_path(run_dir, parameter_value(text, "Ge/Patient/DicomDirectory"))
-    material_table = _resolve_topas_path(run_dir, parameter_value(text, "includeFile"))
+    pasted = topas_include.material_table(text)
+    material_table = pasted or _resolve_topas_path(run_dir, parameter_value(text, "includeFile"))
     ct = _load_ct(dicom_dir)
     densities = _density_from_hu(ct.hu, material_table)
 
@@ -335,7 +351,8 @@ def compute_metrics(run_dir: str | Path) -> dict:
         "source": "TOPAS SetBinToMinusOneIfNotInRTStructure pre-pass",
         "prepass_file": PREPASS_FILE,
         "dicom_directory": str(dicom_dir),
-        "material_table": str(material_table),
+        "material_table": pasted.path if pasted else str(material_table),
+        "material_table_sha256": pasted.sha256 if pasted else "",
         "ct_shape_zyx": list(ct.hu.shape),
         "voxel_volume_cm3": ct.voxel_volume_cm3,
         "patient": {

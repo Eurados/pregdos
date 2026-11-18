@@ -5,7 +5,8 @@ under the *studies root*::
 
     <studies_root>/<study_name>/
         dicom/                    pristine upload -- nothing else is EVER written here
-        <material_table>.txt           copy of the chosen CT-number-to-material table
+        <material_table>.txt      copy of the chosen CT-number-to-material table (provenance;
+                                  dicomexport pastes it into each field)
         <beam_model>.csv          copy of the chosen beam model (provenance only)
         run_<YYYYmmdd_HHMMSS>/    one directory per conversion, created by /convert
             topas_field01.txt     generated TOPAS input
@@ -17,8 +18,8 @@ under the *studies root*::
 Two properties of this layout are load-bearing; changing them will break runs.
 
 **Generate in the directory you will execute in.**  dicomexport bakes the paths it is
-given straight into the TOPAS input (``s:Ge/Patient/DicomDirectory`` and ``includeFile``)
-and copies no DICOM.  It performs no path resolution -- pass it relative paths and it
+given straight into the TOPAS input (``s:Ge/Patient/DicomDirectory``, and the path of each
+file it pastes in) and copies no DICOM.  It performs no path resolution -- pass it relative paths and it
 writes relative paths.  So we run dicomexport with ``cwd`` set to the run directory and
 hand it paths relative to that directory, and we later run TOPAS from the same directory.
 Every embedded path is then correct by construction: nothing is rewritten, and the whole
