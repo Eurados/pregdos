@@ -86,6 +86,22 @@ def test_material_identity_comes_from_the_pasted_table(run_dir, monkeypatch, moc
     assert saved.material_table_sha256 == sha
 
 
+def test_submission_records_what_the_run_was_converted_with(run_dir, monkeypatch, mocker):
+    """From the first field's header, into run.json -- so a report can say it after the site's
+    directory or dicomexport itself has changed (#132)."""
+    from tests.test_provenance import FIELD
+
+    (run_dir / "topas_field01.txt").write_text(FIELD)
+    monkeypatch.setenv("PREGDOS_EXECUTOR", executor.LOCAL)
+    mocker.patch.object(executor, "start_next_local_run")
+
+    executor.submit_run(run_dir, ["topas_field01.txt"])
+
+    record = executor.read_run_metadata(run_dir).conversion
+    assert record.material_overrides == ["Hip implant=ImplantSteel", "BODY=G4_WATER"]
+    assert record.config_dir == "/etc/dicomexport (--config-dir)"
+
+
 @pytest.mark.parametrize("backend", [executor.SLURM, executor.LOCAL])
 def test_submission_preserves_material_identity_after_file_changes(run_dir, monkeypatch, mocker, backend):
     """A field converted by dicomexport 1.x names the table with includeFile."""

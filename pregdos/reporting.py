@@ -20,8 +20,9 @@ import csv
 import datetime
 import io
 import math
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from . import executor, results, structure_metrics, studies, versions
+from .provenance import CONVERSION_FIELDS, ConversionRecord
 from .studies import StudyError
 
 
@@ -330,14 +331,36 @@ def _material_table_field(info: executor.RunInfo | None) -> str:
     return f"{info.material_table} ({info.material_table_sha256[:8]})"
 
 
+def _conversion_fields(record: ConversionRecord | None) -> dict[str, str]:
+    """The conversion record as report strings.  "unavailable" for a run that has none: it
+    was converted by dicomexport < 2.0, or submitted before this was recorded."""
+    if record is None:
+        return {key: "unavailable" for key, _ in CONVERSION_FIELDS}
+    return {
+        "beam_model": PureWindowsPath(record.beam_model).name or "unavailable",
+        # The first included file is the CT-number-to-material table, reported on its own.
+        "other_includes": "; ".join(include.label for include in record.includes[1:]) or "none",
+        # In the order given: where structures overlap, TOPAS used the first.
+        "material_overrides": "; ".join(record.material_overrides) or "none",
+        "spot_mode": record.layout or "unavailable",
+        "config_dir": record.config_dir or "unavailable",
+        "range_shifter_catalog": record.range_shifter_catalog or "unavailable",
+    }
+
+
 def report_provenance(run_dir: Path) -> dict[str, str]:
     repo_root = Path(__file__).resolve().parent.parent
+    info = executor.read_run_metadata(run_dir)
+    record = info.conversion if info else None
     return {
         "pregdos": versions.canonical_package_version("pregdos", repo_root),
-        "dicomexport": versions.dicomexport_version(),
+        # The version that converted the run, when recorded -- the installed one may differ.
+        "dicomexport": (record.dicomexport if record and record.dicomexport
+                        else versions.dicomexport_version()),
         "topas": versions.topas_version(),
         "geant4": versions.geant4_version(),
-        "material_table": _material_table_field(executor.read_run_metadata(run_dir)),
+        "material_table": _material_table_field(info),
+        **_conversion_fields(record),
     }
 
 
@@ -370,6 +393,8 @@ def build_report_csv(run_dir: Path, study: str, run_id: str, root: str | Path) -
     geant4 = provenance.get("geant4", "")
     writer.writerow(["# Geant4", f"v{geant4}" if geant4 else ""])
     writer.writerow(["# Material table", provenance.get("material_table", "")])
+    for key, label in CONVERSION_FIELDS:
+        writer.writerow([f"# {label}", provenance.get(key, "")])
     for warning in warnings:
         writer.writerow(["# Warning", warning])
     writer.writerow(["# Note", "PregDos is under active development and validation is ongoing; "

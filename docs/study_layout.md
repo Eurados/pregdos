@@ -40,6 +40,14 @@ the table, so they describe exactly what TOPAS reads. CSV and PDF reports carry 
 field, `filename (12345678)`, where the hash is truncated to its first eight characters. Older
 runs without this metadata report the table as unavailable.
 
+`run.json` also records what `dicomexport` converted the run with, read at submission from the
+header it writes into each field: the dicomexport version, the configuration directory and how it
+was found, the beam model, the range-shifter catalog, every included file with its SHA-256 when
+pasted, every material override in order, and the spot mode with its batch count. The reports show
+these under Provenance, and give the dicomexport version that converted the run rather than the
+one installed when the report is downloaded. Runs converted by dicomexport before 2.0 report them
+as unavailable.
+
 ## Study Names And Run IDs
 
 Study names are sanitized into a single path component. Re-uploading a study with the same name
