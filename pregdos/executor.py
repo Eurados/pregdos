@@ -128,6 +128,47 @@ def _cpus_per_task(topas_file: str) -> int:
 
 # `i:Ts/NumberOfThreads = N` as dicomexport writes it, with its own spacing.
 _THREADS_RE = re.compile(r"^([ \t]*i:Ts/NumberOfThreads[ \t]*=[ \t]*)(-?\d+)", re.MULTILINE)
+# `i:Ts/ShowHistoryCountAtInterval = N`: TOPAS logs the start of every N-th event.
+_INTERVAL_RE = re.compile(r"^([ \t]*i:Ts/ShowHistoryCountAtInterval[ \t]*=[ \t]*)(-?\d+)", re.MULTILINE)
+#: At most about this many event lines per batch, whatever the statistics.
+MAX_EVENT_LINES_PER_BATCH = 1000
+
+
+def geant4_block(events: int, threads: int) -> int:
+    """Events each thread claims at a time: Geant4's default event modulo,
+    ``int(sqrt(events // threads))``, at least 1."""
+    return max(1, int(math.sqrt(events // max(1, threads))))
+
+
+def history_interval(events: int, threads: int) -> int:
+    """How often TOPAS should log an event start in a sources-mode batch of ``events`` (#95).
+
+    A few times per Geant4 block, so progress can move while a round of blocks runs -- which
+    matters at low statistics, where the first round holds most of a batch's protons -- and
+    never more than about :data:`MAX_EVENT_LINES_PER_BATCH` lines, where the statistics are
+    high and blocks are a small part of the batch anyway.
+    """
+    return max(1, geant4_block(events, threads) // 4, events // MAX_EVENT_LINES_PER_BATCH)
+
+
+def set_history_interval(path: str | os.PathLike, threads: int) -> None:
+    """Set ``Ts/ShowHistoryCountAtInterval`` for a sources-mode field, for ``threads`` threads.
+
+    Done at submission with :func:`set_thread_count`, since the block size depends on the
+    threads.  A time-feature field keeps dicomexport's interval: its progress comes from
+    run starts, one per spot.
+    """
+    path = Path(path)
+    content = read_text_lenient(path)
+    layout = results.parse_plan_scaling(path)
+    if layout is None or layout.spot_mode != "sources" or layout.events_per_run <= 0:
+        return
+    interval = history_interval(layout.events_per_run, threads)
+    replacement, count = _INTERVAL_RE.subn(rf"\g<1>{interval}", content, count=1)
+    if count == 0:
+        replacement = content + f"\ni:Ts/ShowHistoryCountAtInterval = {interval}\n"
+    if replacement != content:
+        path.write_text(replacement)
 
 
 def set_thread_count(path: str | os.PathLike, threads: int) -> None:
@@ -582,7 +623,9 @@ def submit_run(run_dir: str | os.PathLike, topas_files: List[str]) -> RunInfo:
     # study and submitting it.
     for topas_file in topas_files:
         try:
-            set_thread_count(run_dir / topas_file, _cpus_per_task(topas_file))
+            threads = _cpus_per_task(topas_file)
+            set_thread_count(run_dir / topas_file, threads)
+            set_history_interval(run_dir / topas_file, threads)
         except OSError as exc:
             info.errors.append(f"could not set the thread count in {topas_file}: {exc}")
 
@@ -782,9 +825,9 @@ def _layout(run_dir: Path, topas_file: str) -> tuple[str, List[int], List[int]]:
 
 
 def _events_seen(run_dir: Path, topas_file: str) -> dict:
-    """``{batch: highest event seen}`` from the log of a sources-mode field.
+    """``{batch: set of events whose start was logged}`` from the log of a sources-mode field.
 
-    Threads log events slightly out of order, so the highest seen is taken, not the last.
+    Threads log out of order, so it is a set, not a sequence.
     """
     try:
         text = read_text_lenient(run_dir / log_name(topas_file))
@@ -792,38 +835,55 @@ def _events_seen(run_dir: Path, topas_file: str) -> dict:
         return {}
     seen: dict = {}
     for m in _EVENT_LINE_RE.finditer(text):
-        batch, event = int(m.group(1)), int(m.group(2))
-        seen[batch] = max(event, seen.get(batch, -1))
+        seen.setdefault(int(m.group(1)), set()).add(int(m.group(2)))
     return seen
 
 
 def _batch_progress(run_dir: Path, topas_file: str, batches: int,
                     spot_weights: List[int], threads: int) -> tuple[int, int]:
-    """``(protons done, batches started)`` of a sources-mode field (#95).
+    """``(protons done, batches started)`` of a sources-mode field (#95).  A lower bound.
 
     The batches run one after another -- TOPAS starts a run only once the last has ended -- so
-    every batch before the latest one seen is done.  Within the latest, event ``k`` fires one
-    proton from every spot with more than ``k`` left: the first events hold nearly every spot,
-    the last only the heaviest.  So once ``m`` events have *finished*, ``sum(min(w, m))`` of
-    the batch's protons have, far more than ``m / events`` of them early on.
+    every batch before the latest one seen is done.
 
-    The log only says when an event *starts*, and Geant4 hands events to its threads in
-    blocks: each thread claims ``int(sqrt(events // threads))`` at a time (Geant4's default
-    event modulo) and works through them in order.  So up to ``threads x block`` events are
-    in flight, and of ``S`` started at least ``S - threads x block`` have finished; only those
-    are counted.  This is a lower bound, never an overstatement.  Counting started events put
-    a real field at 84 % before any had finished, and counting one in flight per thread put a
-    100 000-primary single batch at 42 % while all 84 events of its first round -- half its
-    protons -- were still running.
+    Within the latest, event ``k`` fires one proton from every spot with more than ``k`` left,
+    so events ``0..x-1`` hold ``P(x) = sum(min(w, x))`` protons: the first events nearly
+    every spot, the last only the heaviest.
+
+    The log only says when an event *starts*, every ``ShowHistoryCountAtInterval``-th one.
+    Geant4 hands events out in blocks of :func:`geant4_block`, aligned at multiples of the
+    block size and claimed in order; each thread works through one block at a time.  So:
+
+    * of the blocks claimed so far -- up to the newest one with a logged start -- all but the
+      newest ``threads`` are finished;
+    * within each of those newest blocks, a logged start of event ``h`` means the block's
+      events before ``h`` are finished.
+
+    Nothing else is counted.  Counting started events put a real field at 84 % before any
+    had finished, and counting one in flight per thread put a 100 000-primary single batch
+    at 42 % while its whole first round of blocks -- half its protons -- was still running.
     """
-    seen = {b: e for b, e in _events_seen(run_dir, topas_file).items() if 0 <= b < batches}
+    seen = {b: e for b, e in _events_seen(run_dir, topas_file).items() if 0 <= b < batches and e}
     if not seen:
         return 0, 0
     latest = max(seen)
-    block = max(1, int(math.sqrt(max(spot_weights) // threads)))
-    finished = max(0, seen[latest] + 1 - threads * block)
-    done = latest * sum(spot_weights) + sum(min(w, finished) for w in spot_weights)
-    return done, latest + 1
+    events = sorted(seen[latest])
+    block = geant4_block(max(spot_weights), threads)
+
+    def protons(x: int) -> int:
+        return sum(min(w, x) for w in spot_weights)
+
+    newest = events[-1] // block
+    finished_blocks = max(0, newest - threads + 1)          # blocks 0 .. newest - threads
+    done = protons(finished_blocks * block)
+    highest_in_block: dict = {}
+    for event in events:
+        b = event // block
+        if b >= finished_blocks:
+            highest_in_block[b] = max(event, highest_in_block.get(b, -1))
+    for b, h in highest_in_block.items():
+        done += protons(h) - protons(b * block)            # events b*block .. h-1 finished
+    return latest * sum(spot_weights) + done, latest + 1
 
 
 def _runs_started(run_dir: Path, topas_file: str) -> set:
