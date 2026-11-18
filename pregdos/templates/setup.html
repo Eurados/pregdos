@@ -143,10 +143,61 @@
     </div>
   </section>
 
+  {# ── Material overrides (#126) ────────────────────────────────────── #}
+  <section class="card">
+    <div class="form-row">
+      <label>Material overrides</label>
+      <small class="hint">Give a structure a material in place of the CT conversion, e.g. a metal
+        implant or an artefact. Where structures overlap, the <strong>first row wins</strong>, so
+        list implants before the body. An overridden structure need not be scored.</small>
+      <div id="override-rows">
+        {% for roi, material in override_rows %}
+        <div class="override-row" style="display:flex; gap:8px; margin-top:6px">
+          <select name="override_roi" class="select-input" aria-label="Structure">
+            <option value="">— structure —</option>
+            {% for struct in structures %}
+            <option value="{{ struct }}"{% if struct == roi %} selected{% endif %}>{{ struct }}</option>
+            {% endfor %}
+          </select>
+          <select name="override_material" class="select-input" aria-label="Material">
+            <option value="">— material —</option>
+            {% if site_materials %}
+            <optgroup label="This site (materials.txt)">
+              {% for m in site_materials %}
+              <option value="{{ m }}"{% if m == material %} selected{% endif %}>{{ m }}</option>
+              {% endfor %}
+            </optgroup>
+            {% endif %}
+            <optgroup label="Built into TOPAS">
+              {% for m in builtin_materials %}
+              <option value="{{ m }}"{% if m == material %} selected{% endif %}>{{ m }}</option>
+              {% endfor %}
+            </optgroup>
+          </select>
+        </div>
+        {% endfor %}
+      </div>
+      <div style="margin-top:6px">
+        <button type="button" class="btn btn-secondary" onclick="addOverrideRow()">Add another</button>
+      </div>
+    </div>
+  </section>
+
   <div class="actions">
     <a class="btn btn-secondary" href="{{ url_for('upload_files') }}">Back</a>
     <button type="submit" class="btn primary">Next</button>
   </div>
 
 </form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function addOverrideRow() {
+  const rows = document.getElementById('override-rows');
+  const row = rows.lastElementChild.cloneNode(true);
+  row.querySelectorAll('select').forEach(sel => { sel.value = ''; });
+  rows.appendChild(row);
+}
+</script>
 {% endblock %}

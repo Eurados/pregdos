@@ -2363,6 +2363,120 @@ def test_too_few_primaries_for_the_batches_are_warned_about(tmp_path, requested,
         assert "19,770" in messages[0] and "Single batch" in messages[0]
 
 
+def test_overrides_follow_the_table_in_the_order_given(mocker, tmp_path):
+    """materials.txt is pasted after the table -- the readers take the first pasted file as the
+    table -- and the overrides keep their order, since TOPAS uses the first where they overlap."""
+    from pregdos import webserver
+
+    run = mocker.patch("pregdos.webserver.subprocess.run",
+                       return_value=mocker.Mock(stdout="", stderr=""))
+    (tmp_path / "topas_field01.txt").write_text("# topas")
+    params = _conversion_params(tmp_path)
+    params.material_overrides = [("Hip implant", "ImplantSteel"), ("BODY", "G4_WATER")]
+    params.materials_file = "/cfg/materials.txt"
+    webserver.run_conversion(params, [])
+
+    cmd = run.call_args[0][0]
+    includes = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-S"]
+    assert includes == ["../material.txt", "/cfg/materials.txt"]
+    assert [cmd[i + 1] for i, a in enumerate(cmd) if a == "--material-override"] == [
+        "Hip implant=ImplantSteel", "BODY=G4_WATER"]
+
+
+def test_without_overrides_no_materials_are_pasted(mocker, tmp_path):
+    from pregdos import webserver
+
+    run = mocker.patch("pregdos.webserver.subprocess.run",
+                       return_value=mocker.Mock(stdout="", stderr=""))
+    (tmp_path / "topas_field01.txt").write_text("# topas")
+    params = _conversion_params(tmp_path)
+    params.materials_file = "/cfg/materials.txt"
+    webserver.run_conversion(params, [])
+    cmd = run.call_args[0][0]
+    assert cmd.count("-S") == 1 and "--material-override" not in cmd
+
+
+def _study_with_structures(tmp_path) -> dict[str, object]:
+    """A /convert form for a study whose RTSTRUCT has CTV and "Hip implant".  Typed loosely:
+    the override rows are lists."""
+    form: dict[str, object] = dict(_convert_form(tmp_path))
+    dicom_factory.flat_study(studies.dicom_path(tmp_path, "mystudy"), rois=("CTV", "Hip implant"))
+    return form
+
+
+def test_convert_passes_the_chosen_overrides(client, tmp_path, mocker):
+    run = mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    form = _study_with_structures(tmp_path)
+    form.update({"override_roi": ["Hip implant", ""], "override_material": ["Steel", ""]})
+
+    client.post("/convert", data=form, follow_redirects=True)
+
+    conversion = [c.args[0] for c in run.call_args_list if "--list-config" not in c.args[0]][-1]
+    assert conversion[conversion.index("--material-override") + 1] == "Hip implant=Steel"
+
+
+def test_an_unoffered_override_returns_to_the_setup_page_with_nothing_on_disk(client, tmp_path, mocker):
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    form = _study_with_structures(tmp_path)
+    form.update({"override_roi": ["Femur"], "override_material": ["Steel"]})
+
+    body = client.post("/convert", data=form, follow_redirects=True).data.decode()
+
+    assert "&#39;Femur&#39; is not a structure of this study" in body
+    assert 'name="override_roi"' in body                 # back on the setup page
+    assert studies.list_runs(tmp_path, "mystudy") == []
+
+
+def test_a_refused_override_keeps_the_choices_on_the_setup_page(client, tmp_path, mocker):
+    """dicomexport refuses, e.g., a structure with a hole.  The user fixes one row, so the
+    page comes back with the rows as submitted, not the upload page."""
+    import subprocess
+
+    def refuse(cmd, *args, **kwargs):
+        if "--list-config" in cmd:
+            return _fake_dicomexport(cmd, *args, **kwargs)
+        raise subprocess.CalledProcessError(2, cmd, stderr=(
+            "Using the defaults shipped with dicomexport (/x): ...\n"
+            "--material-override 'Hip implant=Steel': 'Hip implant' has a hole\n"))
+
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=refuse)
+    form = _study_with_structures(tmp_path)
+    form.update({"override_roi": ["Hip implant"], "override_material": ["Steel"]})
+
+    body = client.post("/convert", data=form, follow_redirects=True).data.decode()
+
+    assert "has a hole" in body
+    assert "Using the defaults shipped" not in body
+    assert '<option value="Hip implant" selected>' in body
+    assert studies.list_runs(tmp_path, "mystudy") == []
+
+
+def test_dicomexport_warnings_are_shown_after_a_successful_conversion(client, tmp_path, mocker):
+    def warn(cmd, *args, **kwargs):
+        result = _fake_dicomexport(cmd, *args, **kwargs)
+        if "--list-config" not in cmd:
+            result.stderr = ("Using the defaults shipped with dicomexport (/x): ...\n"
+                             "Field 1: 35 of 659 spots round to 0 histories\n")
+        return result
+
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=warn)
+    body = client.post("/convert", data=_convert_form(tmp_path), follow_redirects=True).data.decode()
+
+    assert "dicomexport: Field 1: 35 of 659 spots round to 0 histories" in body
+    assert "Using the defaults shipped" not in body
+
+
+def test_a_scored_and_overridden_structure_is_warned_about(client, tmp_path, mocker):
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    form = _study_with_structures(tmp_path)
+    form.update({"score_neutron": "Hip implant",
+                 "override_roi": ["Hip implant"], "override_material": ["Steel"]})
+
+    body = client.post("/convert", data=form, follow_redirects=True).data.decode()
+
+    assert "Hip implant is both scored and given Steel" in body
+
+
 def _config_dir_passed(mocker, tmp_path):
     from pregdos import webserver
 

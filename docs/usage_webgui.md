@@ -116,6 +116,33 @@ For a minimal completed run with the head phantom:
    to the study, and leave Single batch unticked. If a field has too few histories for its ten
    batches, the conversion page says so and how many it needs.
 
+### Material overrides
+
+For a patient with a metal implant, or a structure drawn over an artefact, give the structure a
+material in place of the CT conversion under **Material overrides**: choose a structure from the
+RTSTRUCT and a material for it, one row each.
+
+- The materials offered are those the site defines in `materials.txt` of its dicomexport
+  configuration directory (see [the installation guide](installation.md#the-sites-dicomexport-data)),
+  then a few TOPAS already knows: `Vacuum`, `Steel` (8.027 g/cm³), `G4_AIR`, `G4_WATER` and `G4_Ti`.
+  dicomexport's shipped `materials.txt` defines `ImplantSteel`, DCPT's steel at 7.8 g/cm³. A site
+  that needs another material adds its TOPAS `Ma/` lines to `materials.txt`.
+- **Order matters.** Where structures overlap, TOPAS uses the first row, so list implants before the
+  body.
+- An overridden structure does not need to be scored.
+- dicomexport refuses a structure TOPAS would build differently from the RTSTRUCT: one with a hole,
+  an open contour, no closed contour, a contour off the CT slices, or a name TOPAS cannot match.
+  The setup page then shows why, with your choices kept.
+- A structure that is both scored and overridden is warned about: TOPAS uses the chosen material,
+  but the structure's mass, which some scorers are normalised by, is still computed from the CT
+  numbers.
+
+Each generated TOPAS file records its overrides (`# MATERIAL_OVERRIDE:` in its header) and carries
+the pasted `materials.txt` with its SHA-256.
+
+After conversion, the page also shows dicomexport's warnings, for example spots that round away at
+low statistics.
+
 A dose-only recalculation is a valid setup: tick no structures at all and keep the in-field
 `DoseToWater` scorer. The run then produces its dose cube and nothing else, and the result page
 offers the RTDOSE export on its own.

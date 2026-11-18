@@ -8,7 +8,7 @@ the dicomexport subprocess call, and the TOPAS scorer post-processing step.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 @dataclass(slots=True)
@@ -49,6 +49,12 @@ class ConversionParameters:
     single_batch: bool = False
     """Run each field as a single batch: quicker, but with no statistical uncertainty.
     Only matters in sources mode, where a field otherwise runs as ``config.BATCHES``."""
+    material_overrides: List[Tuple[str, str]] = field(default_factory=list)
+    """``(structure, material)`` pairs, passed as ``--material-override`` in this order: where
+    structures overlap, TOPAS uses the first (#126).  See :mod:`pregdos.overrides`."""
+    materials_file: Optional[str] = None
+    """The site's ``materials.txt``, pasted with ``-S`` after the CT table when overrides are
+    given.  None when there are none, or the config dir has no such file."""
 
 
 @dataclass(slots=True)

@@ -500,6 +500,10 @@ material definitions from one **configuration directory**:
   materials.txt
 ```
 
+The setup page offers the beam models and tables from it, and the materials `materials.txt`
+defines (its TOPAS `Ma/<name>/` lines) for material overrides. Adding a file or a material there
+makes it selectable; nothing in PregDos needs to change.
+
 Without one, dicomexport uses the examples it ships with: DCPT's beam models and range shifters
 from four centres. These are examples, not this site's calibration. Create the site's directory
 once, then replace the examples in it with the site's own data:
