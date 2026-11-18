@@ -754,6 +754,9 @@ def _setup_page(root, study_name, beam_model_name, material_table_name, form=Non
         output_basename=form.get("output_basename") or "topas",
         nstat=form.get("nstat") or "1000000",
         nstat_custom=form.get("nstat_custom") or "",
+        quick_test=bool(form.get("quick_test")),
+        sources_mode=config.load().conversion.spot_mode == "sources",
+        batches=config.BATCHES,
         # Checked by default on a fresh setup page; on a refusal, whatever was submitted -- the
         # form has to show the state the message is complaining about.
         keep_infield=bool(form.get("keep_infield")) if form else True,
@@ -901,13 +904,14 @@ def run_conversion(params: ConversionParameters, selected_structures: list) -> C
     # -S: that is how the readers find it.  Once any -s/-S is given, dicomexport adds no
     # table of its own, so the table is always named.
     cmd = _dicomexport_cmd_prefix() + ["-b", params.beam_model_rel, "-S", params.material_table_rel]
-    # [conversion] spot_mode and batches (#130), always passed explicitly so a change of
-    # dicomexport's defaults can never change what PregDos computes.  Batches exist only in
-    # sources mode; dicomexport refuses more than one in time-feature mode.  Progress, plan
-    # scaling and the uncertainty read the resulting layout from the field's header.
-    conversion = config.load().conversion
-    batches = conversion.batches if conversion.spot_mode == "sources" else 1
-    cmd += ["--spot-mode", conversion.spot_mode, "--batches", str(batches)]
+    # [conversion] spot_mode (#130) and the batch count, always passed explicitly so a change
+    # of dicomexport's defaults can never change what PregDos computes.  Sources mode runs
+    # BATCHES batches, whose spread is the uncertainty, or 1 for a quick test.  dicomexport
+    # refuses more than one in time-feature mode.  Progress, plan scaling and the uncertainty
+    # read the resulting layout from the field's header.
+    spot_mode = config.load().conversion.spot_mode
+    batches = 1 if (spot_mode != "sources" or params.quick_test) else config.BATCHES
+    cmd += ["--spot-mode", spot_mode, "--batches", str(batches)]
     cmd += ["--config-dir", dicomexport_config_dir()]
     if params.field_nr is not None:
         cmd += ["-f", str(params.field_nr)]
@@ -1013,6 +1017,7 @@ def convert():
         output_basename=output_basename,
         field_nr=None,
         nstat=nstat,
+        quick_test=bool(request.form.get("quick_test")),
     )
 
     try:
@@ -1050,6 +1055,9 @@ def convert():
             flash(f"Structure mask pre-pass setup failed: {err}")
             return redirect(url_for("upload_files"))
 
+    for warning in _batch_statistics_warnings(run_dir, result.out_files):
+        flash(warning)
+
     # Only now is there a run directory that survived conversion, scorer injection and the
     # mask pre-pass.  Every failure above deletes it again.
     audit.event("run.convert", study=study_name, run=run_id,
@@ -1063,6 +1071,31 @@ def convert():
         run_id=result.run_id,
         selected_structures=result.selected_structures,
     )
+
+
+#: Protons per spot per batch below which a batched field is warned about.  The lowest
+#: tested: 20 000 primaries over 659 spots in 10 batches still matched time-feature mode
+#: within its uncertainty (#130).  Spot weights are rounded per batch, so fewer can distort
+#: the field.
+MIN_PROTONS_PER_SPOT_PER_BATCH = 3
+
+
+def _batch_statistics_warnings(run_dir: Path, out_files: list) -> list[str]:
+    """One message per batched field with fewer primaries than its batches were tested with."""
+    messages = []
+    for name in out_files:
+        layout = results.parse_plan_scaling(run_dir / name)
+        if layout is None or layout.spot_mode != "sources" or layout.runs < 2 or layout.spots < 1:
+            continue
+        needed = MIN_PROTONS_PER_SPOT_PER_BATCH * layout.spots * layout.runs
+        if layout.requested_histories < needed:
+            messages.append(
+                f"{name}: {layout.requested_histories:,} primaries over {layout.spots:,} spots in "
+                f"{layout.runs} batches is fewer than {MIN_PROTONS_PER_SPOT_PER_BATCH} protons per "
+                f"spot per batch. Spot weights are rounded per batch, so the field may be "
+                f"distorted. Use at least {needed:,} primaries, or run a quick test."
+            )
+    return messages
 
 
 @app.route("/download/<study>/<run_id>/<filename>")

@@ -28,6 +28,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from . import results
 from .textio import read_text_lenient
 
 
@@ -345,7 +346,8 @@ def _user_grid_geometry(grid: UserDefinedGrid) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
-def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefinedGrid] = None) -> str:
+def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefinedGrid] = None,
+                 after_run: bool = False) -> str:
     """Build and return a TOPAS scorer configuration block as a string.
 
     Parameters
@@ -460,6 +462,11 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
             f'sv:Sc/{name}/Report                                 = 2 "Sum" "Standard_Deviation"',
         ]
 
+    if after_run:
+        # One result per batch, `<OutputFile>_Run_0000.csv` onwards, cleared between batches:
+        # their spread is the batch-means uncertainty (#130).  TOPAS then writes no total of
+        # its own, so pregdos.results adds the batches up.
+        lines.append(f'b:Sc/{name}/OutputAfterRun                          = "True"')
     return "\n".join(lines) + "\n"
 
 
@@ -499,6 +506,11 @@ def append_scorers(topas_file_path: str, config: ScorerConfig) -> None:
     # name for all scorer output files so they land in the TOPAS working dir
     # with recognisable, field-specific names.
     output_base = path.stem
+
+    # A sources-mode field run as several batches: each added scorer reports per batch.
+    # The in-field DICOM dose is left alone: it adds up over the batches by itself.
+    layout = results.parse_plan_scaling(path)
+    after_run = layout is not None and layout.spot_mode == "sources" and layout.runs > 1
 
     # Locate the start of the scorer section and the section after it
     scorer_match = _SCORER_MARKER_RE.search(content)
@@ -549,7 +561,7 @@ def append_scorers(topas_file_path: str, config: ScorerConfig) -> None:
     # Append each requested out-of-field scorer block
     for entry in config.scorers:
         parts.append("\n")
-        parts.append(scorer_block(entry, output_base, config.grid))
+        parts.append(scorer_block(entry, output_base, config.grid, after_run=after_run))
 
     parts.append("\n")
 

@@ -2322,20 +2322,45 @@ def _spot_flags(mocker, tmp_path):
     return cmd[cmd.index("--spot-mode") + 1], cmd[cmd.index("--batches") + 1]
 
 
-def test_dicomexport_is_asked_for_time_features_by_default(mocker, tmp_path):
-    """Both flags always explicit, so dicomexport's own default (sources) never applies.
-    dicomexport refuses more than one batch in time-feature mode."""
+def test_dicomexport_is_asked_for_ten_batches_of_sources_by_default(mocker, tmp_path):
+    """Both flags always explicit, so dicomexport's own defaults never apply."""
+    assert _spot_flags(mocker, tmp_path) == ("sources", "10")
+
+
+def test_a_quick_test_runs_a_single_batch(mocker, tmp_path):
+    from pregdos import webserver
+
+    run = mocker.patch("pregdos.webserver.subprocess.run",
+                       return_value=mocker.Mock(stdout="", stderr=""))
+    (tmp_path / "topas_field01.txt").write_text("# topas")
+    params = _conversion_params(tmp_path)
+    params.quick_test = True
+    webserver.run_conversion(params, [])
+    cmd = run.call_args[0][0]
+    assert cmd[cmd.index("--batches") + 1] == "1"
+
+
+def test_time_feature_mode_always_runs_one_batch(write_config, mocker, tmp_path):
+    """dicomexport refuses more than one batch in time-feature mode."""
+    write_config('[conversion]\nspot_mode = "timefeature"\n')
     assert _spot_flags(mocker, tmp_path) == ("timefeature", "1")
 
 
-def test_dicomexport_is_asked_for_the_configured_sources_mode(write_config, mocker, tmp_path):
-    write_config('[conversion]\nspot_mode = "sources"\nbatches = 5\n')
-    assert _spot_flags(mocker, tmp_path) == ("sources", "5")
+@pytest.mark.parametrize("requested, runs, warned", [
+    (20000, 10, False),     # 3.03 per spot per batch: the lowest tested
+    (19000, 10, True),
+    (1000, 1, False),       # a quick test is not split, so nothing is rounded per batch
+])
+def test_too_few_primaries_for_the_batches_are_warned_about(tmp_path, requested, runs, warned):
+    from pregdos import webserver
 
-
-def test_batches_are_ignored_in_time_feature_mode(write_config, mocker, tmp_path):
-    write_config('[conversion]\nspot_mode = "timefeature"\nbatches = 5\n')
-    assert _spot_flags(mocker, tmp_path) == ("timefeature", "1")
+    (tmp_path / "topas_field01.txt").write_text(
+        f"# REQUESTED_HISTORIES: {requested}\n# PARTICLE_SCALING: 1.0\n# SIMULATED_HISTORIES: {requested}\n"
+        f"# SPOT_MODE: sources\n# SPOTS: 659\n# RUNS: {runs}\n# EVENTS_PER_RUN: 15\n")
+    messages = webserver._batch_statistics_warnings(tmp_path, ["topas_field01.txt"])
+    assert bool(messages) == warned
+    if warned:
+        assert "19,770" in messages[0] and "quick test" in messages[0]
 
 
 def _config_dir_passed(mocker, tmp_path):

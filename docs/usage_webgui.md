@@ -110,8 +110,11 @@ For a minimal completed run with the head phantom:
 1. Select the target structure, such as `CTV`.
 2. Keep the built-in in-field `DoseToWater` scorer if you want an RTDOSE comparison.
 3. Add the structure scorers you want to report, such as neutron dose equivalent or gamma dose.
-4. Choose the number of histories per field. For a quick smoke test, use a small value; for
-   meaningful results, use a production history count appropriate to the study.
+4. Choose the number of histories per field. For a quick smoke test, use a small value and tick
+   **Quick test**: each field then runs as one batch instead of ten, and its results have no
+   statistical uncertainty. For meaningful results, use a production history count appropriate
+   to the study, and leave Quick test unticked. If a field has too few histories for its ten
+   batches, the conversion page says so and how many it needs.
 
 A dose-only recalculation is a valid setup: tick no structures at all and keep the in-field
 `DoseToWater` scorer. The run then produces its dose cube and nothing else, and the result page
@@ -167,7 +170,8 @@ The scorer result table shows:
 - quantity
 - field
 - dose
-- statistical uncertainty
+- statistical uncertainty (empty for a quick test; see
+  [Spot mode](installation.md#spot-mode) for how it is computed)
 - unit
 
 Displayed values are human-readable. The downloadable CSV keeps raw numeric values and

@@ -9,6 +9,8 @@ layout that structure-average scorers do not produce.
 import math
 from pathlib import Path
 
+import statistics
+
 import pytest
 
 from pregdos import results
@@ -369,33 +371,71 @@ def test_simulated_histories_come_from_the_header_when_present(tmp_path):
     assert (s.spot_mode, s.runs, s.events_per_run) == ("sources", 10, 15)
 
 
-def test_sources_mode_uncertainty_counts_events_not_protons(tmp_path):
-    """TOPAS's SD is per event; an event holds one proton from every spot still firing.
-    With protons as N the uncertainty would be sqrt(19940 / 150), about 11x, too large."""
+def _single(total, sd=None):
+    values = {"Sum": total} if sd is None else {"Sum": total, "Standard_Deviation": sd}
+    return ScorerResult(csv_name="x.csv", scorer="Dose_CTV", quantity="DoseToWater", unit="Gy",
+                        columns=list(values), rows=[((), values)], parameter_file="topas_field01.txt")
+
+
+def test_batch_means_is_the_uncertainty_of_a_batched_field():
+    """The dose is the sum of B independent batches; its SE is sqrt(B) * SD(batch sums)."""
+    sums = [1.0, 1.2, 0.9, 1.1, 1.0, 0.8, 1.2, 1.0, 0.9, 1.1]
+    combined = results.combine_batches([_single(v, sd=99.0) for v in sums], "x_Run_*.csv")
+
+    assert combined.raw_sum == pytest.approx(sum(sums))
+    assert combined.raw_standard_deviation is None        # TOPAS's per-event SD is not used
+    expected = 10 ** 0.5 * statistics.stdev(sums) / sum(sums)
+    assert combined.relative_uncertainty(None) == pytest.approx(expected)
+
+
+def test_a_quick_test_has_no_uncertainty(tmp_path):
+    """One sources-mode batch: TOPAS's per-event SD would overstate it many times (#130)."""
     s = parse_plan_scaling(_header(tmp_path, "SIMULATED_HISTORIES: 19940", "SPOT_MODE: sources",
-                                   "RUNS: 10", "EVENTS_PER_RUN: 15"))
-    assert s.uncertainty_samples == 150
-    r = ScorerResult(csv_name="x.csv", scorer="x", quantity="DoseToWater", unit="Gy",
-                     columns=["Sum", "Standard_Deviation"],
-                     rows=[((), {"Sum": 3.0, "Standard_Deviation": 0.5})])
-    assert r.relative_uncertainty(s) == pytest.approx(150 ** 0.5 * 0.5 / 3.0)
+                                   "RUNS: 1", "EVENTS_PER_RUN: 150"))
+    assert _single(3.0, sd=0.5).relative_uncertainty(s) is None
 
 
 def test_time_feature_uncertainty_still_counts_protons(tmp_path):
     s = parse_plan_scaling(_header(tmp_path, "SIMULATED_HISTORIES: 19999", "SPOT_MODE: timefeature",
                                    "SPOTS: 659", "RUNS: 659"))
-    assert s.uncertainty_samples == 19999
+    assert _single(3.0, sd=0.5).relative_uncertainty(s) == pytest.approx(19999 ** 0.5 * 0.5 / 3.0)
 
 
-def test_input_without_spot_mode_is_time_feature(tmp_path):
+def test_input_without_spot_mode_is_time_feature():
     """dicomexport < 2.0 wrote no SPOT_MODE, and only had one mode."""
-    assert parse_plan_scaling(TOPAS_INPUT).spot_mode == "timefeature"
-    assert parse_plan_scaling(TOPAS_INPUT).uncertainty_samples == 19990
+    s = parse_plan_scaling(TOPAS_INPUT)
+    assert s.spot_mode == "timefeature"
+    assert _single(3.0, sd=0.5).relative_uncertainty(s) == pytest.approx(19990 ** 0.5 * 0.5 / 3.0)
 
 
-def test_sources_mode_without_the_event_count_has_no_uncertainty(tmp_path):
-    s = parse_plan_scaling(_header(tmp_path, "SIMULATED_HISTORIES: 19940", "SPOT_MODE: sources"))
-    assert s.uncertainty_samples == 0
+def _batched_run(run_dir, runs=3, written=None, value=1.0):
+    """A sources-mode field run as `runs` batches, of which `written` have finished."""
+    (run_dir / "topas_field01.txt").write_text(
+        "# REQUESTED_HISTORIES: 20000\n# SIMULATED_HISTORIES: 19940\n# PARTICLE_SCALING: 2.0\n"
+        f"# SPOT_MODE: sources\n# SPOTS: 659\n# RUNS: {runs}\n# EVENTS_PER_RUN: 15\n")
+    for k in range(runs if written is None else written):
+        (run_dir / f"topas_field01_dose_to_water_CTV_Run_{k:04d}.csv").write_text(
+            "# Parameter File: topas_field01.txt\n"
+            "# Results for scorer: DoseWater_CTV\n"
+            "# DoseToWater ( Gy ) : Sum   Standard_Deviation\n"
+            f"{value + k}, 5\n")
+
+
+def test_collect_results_adds_up_the_batches_of_a_field(tmp_path):
+    _batched_run(tmp_path, runs=3)
+    (result,), warnings = results.collect_results(tmp_path)
+    assert warnings == []
+    assert result.batch_sums == [1.0, 2.0, 3.0]
+    assert result.raw_sum == pytest.approx(6.0)
+    dose, uncertainty = result.scaled(results.scaling_for(result, tmp_path))
+    assert dose == pytest.approx(6.0 * 2.0 * 20000 / 19940)
+    assert uncertainty == pytest.approx(dose * 3 ** 0.5 * 1.0 / 6.0)
+
+
+def test_a_field_still_running_its_batches_shows_nothing_yet(tmp_path):
+    """A partial sum would look like a plausible, low dose."""
+    _batched_run(tmp_path, runs=10, written=7)
+    assert results.collect_results(tmp_path) == ([], [])
 
 
 @pytest.mark.parametrize("text", [

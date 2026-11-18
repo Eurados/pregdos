@@ -282,10 +282,8 @@ def test_an_unknown_spot_mode_is_an_error_with_a_suggestion(write_config):
         config.load()
 
 
-def test_batches_must_be_at_least_one(write_config):
-    write_config("[conversion]\nbatches = 0\n")
-    with pytest.raises(config.ConfigError, match="batches: 0 must be at least 1"):
-        config.load()
+def test_sources_mode_is_the_default():
+    assert config.load().conversion.spot_mode == "sources"
 
 
 def test_a_relative_dicomexport_config_dir_is_an_error(write_config):

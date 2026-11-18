@@ -81,6 +81,17 @@
         <small class="hint">Simulated <strong>per field</strong>, so the total is this value × the number of fields.
           More primaries give better statistics at the cost of longer runtime.</small>
       </div>
+      {% if sources_mode %}
+      <div class="form-row">
+        <label class="scorer-checkbox-label">
+          <input type="checkbox" name="quick_test" value="1" {% if quick_test %}checked{% endif %}>
+          Quick test
+        </label>
+        <small class="hint">Runs each field as one batch instead of {{ batches }}: quicker, but
+          the results have <strong>no statistical uncertainty</strong>. For checking a setup,
+          not for reporting a dose.</small>
+      </div>
+      {% endif %}
     </section>
 
   </div>

@@ -197,9 +197,9 @@ def _scaling_warning(scaling: results.PlanScaling) -> str | None:
         return ("its TOPAS input records neither SIMULATED_HISTORIES nor Tf/spotWeight, so the "
                 "dose is scaled without the correction for rounded spot weights, and has no "
                 "statistical uncertainty.")
-    if scaling.uncertainty_samples <= 0:
-        return ("its TOPAS input is in sources mode but lacks RUNS or EVENTS_PER_RUN, so the "
-                "dose has no statistical uncertainty.")
+    if scaling.spot_mode == "sources" and scaling.runs == 1:
+        return ("a quick test: the field ran as a single batch, so its dose has no statistical "
+                "uncertainty.")
     return None
 
 

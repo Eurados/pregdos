@@ -174,13 +174,18 @@ SPOT_MODES = ("timefeature", "sources")
 
 @dataclass(frozen=True)
 class Conversion:
-    """How dicomexport lays a field out for TOPAS (#130).  Both are always passed explicitly,
-    so a change of dicomexport's own defaults never changes what PregDos computes."""
+    """How dicomexport lays a field out for TOPAS (#130).  Always passed explicitly, so a change
+    of dicomexport's own default never changes what PregDos computes."""
 
-    # "timefeature": one Geant4 run per spot.  "sources": one TOPAS source per spot, the field
-    # run as `batches` identical runs, each with 1/batches of every spot's protons.
-    spot_mode: str = "timefeature"
-    batches: int = 10                # sources mode only; time-feature mode always passes 1
+    # "sources": one TOPAS source per spot, the field run as BATCHES identical runs whose
+    # spread gives the statistical uncertainty (batch means).  "timefeature": one Geant4 run
+    # per spot, the previous behaviour, kept to cross-check sources mode.
+    spot_mode: str = "sources"
+
+
+#: Batches per field in sources mode, unless the user asks for a quick test (1 batch, no
+#: uncertainty).  Not a setting: 10 gives the batch-means uncertainty 9 degrees of freedom.
+BATCHES = 10
 
 
 @dataclass(frozen=True)
@@ -343,11 +348,6 @@ def _validate_values(cfg: Config, sources: List[Path]) -> None:
             f"{', '.join(repr(m) for m in SPOT_MODES)}"
             f"{_did_you_mean(cfg.conversion.spot_mode, SPOT_MODES)}"
         )
-    if cfg.conversion.batches < 1:
-        raise ConfigError(
-            f"{where}: [conversion] batches: {cfg.conversion.batches} must be at least 1"
-        )
-
     # dicomexport runs with the run directory as its cwd, so a relative path would name a
     # different, nonexistent directory for every run.
     config_dir = cfg.paths.dicomexport_config_dir

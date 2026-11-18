@@ -46,11 +46,20 @@ Uncertainty
 -----------
 TOPAS's ``Standard_Deviation`` column is the sample SD of the *per-history* contributions --
 not a standard error, and √N too small as an error on the reported ``Sum``.  The statistical
-uncertainty we report is the standard error of the estimated dose, ``√N · SD / Sum``, where N
-is the number of samples behind SD: protons in time-feature mode, events in sources mode (see
-:attr:`PlanScaling.uncertainty_samples`).  It is invariant under the deterministic plan
-scaling.  See
-:meth:`ScorerResult.relative_uncertainty`.
+uncertainty we report depends on how the field was run (see
+:meth:`ScorerResult.relative_uncertainty`):
+
+* **sources mode** (dicomexport >= 2.0, the default): the field runs as B identical batches, and
+  each scorer writes one result per batch, ``<scorer>_Run_0000.csv`` onwards.  The dose is their
+  sum, and its standard error is ``√B · SD(batch sums)`` -- batch means.  TOPAS's own
+  ``Standard_Deviation`` is not usable here: it is taken over events, and an event holds one
+  proton from every spot still firing, so it measures how unequal the events are, not noise.
+  Measured on the head phantom, it overstated the uncertainty 3-26× (#130).  A single batch
+  (a quick test) has no uncertainty.
+* **time-feature mode**: ``√N · SD / Sum`` with N the protons simulated.  Conservative, since it
+  counts the spread between spots as noise (about 2× batch means in-field, same phantom).
+
+Both are invariant under the deterministic plan scaling.
 
 .. warning::
    The **absolute** dose values are still under validation (issue #50): how TOPAS normalises a
@@ -63,6 +72,7 @@ from __future__ import annotations
 
 import math
 import re
+import statistics
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -95,6 +105,9 @@ _STANDARD_DEVIATION = "Standard_Deviation"
 # Scorer CSVs produced by a run.  `IfOutputFileAlreadyExists = "Increment"` can append an
 # index, so `topas_field01_neutron_Fetus_1.csv` is the same scorer, run again.
 _INCREMENT_RE = re.compile(r"^(?P<stem>.+?)_(?P<index>\d+)$")
+# `topas_field01_neutron_Fetus_Run_0003`: batch 3 of a sources-mode field, written because
+# PregDos sets OutputAfterRun on its scorers there (#130).  TOPAS then writes no total.
+_BATCH_RE = re.compile(r"^(?P<stem>.+)_Run_(?P<batch>\d+)$")
 
 # dicomexport >= 1.5.0 names its output `<base>_field<NN>.txt`, where NN is the DICOM
 # BeamNumber. `beam_names()` is keyed the same way so the number in the filename lines up
@@ -125,21 +138,8 @@ class PlanScaling:
     """``RUNS``: batches in sources mode, spots in time-feature mode.  0 if absent."""
     events_per_run: int = 0
     """``EVENTS_PER_RUN``, sources mode only: the heaviest spot's protons per run."""
-
-    @property
-    def uncertainty_samples(self) -> int:
-        """N for the uncertainty: the number of samples behind TOPAS's ``Standard_Deviation``.
-
-        TOPAS takes the SD over **events** (Geant4 histories).  In time-feature mode an event is
-        one proton, so N is :attr:`simulated_histories`.  In sources mode an event holds one
-        proton from every spot still firing, and a run has only ``EVENTS_PER_RUN`` of them;
-        the scorers accumulate over all ``RUNS``, so N = ``RUNS × EVENTS_PER_RUN``.  Using
-        protons there would overstate the uncertainty by √(protons / events), easily 10×.
-        0 when the header does not say.
-        """
-        if self.spot_mode == "sources":
-            return self.runs * self.events_per_run
-        return self.simulated_histories
+    spots: int = 0
+    """``SPOTS``: the field's spot count.  0 if absent."""
 
     @property
     def factor(self) -> float:
@@ -182,6 +182,9 @@ class ScorerResult:
     topas_version: str = ""
     run_index: Optional[int] = None
     """Set when `IfOutputFileAlreadyExists = Increment` produced `..._1.csv` etc."""
+    batch_sums: Optional[List[float]] = None
+    """Each batch's ``Sum``, in order, when this result adds up a sources-mode field's
+    ``_Run_NNNN`` files (:func:`combine_batches`).  None for a result TOPAS accumulated."""
 
     @property
     def field_number(self) -> Optional[int]:
@@ -234,7 +237,14 @@ class ScorerResult:
     def relative_uncertainty(self, scaling: Optional[PlanScaling]) -> Optional[float]:
         """Fractional 1σ Monte-Carlo statistical uncertainty on the dose, or None.
 
-        TOPAS reports ``Sum`` (the total over ``N`` simulated histories) and
+        **Batches** (sources mode): the dose is the sum of B independent, identical batches, so
+
+            SE(dose)/dose = √B · SD(batch sums) / Σ batch sums
+
+        with B >= 2.  A sources-mode field that ran as one batch -- a quick test -- has none:
+        TOPAS's per-event ``Standard_Deviation`` overstates it many times (module docstring).
+
+        **Time-feature mode**: TOPAS reports ``Sum`` (the total over ``N`` simulated histories) and
         ``Standard_Deviation`` = ``s``, the sample SD of the *per-history* contributions --
         **not** a standard error, and not the uncertainty on ``Sum``.  The estimate we report
         is the mean dose per proton (``Sum/N``) multiplied by the plan's proton count, so the
@@ -242,18 +252,22 @@ class ScorerResult:
 
             SE(dose)/dose = √N · s / Sum   =   (s / mean) / √N
 
-        ``N`` is the number of samples behind ``s``, :attr:`PlanScaling.uncertainty_samples`:
-        protons in time-feature mode, events in sources mode.  This ratio is dimensionless and
-        **invariant under
+        ``N`` is the number of histories actually simulated (``SIMULATED_HISTORIES``), which we
+        already parse for the plan scaling.  This ratio is dimensionless and **invariant under
         the plan scaling** -- multiplying ``Sum`` by a constant to reach plan dose multiplies
         the absolute error by the same constant -- so it applies unchanged to the scaled dose.
         It depends on how many histories were *simulated*, never on the plan's proton count.
         """
-        if scaling is None:
+        if self.batch_sums is not None:
+            total = sum(self.batch_sums)
+            if len(self.batch_sums) < 2 or total == 0.0 or math.isnan(total):
+                return None
+            return math.sqrt(len(self.batch_sums)) * statistics.stdev(self.batch_sums) / abs(total)
+        if scaling is None or scaling.spot_mode == "sources":
             return None
         sd = self.raw_standard_deviation
         total = self.raw_sum
-        n = scaling.uncertainty_samples
+        n = scaling.simulated_histories
         if sd is None or math.isnan(sd) or total in (None, 0.0) or math.isnan(total) or n <= 0:
             return None
         return math.sqrt(n) * sd / abs(total)
@@ -333,6 +347,7 @@ def parse_plan_scaling(topas_input: str | Path) -> Optional[PlanScaling]:
             simulated = sum(int(v) for v in match.group("values").split())
         runs = int(float(header.get("RUNS", 0)))
         events_per_run = int(float(header.get("EVENTS_PER_RUN", 0)))
+        spots = int(float(header.get("SPOTS", 0)))
     except ValueError:
         return None
     mode = _SPOT_MODE_RE.search(text)
@@ -345,6 +360,7 @@ def parse_plan_scaling(topas_input: str | Path) -> Optional[PlanScaling]:
         spot_mode=mode.group("mode") if mode else "timefeature",
         runs=runs,
         events_per_run=events_per_run,
+        spots=spots,
     )
 
 
@@ -546,6 +562,7 @@ def collect_results(run_dir: str | Path) -> Tuple[List[ScorerResult], List[str]]
     results: List[ScorerResult] = []
     warnings: List[str] = []
 
+    batches: Dict[str, List[Tuple[int, Path]]] = {}
     for csv_path in sorted(run_dir.glob("*.csv")):
         # TOPAS creates each scorer's file when it sets the scorer up and only writes it at
         # the end of the session, so an empty CSV means "this field has not finished yet",
@@ -555,14 +572,64 @@ def collect_results(run_dir: str | Path) -> Tuple[List[ScorerResult], List[str]]
         # `IfOutputFileAlreadyExists = Increment`, whose data lives in `..._1.csv`.
         if csv_path.stat().st_size == 0:
             continue
+        if (m := _BATCH_RE.match(csv_path.stem)):
+            batches.setdefault(m.group("stem"), []).append((int(m.group("batch")), csv_path))
+            continue
         try:
             results.append(parse_scorer_csv(csv_path))
+        except ResultsError as e:
+            warnings.append(str(e))
+
+    for stem, files in sorted(batches.items()):
+        files.sort()
+        try:
+            parts = [parse_scorer_csv(path) for _, path in files]
+        except ResultsError as e:
+            warnings.append(str(e))
+            continue
+        # TOPAS writes each batch's file as that batch ends.  Until all of them are there the
+        # field is still running, and a partial sum would look like a plausible, low dose --
+        # so wait, as for an empty CSV above.
+        layout = scaling_for(parts[0], run_dir)
+        expected = layout.runs if layout is not None else 0
+        if [n for n, _ in files] != list(range(expected or len(files))):
+            continue
+        try:
+            results.append(combine_batches(parts, f"{stem}_Run_*.csv"))
         except ResultsError as e:
             warnings.append(str(e))
 
     # Group by field first: a clinician reads the table one field at a time.
     results.sort(key=lambda r: (r.field_number or 0, r.structure, r.quantity, r.scorer, r.run_index or 0))
     return results, warnings
+
+
+def combine_batches(parts: List[ScorerResult], name: str) -> ScorerResult:
+    """One result for a scorer of a field run in batches: the ``Sum`` of every bin added up
+    over the batches, and each batch's ``Sum`` for the uncertainty.
+
+    TOPAS's per-batch ``Standard_Deviation`` is dropped: in sources mode it is taken over
+    events and does not measure the noise (module docstring).
+    """
+    first = parts[0]
+    bins = [index for index, _ in first.rows]
+    for part in parts[1:]:
+        if (part.scorer, part.quantity, part.unit, [index for index, _ in part.rows]) != (
+                first.scorer, first.quantity, first.unit, bins):
+            raise ResultsError(f"{name}: the batches do not describe the same scorer")
+
+    def batch_sum(part: ScorerResult, k: int) -> float:
+        value = part.rows[k][1].get(_SUM)
+        return math.nan if value is None else value
+
+    rows = [(index, {_SUM: sum(batch_sum(part, k) for part in parts)}) for k, index in enumerate(bins)]
+    return ScorerResult(
+        csv_name=name, scorer=first.scorer, quantity=first.quantity, unit=first.unit,
+        columns=[_SUM], rows=rows, structure=first.structure, component=first.component,
+        particle=first.particle, parameter_file=first.parameter_file,
+        topas_version=first.topas_version,
+        batch_sums=[batch_sum(part, 0) for part in parts] if first.is_single_bin else None,
+    )
 
 
 def scaling_for(result: ScorerResult, run_dir: str | Path) -> Optional[PlanScaling]:
