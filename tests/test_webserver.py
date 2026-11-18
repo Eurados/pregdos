@@ -2251,6 +2251,54 @@ def test_dicomexport_is_asked_for_timefeature_spot_mode(mocker, tmp_path):
     assert cmd[cmd.index("--spot-mode") + 1] == "timefeature"
 
 
+def _config_dir_passed(mocker, tmp_path):
+    from pregdos import webserver
+
+    run = mocker.patch("pregdos.webserver.subprocess.run",
+                       return_value=mocker.Mock(stdout="", stderr=""))
+    (tmp_path / "topas_field01.txt").write_text("# topas")
+    webserver.run_conversion(_conversion_params(tmp_path), [])
+    cmd = run.call_args[0][0]
+    return cmd[cmd.index("--config-dir") + 1]
+
+
+def test_dicomexport_is_given_the_configured_config_dir(write_config, mocker, tmp_path, monkeypatch):
+    monkeypatch.delenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", raising=False)
+    write_config('[paths]\ndicomexport_config_dir = "/srv/site/dicomexport"\n')
+    assert _config_dir_passed(mocker, tmp_path) == "/srv/site/dicomexport"
+
+
+def test_the_environment_overrides_the_config_dir(write_config, mocker, tmp_path, monkeypatch):
+    """How the container names a mounted directory: it ships no config file."""
+    write_config('[paths]\ndicomexport_config_dir = "/srv/site/dicomexport"\n')
+    monkeypatch.setenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", "/etc/dicomexport")
+    assert _config_dir_passed(mocker, tmp_path) == "/etc/dicomexport"
+
+
+def test_without_a_site_config_dir_dicomexport_is_given_its_shipped_examples(
+        write_config, mocker, tmp_path, monkeypatch):
+    """Never nothing: dicomexport would then search ~/.config/dicomexport and /etc/dicomexport,
+    which may belong to another installation on the host (#128)."""
+    from dicomexport.config import DEFAULTS_DIR
+
+    monkeypatch.delenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", raising=False)
+    write_config("")
+    assert _config_dir_passed(mocker, tmp_path) == str(DEFAULTS_DIR)
+
+
+def test_a_relative_config_dir_from_the_environment_is_a_flashable_error(
+        write_config, mocker, tmp_path, monkeypatch):
+    """The config file is validated at startup; the environment variable is not."""
+    from pregdos import webserver
+
+    write_config("")
+    monkeypatch.setenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", "dicomexport")
+    run = mocker.patch("pregdos.webserver.subprocess.run")
+    with pytest.raises(RuntimeError, match="not an absolute path"):
+        webserver.run_conversion(_conversion_params(tmp_path), [])
+    run.assert_not_called()
+
+
 def test_dicomexport_timeout_reaches_subprocess(write_config, mocker, tmp_path):
     from pregdos import webserver
 

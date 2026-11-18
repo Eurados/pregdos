@@ -48,6 +48,16 @@
 ## wedge a web worker.
 # dicomexport_timeout = 900
 
+## The site's dicomexport configuration directory: beam_models/, ct_to_material/,
+## range_shifters.csv and materials.txt.  Create it once with
+##     dicomexport --init-config /etc/dicomexport
+## which never overwrites a file, then replace the examples with this site's calibration.
+## Must be an absolute path.  PregDos always passes it as --config-dir, so dicomexport never
+## searches ~/.config/dicomexport or /etc/dicomexport on its own.  Empty means the examples
+## shipped with dicomexport -- DCPT's data, not this site's.  The PREGDOS_DICOMEXPORT_CONFIG_DIR
+## environment variable overrides this.
+# dicomexport_config_dir = ""
+
 [scheduler]
 
 ## SLURM submission.  Every string below is EMPTY BY DEFAULT, and empty means the flag is

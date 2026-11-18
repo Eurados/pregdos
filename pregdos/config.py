@@ -72,6 +72,10 @@ class Paths:
     topas_bin: str = "topas"
     dicomexport: str = ""            # "" = autodetect beside the running interpreter
     dicomexport_timeout: int = 900   # seconds; 0 = wait forever
+    # The site's dicomexport configuration directory (beam models, CT-to-material tables,
+    # range shifters, materials).  "" = the examples shipped with dicomexport.  Always passed
+    # as --config-dir, so dicomexport's own search order never applies (#128).
+    dicomexport_config_dir: str = ""
 
 
 @dataclass(frozen=True)
@@ -316,6 +320,14 @@ def _validate_values(cfg: Config, sources: List[Path]) -> None:
                 f"{where}: [{section}] {key}: {value} is negative. Use a positive value, "
                 f"or 0 to {meaning_of_zero}."
             )
+
+    # dicomexport runs with the run directory as its cwd, so a relative path would name a
+    # different, nonexistent directory for every run.
+    config_dir = cfg.paths.dicomexport_config_dir
+    if config_dir and not Path(config_dir).is_absolute():
+        raise ConfigError(
+            f"{where}: [paths] dicomexport_config_dir: {config_dir!r} is not an absolute path"
+        )
 
     # Half a TLS pair is the dangerous case: Flask would fall back to plain HTTP, and the
     # admin who wrote one line of two would have no reason to look.  Refuse instead.

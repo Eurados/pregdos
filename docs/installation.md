@@ -482,9 +482,49 @@ a port, so a bad file fails immediately rather than on whichever page first read
 The shipped systemd unit uses the environment variable and keeps the same `pregdos-web`
 command, so an offline package upgrade requires no new service command or proxy.
 
-The sections are `[paths]` (`work_dir`, `topas_bin`, `dicomexport`, `dicomexport_timeout`),
-`[scheduler]` (see below), `[server]` (`host`, `port`, `ssl_cert`, `ssl_key`), `[auth]` (see
-[Authentication](#authentication)), and `[network]` (`update_check`).
+The sections are `[paths]` (`work_dir`, `topas_bin`, `dicomexport`, `dicomexport_timeout`,
+`dicomexport_config_dir`), `[scheduler]` (see below), `[server]` (`host`, `port`, `ssl_cert`,
+`ssl_key`), `[auth]` (see [Authentication](#authentication)), and `[network]` (`update_check`).
+
+#### The site's dicomexport data
+
+dicomexport reads a site's beam models, CT-number-to-material tables, range shifters and
+material definitions from one **configuration directory**:
+
+```text
+<dir>/
+  beam_models/*.csv
+  ct_to_material/*.txt
+  range_shifters.csv
+  materials.txt
+```
+
+Without one, dicomexport uses the examples it ships with: DCPT's beam models and range shifters
+from four centres. These are examples, not this site's calibration. Create the site's directory
+once, then replace the examples in it with the site's own data:
+
+```bash
+sudo dicomexport --init-config /etc/dicomexport
+```
+
+`--init-config` never overwrites a file, so re-running it after a dicomexport upgrade only adds
+newly shipped files. The copy holds both DCPT beam models; PregDos always names the beam model
+with `-b`, so that is not ambiguous for PregDos. Then point PregDos at the directory:
+
+```toml
+[paths]
+dicomexport_config_dir = "/etc/dicomexport"
+```
+
+The path must be absolute. PregDos passes it as `--config-dir` on every call, and passes the
+shipped examples' directory when the key is unset. dicomexport therefore never searches
+`$DICOMEXPORT_CONFIG_DIR`, `~/.config/dicomexport` or `/etc/dicomexport` on its own. On a shared
+host those may belong to another installation, and a run could otherwise use another site's
+range shifters without anything on the page saying so.
+
+If `[paths] dicomexport` names a different dicomexport installation from the one PregDos imports,
+set `dicomexport_config_dir` as well: the shipped examples PregDos falls back to are those of its
+own installation.
 
 #### Airgapped sites
 
@@ -547,6 +587,7 @@ Environment variables override the config file. Set these before running `pregdo
 | --- | --- | --- |
 | `PREGDOS_WORK_DIR` | `/var/tmp/pregdos` | Root directory for uploaded studies and generated runs. Keep it on **persistent disk** — never `/tmp`, which is usually a RAM-backed tmpfs that is wiped on reboot and steals memory from the TOPAS workers. `/var/tmp` persists across reboots and its contents are auto-reaped after ~30 days (see the retention drop-in below). |
 | `TOPAS_BIN` | `topas` | TOPAS executable used by local runs and version checks. |
+| `PREGDOS_DICOMEXPORT_CONFIG_DIR` | the shipped examples | The site's dicomexport configuration directory, as `[paths] dicomexport_config_dir`. Must be absolute. See [The site's dicomexport data](#the-sites-dicomexport-data). |
 | `PREGDOS_EXECUTOR` | `auto` | `auto`, `local`, or `slurm`. `auto` uses SLURM when `sbatch` exists, otherwise local execution. |
 | `PREGDOS_SECRET_KEY` | see below | Flask session signing key. Usually you do not need to set it: `pregdos-web` generates one at `$STATE_DIRECTORY/secret_key` (`/var/lib/pregdos/secret_key` under the shipped systemd unit) on first start, mode 0600, and reuses it forever after. Set this variable only where there is no persistent state directory — the container being the case it exists for. |
 | `PREGDOS_DEBUG` | ignored | Legacy flag; Gunicorn never exposes the Flask debugger. |
@@ -590,6 +631,24 @@ docker run --rm -it --hostname localhost -p 5000:5000 \
   -e PREGDOS_WORK_DIR=/home/slurm/pregdos_uploads \
   ghcr.io/eurados/pregdos:latest-topas4.2.3
 ```
+
+To use the site's own beam models, tables and range shifters rather than the examples shipped
+with dicomexport, keep them in a host directory and mount it. Create the directory once with
+the container's own dicomexport, then replace the examples in it with the site's data:
+
+```bash
+mkdir -p "$PWD/dicomexport_config"
+docker run --rm --entrypoint dicomexport \
+  -v "$PWD/dicomexport_config:/etc/dicomexport" \
+  ghcr.io/eurados/pregdos:latest-topas4.2.3 --init-config /etc/dicomexport
+
+docker run --rm -it --hostname localhost -p 5000:5000 \
+  -v "$PWD/dicomexport_config:/etc/dicomexport:ro" \
+  -e PREGDOS_DICOMEXPORT_CONFIG_DIR=/etc/dicomexport \
+  ghcr.io/eurados/pregdos:latest-topas4.2.3
+```
+
+See [The site's dicomexport data](#the-sites-dicomexport-data).
 
 ### Shared / multi-user deployment
 
