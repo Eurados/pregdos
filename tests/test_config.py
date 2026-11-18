@@ -276,6 +276,18 @@ def test_zero_stays_meaningful(write_config, body):
     config.load()      # raises if zero was caught up in the negativity check
 
 
+def test_a_relative_dicomexport_config_dir_is_an_error(write_config):
+    """dicomexport runs in the run directory, so a relative path would differ for every run."""
+    write_config('[paths]\ndicomexport_config_dir = "dicomexport"\n')
+    with pytest.raises(config.ConfigError, match="dicomexport_config_dir: 'dicomexport' is not an absolute path"):
+        config.load()
+
+
+def test_an_absolute_dicomexport_config_dir_is_accepted(write_config):
+    write_config('[paths]\ndicomexport_config_dir = "/etc/dicomexport"\n')
+    assert config.load().paths.dicomexport_config_dir == "/etc/dicomexport"
+
+
 @pytest.mark.parametrize("port", [0, -1, 65536])
 def test_port_outside_the_valid_range_is_an_error(write_config, port):
     write_config(f"[server]\nport = {port}\n")

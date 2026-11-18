@@ -398,6 +398,28 @@ def _dicomexport_cmd_prefix() -> list[str]:
     return [sys.executable, "-m", "dicomexport.main"]
 
 
+def dicomexport_config_dir() -> str:
+    """The configuration directory every dicomexport call is given with ``--config-dir``.
+
+    ``PREGDOS_DICOMEXPORT_CONFIG_DIR``, else ``[paths] dicomexport_config_dir``, else the
+    examples shipped with the installed dicomexport.  Never empty: without ``--config-dir``
+    dicomexport would search ``$DICOMEXPORT_CONFIG_DIR``, ``~/.config/dicomexport`` and
+    ``/etc/dicomexport``, which belong to the service account or to another installation on
+    the host, and a run could silently use another site's range shifters (#128).
+
+    The shipped examples are those of the dicomexport *imported here*.  A ``[paths]
+    dicomexport`` naming a different installation should come with its own config dir.
+    """
+    configured = config.env_or("PREGDOS_DICOMEXPORT_CONFIG_DIR", config.load().paths.dicomexport_config_dir)
+    if not configured:
+        from dicomexport.config import DEFAULTS_DIR
+        return str(DEFAULTS_DIR)
+    # The config file is validated at startup; the environment variable only here.
+    if not Path(configured).is_absolute():
+        raise RuntimeError(f"The dicomexport configuration directory {configured!r} is not an absolute path.")
+    return configured
+
+
 @app.context_processor
 def inject_layout_context():
     """Values every page needs: the version shown in the nav, and the funding logos.
@@ -830,6 +852,7 @@ def run_conversion(params: ConversionParameters, selected_structures: list) -> C
     # `sources`, which writes no such line; moving to it is #130.  Passed explicitly so a
     # change of dicomexport's default can never change what PregDos computes.
     cmd += ["--spot-mode", "timefeature"]
+    cmd += ["--config-dir", dicomexport_config_dir()]
     if params.field_nr is not None:
         cmd += ["-f", str(params.field_nr)]
     if params.nstat is not None:
