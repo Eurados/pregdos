@@ -65,12 +65,25 @@ Open **New simulation**.
 Provide:
 
 - A DICOM study, either as a ZIP or as a folder upload.
-- A beam model CSV. For the head phantom example, use one of the bundled DCPT beam models if
-  offered by the UI, or upload a matching beam model CSV.
+- A beam model CSV, chosen from the site's dicomexport configuration directory or uploaded.
+  The page preselects the directory's default; with several beam models and no default it
+  asks you to choose. For the head phantom example, use one of the DCPT beam models.
 - A CT-number-to-material table in TOPAS Schneider format, indexed by Hounsfield units and
-  prepared for your site's CT calibration. Producing it is an external step. The bundled
-  `HUtoMaterialSchneider.txt` is an example with XiO-specific density corrections; see its
-  [input contract and numerical assumptions](../pregdos/data/ct_to_material/README.md).
+  prepared for your site's CT calibration, chosen the same way. Producing it is an external
+  step. It is pasted into every generated TOPAS file, so it must be UTF-8 text.
+
+The chosen files are copied into the study, so later changes to the site's directory do not
+change a study that was already uploaded.
+
+When no site directory is configured, the page offers **the examples shipped with
+dicomexport** and says so in a warning: DCPT's beam models, and the OpenTOPAS example
+`HUtoMaterialSchneider.txt`, whose density corrections are XiO-specific. They are not a
+calibration for your scanner; see dicomexport's notes on
+[the table's input contract and numerical assumptions](https://github.com/nbassler/dicomexport/blob/v2.0.0/dicomexport/defaults/ct_to_material/README.md)
+and [the beam models](https://github.com/nbassler/dicomexport/blob/v2.0.0/dicomexport/defaults/beam_models/README.md).
+To set up the site's own directory, see [the installation guide](installation.md#the-sites-dicomexport-data).
+`patient.mass_g` in the structure metrics sums the whole CT grid, so with the example table
+the air around the patient counts at about 9.4 times its real density.
 
 PregDos flattens nested uploads into a study directory while keeping the original DICOM files
 under that study's `dicom/` subdirectory.

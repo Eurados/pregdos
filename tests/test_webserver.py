@@ -55,25 +55,93 @@ def test_upload_page_loads(client):
     assert b'href="/favicon.ico"' in response.data
 
 
-def test_every_bundled_table_is_ct_number_indexed():
-    """No bundled conversion table may expect a quantity other than CT number (#106).
+# --- beam models and tables from the dicomexport config dir (#128) ---
 
-    `_builtin_material_tables` globs the data directory, so restoring a deleted
-    `SPRtoMaterial__*.txt` puts it straight back into the upload dropdown with nothing
-    objecting.  The filename prefix is the only thing that distinguishes the two --
-    TOPAS's Schneider converter maps an integer to a material and is indifferent to what
-    the integer means, and DICOM reports `RescaleType` "HU" either way -- so the prefix
-    is what this guards.
+def _site_config(root, beam_models=("A.csv", "B.csv"), tables=("HUtoMaterialSite.txt",)):
+    """A site's dicomexport configuration directory, as --init-config and an admin leave it."""
+    for sub, names in (("beam_models", beam_models), ("ct_to_material", tables)):
+        (root / sub).mkdir(parents=True)
+        for name in names:
+            (root / sub / name).write_text(f"contents of {name}")
+    return root
 
-    Deliberately a prefix rule rather than an exact inventory: bundling a second
-    HU-indexed table is a legitimate change, bundling an SPR-indexed one is not.
-    """
-    names = [t["name"] for t in webserver._builtin_material_tables()]
-    assert names, "no bundled conversion table found at all"
-    offenders = [n for n in names if not n.startswith("HUtoMaterial")]
-    assert not offenders, (
-        f"bundled tables must be CT-number indexed and named HUtoMaterial*: {offenders}"
-    )
+
+def _select(body: str, name: str) -> str:
+    start = body.index(f'name="{name}"')
+    return body[start:body.index("</select>", start)]
+
+
+def test_upload_page_offers_dicomexport_s_examples_and_says_so(client):
+    """No site directory: the shipped examples, the default preselected, and a warning."""
+    body = client.get("/upload").data.decode()
+
+    beam_models = _select(body, "beam_model_source")
+    assert '<option value="DCPT_beam_model__v5.csv" selected>' in beam_models
+    assert '<option value="DCPT_beam_model__v2.csv">' in beam_models
+    assert '<option value="HUtoMaterialSchneider.txt" selected>' in _select(body, "material_table_source")
+    assert "examples shipped with dicomexport" in body
+
+
+def test_a_site_directory_without_a_default_makes_the_user_choose(client, tmp_path, monkeypatch):
+    """Two beam models and no default: PregDos never picks a calibration on the site's behalf."""
+    monkeypatch.setenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", str(_site_config(tmp_path / "site")))
+
+    body = client.get("/upload").data.decode()
+
+    beam_models = _select(body, "beam_model_source")
+    assert '<option value="" selected>Choose' in beam_models
+    assert '<option value="A.csv">' in beam_models and '<option value="B.csv">' in beam_models
+    # A single table is dicomexport's default, so it is preselected.
+    assert '<option value="HUtoMaterialSite.txt" selected>' in _select(body, "material_table_source")
+    assert "examples shipped with dicomexport" not in body
+
+
+def test_a_missing_site_directory_leaves_upload_as_the_only_choice(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", str(tmp_path / "absent"))
+
+    body = client.get("/upload").data.decode()
+
+    assert "does not exist" in body
+    assert '<option value="upload" selected>' in _select(body, "beam_model_source")
+
+
+def test_upload_copies_the_chosen_files_from_the_site_directory(client, tmp_path, monkeypatch):
+    """The study holds what it was converted with, even after the site's directory changes."""
+    site = _site_config(tmp_path / "site")
+    monkeypatch.setenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", str(site))
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+
+    resp = client.post("/upload", data={
+        "beam_model_source": "B.csv", "material_table_source": "HUtoMaterialSite.txt",
+        "study_dir": _dir_upload(source),
+    }, content_type="multipart/form-data", follow_redirects=True)
+
+    assert b"CTV" in resp.data                              # the setup page rendered
+    study = studies.study_path(tmp_path, "study")
+    assert (study / "B.csv").read_text() == "contents of B.csv"
+    assert (study / "HUtoMaterialSite.txt").read_text() == "contents of HUtoMaterialSite.txt"
+
+
+@pytest.mark.parametrize("name", ["C.csv", "../../etc/passwd", "/etc/passwd"])
+def test_upload_refuses_a_file_the_site_directory_does_not_list(client, tmp_path, monkeypatch, name):
+    """The form names a file; the path always comes from dicomexport's listing."""
+    monkeypatch.setenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", str(_site_config(tmp_path / "site")))
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+
+    resp = client.post("/upload", data={
+        "beam_model_source": name, "material_table_source": "HUtoMaterialSite.txt",
+        "study_dir": _dir_upload(source),
+    }, content_type="multipart/form-data", follow_redirects=True)
+
+    assert b"is not in the dicomexport configuration directory" in resp.data
+    assert studies.list_studies(tmp_path) == []
+
+
+def test_upload_without_a_chosen_beam_model_says_so(client):
+    resp = client.post("/upload", data={"beam_model_source": ""}, follow_redirects=True)
+    assert b"Choose a beam model." in resp.data
 
 
 def test_favicon_loads(client):
@@ -929,6 +997,12 @@ def _fake_dicomexport(cmd, *args, **kwargs):
     Crucially it honours ``cwd`` and echoes its path arguments into the generated file
     verbatim -- exactly as the real tool does (it performs no path resolution).
     """
+    if "--list-config" in cmd:
+        # The upload page lists the config dir; a failed /convert redirects there.
+        listing = MagicMock(returncode=0, stderr="")
+        listing.stdout = json.dumps({"config_dir": "/cfg", "is_shipped_defaults": False,
+                                     "beam_models": [], "ct_to_material": []})
+        return listing
     cwd = Path(kwargs["cwd"])
     output_base = cmd[-1]
     dicom_arg = cmd[-2]

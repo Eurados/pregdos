@@ -14,7 +14,7 @@ from flask import (
 )
 from markupsafe import Markup, escape
 import importlib.metadata
-import importlib.resources
+import json
 import pydicom
 
 import argparse
@@ -264,43 +264,85 @@ def ensure_studies_root() -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Bundled beam models and CT-number-to-material tables
+# Beam models and CT-number-to-material tables: the site's dicomexport config dir
 # ---------------------------------------------------------------------------
 
-def _builtin_material_tables() -> list[dict]:
-    """Return metadata for CT-number-to-material tables bundled with the package.
+BEAM_MODELS = "beam_models"
+CT_TO_MATERIAL = "ct_to_material"
+_LIST_CONFIG_TIMEOUT = 60      # seconds; it only lists a directory
 
-    Each entry has ``name`` (filename) and ``label`` (display name for the UI).
-    Files live in ``pregdos/data/ct_to_material/`` and are included as package data.
+
+def dicomexport_listing() -> dict:
+    """``dicomexport --list-config json`` for the directory every conversion is given (#128).
+
+    Asked of the dicomexport that converts, not read in-process, so the choices offered are
+    the ones that conversion will find.  Any failure is a :class:`RuntimeError` with a message
+    to flash -- typically a configured directory that does not exist.
     """
-    material_dir = importlib.resources.files("pregdos") / "data" / "ct_to_material"
-    tables = []
-    for entry in material_dir.iterdir():
-        if entry.name.endswith((".txt", ".csv")):
-            tables.append({"name": entry.name, "label": entry.name})
-    tables.sort(key=lambda t: t["name"])
-    return tables
+    cmd = _dicomexport_cmd_prefix() + ["--list-config", "json", "--config-dir", dicomexport_config_dir()]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_LIST_CONFIG_TIMEOUT)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"dicomexport --list-config did not answer within {_LIST_CONFIG_TIMEOUT} s.") from e
+    except (OSError, subprocess.SubprocessError) as e:
+        raise RuntimeError(f"Cannot run dicomexport ({cmd[0]}): {e}") from e
+    if proc.returncode != 0:
+        message = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(message or f"dicomexport --list-config failed with exit code {proc.returncode}.")
+    try:
+        listing = json.loads(proc.stdout)
+    except ValueError as e:
+        raise RuntimeError("dicomexport --list-config json did not return JSON.") from e
+    if not isinstance(listing, dict):
+        raise RuntimeError("dicomexport --list-config json did not return an object.")
+    return listing
 
 
-def _builtin_beam_models() -> list[dict]:
-    """Return metadata for beam model CSVs bundled with the package."""
-    bm_dir = importlib.resources.files("pregdos") / "data" / "beam_models"
-    models = []
-    for entry in bm_dir.iterdir():
-        if entry.name.endswith(".csv"):
-            models.append({"name": entry.name, "label": entry.name})
-    models.sort(key=lambda m: m["name"], reverse=True)
-    return models
+def _config_choices(listing: dict, kind: str) -> list[dict]:
+    """``{name, path, default}`` for each file of ``kind`` the config dir offers."""
+    entries = listing.get(kind)
+    if not isinstance(entries, list):
+        return []
+    return [
+        {"name": e["name"], "path": e["path"], "default": e.get("default") is True}
+        for e in entries
+        if isinstance(e, dict) and isinstance(e.get("name"), str) and isinstance(e.get("path"), str)
+    ]
 
 
-def _copy_builtin(kind: str, filename: str, dest_dir: Path) -> str:
-    """Copy a bundled beam model / CT-number-to-material table into a study dir.  Return its basename."""
-    safe = secure_filename(filename)
-    src = importlib.resources.files("pregdos") / "data" / kind / safe
-    if not src.is_file():
-        raise FileNotFoundError(f"Unknown built-in {kind} file: {filename}")
-    (dest_dir / safe).write_bytes(src.read_bytes())
-    return safe
+def _config_file(listing: dict, kind: str, name: str) -> Path:
+    """The path of the file called ``name`` in the listing.
+
+    Looked up by name in a listing taken now, never taken from the form: a path from the
+    browser would let a request copy any readable file into a study.
+    """
+    for choice in _config_choices(listing, kind):
+        if choice["name"] == name:
+            return Path(choice["path"])
+    raise ValueError(f"{name!r} is not in the dicomexport configuration directory.")
+
+
+def _copy_into_study(source: Path, dest_dir: Path) -> str:
+    """Copy a beam model / table into the study dir, so the study holds what it was converted
+    with even after the site's directory changes.  Return its basename."""
+    name = secure_filename(source.name)
+    (dest_dir / name).write_bytes(source.read_bytes())
+    return name
+
+
+def _upload_context() -> dict:
+    """What upload.html needs: the choices, and whether they are only dicomexport's examples."""
+    try:
+        listing = dicomexport_listing()
+    except RuntimeError as e:
+        flash(f"Cannot list the dicomexport configuration directory: {e} "
+              "Only uploaded beam models and tables can be used until this is fixed.")
+        listing = {}
+    return {
+        "beam_models": _config_choices(listing, BEAM_MODELS),
+        "material_tables": _config_choices(listing, CT_TO_MATERIAL),
+        "shipped_defaults": listing.get("is_shipped_defaults") is True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -723,21 +765,37 @@ def upload_files():
     folder_err = ensure_studies_root()
     if folder_err:
         flash(folder_err)
-        return render_template("upload.html",
-                               builtin_beam_models=_builtin_beam_models(),
-                               builtin_material_tables=_builtin_material_tables()), 500
+        return render_template("upload.html", **_upload_context()), 500
 
     if request.method == "POST":
         study_zip = request.files.get("study_zip")
         study_dir_files = [f for f in (request.files.getlist("study_dir") or []) if f and f.filename]
 
-        # Beam model / CT-number-to-material table: either a bundled file or an upload
+        # Beam model / CT-number-to-material table: a file of the site's dicomexport config
+        # dir, named, or an upload.  "" is the "choose one" placeholder.
         bm_source = request.form.get("beam_model_source", "upload")
         beam_model = request.files.get("beam_model")
         material_table_source = request.form.get("material_table_source", "upload")
         material_table = request.files.get("material_table")
 
         # Validate input before creating anything on disk
+        if not bm_source:
+            flash("Choose a beam model.")
+            return redirect(request.url)
+        if not material_table_source:
+            flash("Choose a CT-number-to-material table.")
+            return redirect(request.url)
+        bm_file = table_file = None
+        if bm_source != "upload" or material_table_source != "upload":
+            try:
+                listing = dicomexport_listing()
+                if bm_source != "upload":
+                    bm_file = _config_file(listing, BEAM_MODELS, bm_source)
+                if material_table_source != "upload":
+                    table_file = _config_file(listing, CT_TO_MATERIAL, material_table_source)
+            except (RuntimeError, ValueError) as e:
+                flash(str(e))
+                return redirect(request.url)
         if bm_source == "upload" and not (beam_model and beam_model.filename):
             flash("Beam model required — choose a built-in model or upload one.")
             return redirect(request.url)
@@ -780,14 +838,14 @@ def upload_files():
             # Copy beam model and CT-number-to-material table into the study so it is self-contained:
             # deleting the study removes every input it depends on, and the generated
             # TOPAS file can reference the CT-number-to-material table by a relative path.
-            if bm_source == "upload":
+            if bm_file is None:
                 beam_model_name = save_single_file(beam_model, study_path)
             else:
-                beam_model_name = _copy_builtin("beam_models", bm_source, study_path)
-            if material_table_source == "upload":
+                beam_model_name = _copy_into_study(bm_file, study_path)
+            if table_file is None:
                 material_table_name = save_single_file(material_table, study_path)
             else:
-                material_table_name = _copy_builtin("ct_to_material", material_table_source, study_path)
+                material_table_name = _copy_into_study(table_file, study_path)
 
             structures = get_structures(root, study_name)
             if not structures:
@@ -822,11 +880,7 @@ def upload_files():
         # Render the combined setup page (structure inclusion + scorer selection)
         return _setup_page(root, study_name, beam_model_name, material_table_name,
                            structures=structures)
-    return render_template(
-        "upload.html",
-        builtin_beam_models=_builtin_beam_models(),
-        builtin_material_tables=_builtin_material_tables(),
-    )
+    return render_template("upload.html", **_upload_context())
 
 
 def run_conversion(params: ConversionParameters, selected_structures: list) -> ConversionResult:

@@ -55,8 +55,6 @@ pregdos = [
     "static/*",
     "static/img/*",
     "data/*.csv",
-    "data/ct_to_material/*",
-    "data/beam_models/*",
     # Named explicitly: the "data/*.csv" glob above does not match it, and this is the one
     # copy of the annotated site config (packaging/ installs *this* file to /etc/pregdos/).
     "data/config.toml.example",
