@@ -40,14 +40,12 @@ UNKNOWN = "unknown"
 # #49, and any site on an older module should fail this check.  Confirmed 2026-09-09.
 MINIMUM_TOPAS = (4, 2, 3)
 
-# Minimum dicomexport PregDos will compute with.  1.5.0 brought the field-numbering contract
-# -- output fields named by DICOM BeamNumber, setup beams without meterset skipped
-# (dicomexport #75) -- which PregDos relies on for field labels and RTDOSE attribution.
-# 1.5.1 corrected two catalogued range shifter thicknesses (dicomexport #92): an older
-# install computes a different range for CCB and WPE plans, and silently, since nothing in
-# the output says which catalog produced it.  That is a dose error, not an interface
-# mismatch, which is why the floor moves for a patch release.
-MINIMUM_DICOMEXPORT = (1, 5, 1)
+# Minimum dicomexport PregDos will compute with.  2.0.0 (#132) is a new command line, not
+# just new features: `--spot-mode` (which PregDos passes) does not exist in 1.x, and 1.x
+# would fail on it.  2.0.0 also keeps everything earlier floors required: fields named by
+# DICOM BeamNumber (dicomexport #75, since 1.5.0) and the corrected CCB and WPE range shifter
+# thicknesses (dicomexport #92, since 1.5.1).
+MINIMUM_DICOMEXPORT = (2, 0, 0)
 
 MARKER_DIR = Path("/etc/pregdos")
 
@@ -400,11 +398,8 @@ def dicomexport_warning() -> Optional[str]:
     if parsed is None:
         return f"dicomexport version cannot be determined. PregDos requires {minimum} or newer."
     if parsed < MINIMUM_DICOMEXPORT:
-        return (f"dicomexport {reported} is older than {minimum}: PregDos relies on the "
-                "BeamNumber field-output contract for field labels and RTDOSE attribution "
-                "(dicomexport #75), and on the corrected CCB and WPE range shifter "
-                "thicknesses (dicomexport #92) -- an older install computes a different "
-                "range for those centres.")
+        return (f"dicomexport {reported} is older than {minimum}: PregDos uses the "
+                "dicomexport 2 command line, which older versions do not accept.")
     return None
 
 

@@ -25,7 +25,7 @@ dependencies = [
     "gunicorn==26.2.0",
     "requests",
     "fpdf2>=2.8.7",
-    "dicomexport @ git+https://github.com/nbassler/dicomexport@v1.5.1",
+    "dicomexport @ git+https://github.com/nbassler/dicomexport@v2.0.0",
 ]
 dynamic = ["version"]
 

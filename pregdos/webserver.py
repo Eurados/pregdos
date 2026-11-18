@@ -820,6 +820,11 @@ def run_conversion(params: ConversionParameters, selected_structures: list) -> C
     and no way for a previous run's files to leak in (issue #41).
     """
     cmd = _dicomexport_cmd_prefix() + ["-b", params.beam_model_rel, "-s", params.material_table_rel]
+    # One Geant4 run per spot, with the weights in `uv:Tf/spotWeight/Values`.  Progress
+    # (executor) and plan scaling (results) read that line.  dicomexport 2.0 defaults to
+    # `sources`, which writes no such line; moving to it is #130.  Passed explicitly so a
+    # change of dicomexport's default can never change what PregDos computes.
+    cmd += ["--spot-mode", "timefeature"]
     if params.field_nr is not None:
         cmd += ["-f", str(params.field_nr)]
     if params.nstat is not None:

@@ -39,10 +39,12 @@ from pydicom.uid import ExplicitVRLittleEndian, ImplicitVRLittleEndian, generate
 
 from . import results
 
-# TOPAS writes the in-field cube as ``topas_field<n>.dcm`` (no zero padding), while the input
-# it came from is ``topas_field<nn>.txt`` (zero padded).  Both are keyed on the field number.
+# The in-field cube is ``topas_field<nn>.dcm``, named like the input it came from
+# (``topas_field<nn>.txt``).  dicomexport before 2.0 wrote the cube unpadded
+# (``topas_field<n>.dcm``), and runs made with it still exist on disk.  Both regexes parse the
+# number, so either spelling is keyed on the same field number.
 _CUBE_RE = re.compile(r"^topas_field(\d+)\.dcm$")
-# The generated inputs, which say which fields the run *has*.  Zero-padded, unlike the cube.
+# The generated inputs, which say which fields the run *has*.
 _INPUT_RE = re.compile(r"^topas_field(\d+)\.txt$")
 
 FIELD_DOSE_PREFIX = "rtdose_field"
