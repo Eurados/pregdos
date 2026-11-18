@@ -47,6 +47,67 @@ def test_write_mask_prepass_reuses_generated_topas_paths(tmp_path):
     assert 's:Sc/PregDosMask_Brain_Stem/OutputFile = "structure_mask_Brain_Stem"' in text
 
 
+def _pasted(path: str, content: str) -> str:
+    """What dicomexport >= 2.0 writes for ``-S path``: the file's bytes, then one LF."""
+    import hashlib
+    sha = hashlib.sha256(content.encode()).hexdigest()
+    return f"# BEGIN INCLUDE_INLINE: {path} sha256={sha}\n{content}\n# END INCLUDE_INLINE: {path}\n"
+
+
+_GEOMETRY = (
+    's:Ge/World/Type                      = "TsBox"\n'
+    's:Ge/Patient/Type                    = "TsDicomPatient"\n'
+    's:Ge/Patient/DicomDirectory          = "../dicom"\n'
+)
+
+
+def test_write_mask_prepass_copies_the_pasted_table_exactly_once(tmp_path):
+    """TOPAS stops on a parameter defined twice in one file.  A line inside the table -- here
+    an includeFile of its own -- must not be copied a second time as a parameter, and the
+    other pasted files (materials, free code) stay out of the mask pass."""
+    table = 'includeFile = nested.txt\ns:Ge/Patient/ImagingToMaterialConverter = "Schneider"\n'
+    free_code = 's:So/Extra/Type = "Beam"\n'
+    topas = tmp_path / "topas_field01.txt"
+    topas.write_text(
+        "# generated\n" + _pasted("../table.txt", table) + _pasted("../extra.txt", free_code) + _GEOMETRY
+    )
+
+    text = (tmp_path / structure_metrics.write_mask_prepass(topas, ["CTV"])).read_text()
+
+    assert text.count("# BEGIN INCLUDE_INLINE: ../table.txt") == 1
+    assert text.count("includeFile = nested.txt") == 1
+    assert text.count("ImagingToMaterialConverter") == 1
+    assert "extra.txt" not in text and "So/Extra" not in text
+    assert 's:Ge/Patient/DicomDirectory          = "../dicom"' in text
+
+
+def test_compute_metrics_reads_densities_from_the_pasted_table(tmp_path, monkeypatch):
+    """The study's copy of the table is not needed: the pre-pass carries it."""
+    from pathlib import Path
+
+    import dicomexport
+    import numpy as np
+
+    shipped = Path(dicomexport.__file__).parent / "defaults/ct_to_material/HUtoMaterialSchneider.txt"
+    _prepass_with_masks(tmp_path, structures=("CTV",))
+    prepass = tmp_path / "structure_mask_prepass.txt"
+    prepass.write_text(
+        _pasted("../gone.txt", shipped.read_text()) + _GEOMETRY + prepass.read_text()
+    )
+    (tmp_path / "structure_mask_CTV.bin").write_bytes(
+        np.array([-1.0, 0.0, 0.0, 0.0], dtype="<f8").tobytes())
+    hu = np.array([[[-1000.0, 0.0], [40.0, 1000.0]]])
+    monkeypatch.setattr(structure_metrics, "_load_ct", lambda _d: structure_metrics.CTData(
+        hu=hu, voxel_volume_cm3=1.0, dicom_directory=tmp_path))
+
+    payload = structure_metrics.compute_metrics(tmp_path)
+
+    expected = structure_metrics._density_from_hu(hu, shipped)
+    assert payload["structures"]["CTV"]["mass_g"] == pytest.approx(expected.ravel()[1:].sum())
+    assert payload["material_table"] == "../gone.txt"
+    assert len(payload["material_table_sha256"]) == 64
+
+
 def test_prepass_structures_keeps_mask_file_with_its_scorer(tmp_path):
     (tmp_path / "structure_mask_prepass.txt").write_text(
         's:Sc/PregDosMask_BrainStem/Quantity = "StepCount"\n'

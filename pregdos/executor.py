@@ -41,10 +41,10 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import List, Optional
 
-from . import config, portable, structure_metrics
+from . import config, portable, structure_metrics, topas_include
 from .textio import read_text_lenient
 
 # Backend identifiers, also written into run.json.
@@ -535,13 +535,20 @@ def _submit_local(run_dir: Path, topas_files: List[str], info: RunInfo) -> None:
 def _material_table_identity(run_dir: Path, topas_files: List[str]) -> tuple[str, str]:
     """Snapshot the one table included by PregDos's generated fields and mask pre-pass.
 
-    Hash the bytes at submission, not when a report is downloaded: the study's table
-    could have been changed or removed by then. Missing inputs leave provenance unknown.
+    dicomexport >= 2.0 pastes the table into the field (``-S``) and records its SHA-256, so
+    the identity comes from the field itself: it is what TOPAS reads, whatever has happened
+    to the file since.  A field converted by dicomexport 1.x names the table with
+    ``includeFile`` instead; hash those bytes at submission, not when a report is
+    downloaded, since the study's table could have been changed or removed by then.
+    Missing inputs leave provenance unknown.
     """
     if not topas_files:
         return "", ""
     try:
         text = read_text_lenient(run_dir / topas_files[0])
+        pasted = topas_include.material_table(text)
+        if pasted is not None:
+            return PureWindowsPath(pasted.path).name, pasted.sha256
         value = structure_metrics.parameter_value(text, "includeFile")
         if not value:
             return "", ""

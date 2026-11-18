@@ -1,6 +1,7 @@
 import contextlib
 import csv
 import io
+import hashlib
 import json
 import os
 import zipfile
@@ -335,8 +336,8 @@ def test_submit_missing_file_flashes_error(client, tmp_path):
 
 
 def test_submit_runs_topas_in_the_run_dir_without_copying(client, tmp_path, mocker, monkeypatch):
-    """sbatch must --chdir into the run dir: the .txt's relative DicomDirectory and
-    includeFile only resolve from there, and the file is never moved (#41)."""
+    """sbatch must --chdir into the run dir: the .txt's relative DicomDirectory only
+    resolves from there, and the file is never moved (#41)."""
     monkeypatch.setenv("PREGDOS_EXECUTOR", "slurm")
     _make_study(tmp_path)
     run_id, run_dir = studies.create_run(tmp_path, "mystudy")
@@ -885,11 +886,11 @@ def test_convert_accepts_the_in_field_scorer_alone(client, tmp_path, mocker):
 
 # Minimal stand-in for a dicomexport-generated TOPAS file: a SCORER SET UP block holding
 # only the in-field DoseToWater scorer, followed by a TIME FEATURES banner.  The two
-# banners are what append_scorers() keys off.  The DicomDirectory / includeFile lines
-# mimic dicomexport echoing its arguments verbatim.
+# banners are what append_scorers() keys off.  The DicomDirectory line and the pasted
+# table's path mimic dicomexport echoing its arguments verbatim.
 _FAKE_TOPAS_TEMPLATE = (
     '# fake dicomexport output\n'
-    'includeFile                          = {material}\n'
+    '{table_block}'
     's:Ge/World/Type                      = "TsBox"\n'
     's:Ge/World/Material                  = "Air"\n'
     'd:Ge/World/HLX                       = 100 mm\n'
@@ -915,6 +916,13 @@ _FAKE_TOPAS_TEMPLATE = (
 )
 
 
+def _pasted(cwd: Path, path: str) -> str:
+    """The block dicomexport >= 2.0 writes for ``-S path``: the file's bytes, one LF."""
+    data = (cwd / path).read_bytes()
+    return (f"# BEGIN INCLUDE_INLINE: {path} sha256={hashlib.sha256(data).hexdigest()}\n"
+            f"{data.decode()}\n# END INCLUDE_INLINE: {path}\n")
+
+
 def _fake_dicomexport(cmd, *args, **kwargs):
     """subprocess.run side_effect mimicking dicomexport.
 
@@ -924,9 +932,9 @@ def _fake_dicomexport(cmd, *args, **kwargs):
     cwd = Path(kwargs["cwd"])
     output_base = cmd[-1]
     dicom_arg = cmd[-2]
-    material_arg = cmd[cmd.index("-s") + 1]
+    material_arg = cmd[cmd.index("-S") + 1]
     (cwd / f"{output_base}_field01.txt").write_text(
-        _FAKE_TOPAS_TEMPLATE.format(material=material_arg, dicom=dicom_arg)
+        _FAKE_TOPAS_TEMPLATE.format(table_block=_pasted(cwd, material_arg), dicom=dicom_arg)
     )
     result = MagicMock()
     result.returncode = 0
@@ -957,7 +965,8 @@ def test_convert_invokes_dicomexport_in_run_dir_with_relative_paths(client, tmp_
     cmd = mock_run.call_args[0][0]
     assert mock_run.call_args.kwargs["cwd"] == str(run_dir)
     assert cmd[-2] == "../dicom"
-    assert cmd[cmd.index("-s") + 1] == "../material.txt"
+    assert cmd[cmd.index("-S") + 1] == "../material.txt"
+    assert "-s" not in cmd          # the table is pasted, never named by includeFile
     assert cmd[cmd.index("-b") + 1] == "../beam.csv"
 
 
@@ -971,7 +980,7 @@ def test_generated_topas_file_contains_no_absolute_paths(client, tmp_path, mocke
 
     assert str(tmp_path) not in text
     assert 's:Ge/Patient/DicomDirectory          = "../dicom"' in text
-    assert "includeFile                          = ../material.txt" in text
+    assert "# BEGIN INCLUDE_INLINE: ../material.txt sha256=" in text
 
 
 def test_convert_appends_selected_scorers_and_survives_rerun(client, tmp_path, mocker):
@@ -999,7 +1008,8 @@ def test_convert_creates_structure_mask_prepass_from_generated_topas(client, tmp
     run_dir = studies.run_path(tmp_path, "mystudy", run_id)
     text = (run_dir / "structure_mask_prepass.txt").read_text()
 
-    assert 'includeFile                          = ../material.txt' in text
+    assert "includeFile" not in text
+    assert text.count("# BEGIN INCLUDE_INLINE: ../material.txt sha256=") == 1
     assert 's:Ge/Patient/DicomDirectory          = "../dicom"' in text
     assert 'b:Sc/PregDosMask_CTV/SetBinToMinusOneIfNotInRTStructure = "True"' in text
     assert 'sv:Sc/PregDosMask_CTV/OnlyIncludeIfInRTStructure = 1 "CTV"' in text

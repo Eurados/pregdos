@@ -30,10 +30,15 @@ and auto-reaped after ~30 days so stale runs do not pile up.
 The exact files depend on selected scorers, executor backend, and whether DICOM RTDOSE export
 was requested.
 
+`<material_table>.txt` is a copy of the table chosen at upload. `dicomexport` pastes its
+contents into every generated field and into the mask pre-pass, so TOPAS does not read the file
+itself. A table that includes other files still needs those files where TOPAS runs.
+
 At submission, `run.json` records the material conversion table's filename and full SHA-256
-hash. CSV and PDF reports carry that as one field, `filename (12345678)`, where the hash is
-truncated to its first eight characters. Older runs without this metadata report the table
-as unavailable.
+hash. Both are taken from the generated field, where `dicomexport` recorded them when it pasted
+the table, so they describe exactly what TOPAS reads. CSV and PDF reports carry that as one
+field, `filename (12345678)`, where the hash is truncated to its first eight characters. Older
+runs without this metadata report the table as unavailable.
 
 ## Study Names And Run IDs
 
@@ -53,7 +58,7 @@ This invariant is load-bearing:
 > TOPAS inputs must be generated in the same run directory where TOPAS will execute them.
 
 `dicomexport` writes paths directly into the generated TOPAS input, including
-`s:Ge/Patient/DicomDirectory` and `includeFile`. PregDos therefore runs `dicomexport` with the
+`s:Ge/Patient/DicomDirectory`. PregDos therefore runs `dicomexport` with the
 run directory as its current working directory and passes paths relative to that directory.
 Later, PregDos also runs TOPAS from that same directory.
 
