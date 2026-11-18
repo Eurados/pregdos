@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from typing import List, Optional
 
-from . import config, portable, results, structure_metrics, topas_include
+from . import config, portable, provenance, results, structure_metrics, topas_include
 from .textio import read_text_lenient
 
 # Backend identifiers, also written into run.json.
@@ -206,6 +206,9 @@ class RunInfo:
     errors: List[str] = field(default_factory=list)
     material_table: str = ""
     material_table_sha256: str = ""
+    conversion: Optional[provenance.ConversionRecord] = None
+    """What dicomexport converted the run with, from the first field's header at submission.
+    None for a run converted by dicomexport < 2.0, or submitted before this was recorded."""
 
 
 def _write_run_metadata(run_dir: Path, info: RunInfo) -> None:
@@ -229,6 +232,7 @@ def _write_run_metadata(run_dir: Path, info: RunInfo) -> None:
         "fields": [{"topas_file": f.topas_file, "ident": f.ident} for f in info.fields],
         "material_table": info.material_table,
         "material_table_sha256": info.material_table_sha256,
+        "conversion": info.conversion.to_json() if info.conversion else None,
     }
     fd, tmp_name = tempfile.mkstemp(dir=str(run_dir), prefix=RUN_METADATA + ".", suffix=".tmp")
     tmp = Path(tmp_name)
@@ -289,6 +293,7 @@ def read_run_metadata(run_dir: str | os.PathLike) -> Optional[RunInfo]:
         fields=fields,
         material_table=material_table if isinstance(material_table, str) else "",
         material_table_sha256=material_table_sha256 if isinstance(material_table_sha256, str) else "",
+        conversion=provenance.ConversionRecord.from_json(raw.get("conversion")),
     )
 
 
@@ -569,6 +574,7 @@ def submit_run(run_dir: str | os.PathLike, topas_files: List[str]) -> RunInfo:
     backend = select_backend()
     info = RunInfo(backend=backend, submitted=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     info.material_table, info.material_table_sha256 = _material_table_identity(run_dir, topas_files)
+    info.conversion = provenance.of_field(run_dir / topas_files[0]) if topas_files else None
 
     # Do this here rather than at conversion time: the thread count has to match the CPUs
     # this run is about to be given, and `cpus_per_task` can change between converting a

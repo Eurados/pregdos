@@ -1465,6 +1465,33 @@ def test_report_csv_download(client, tmp_path):
     assert "issue #50" in body
 
 
+def test_reports_show_what_the_run_was_converted_with(client, tmp_path):
+    from pregdos import provenance
+    from tests.test_provenance import FIELD
+
+    run_id, run_dir = _completed_run(tmp_path)
+    info = executor.read_run_metadata(run_dir)
+    info.conversion = provenance.parse(FIELD)
+    executor._write_run_metadata(run_dir, info)
+
+    rows = list(csv.reader(io.StringIO(client.get(f"/studies/alpha/{run_id}/report.csv").data.decode())))
+
+    assert ["# dicomexport", "2.0.0"] in rows                        # the one that converted
+    assert ["# Beam model", "DCPT_beam_model__v5.csv"] in rows
+    assert ["# Also included", "materials.txt (e49e842b)"] in rows
+    assert ["# Material overrides", "Hip implant=ImplantSteel; BODY=G4_WATER"] in rows
+    assert ["# Spot mode", "sources, 10 batches"] in rows
+    assert ["# dicomexport dir", "/etc/dicomexport (--config-dir)"] in rows
+    pdf = client.get(f"/studies/alpha/{run_id}/report.pdf")
+    assert pdf.status_code == 200 and pdf.data.startswith(b"%PDF")
+
+
+def test_reports_say_unavailable_for_a_run_without_a_record(client, tmp_path):
+    run_id, _ = _completed_run(tmp_path)
+    rows = list(csv.reader(io.StringIO(client.get(f"/studies/alpha/{run_id}/report.csv").data.decode())))
+    assert ["# Material overrides", "unavailable"] in rows
+
+
 def test_reports_show_saved_material_filename_and_short_hash(client, tmp_path):
     run_id, run_dir = _completed_run(tmp_path)
     info = executor.read_run_metadata(run_dir)

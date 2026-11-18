@@ -8,6 +8,7 @@ from typing import Any, Sequence
 from fpdf import FPDF
 
 from . import results
+from .provenance import CONVERSION_FIELDS
 
 
 _FONT_DIRS = (
@@ -360,6 +361,10 @@ def build_report_pdf(
     # the filename is user-chosen and can be arbitrarily long, and it is the hash on the end
     # that says *which* table this was.  Same reasoning as the RTPLAN UID row above.
     pdf.kv_table([("Material table", provenance.get("material_table", "unavailable"))],
+                 cols=1, keep_suffix=True)
+    # What dicomexport converted the run with (#132).  Full width, end kept: paths and the hash
+    # suffixes of included files are the identifying part.
+    pdf.kv_table([(label, provenance.get(key, "unavailable")) for key, label in CONVERSION_FIELDS],
                  cols=1, keep_suffix=True)
 
     if warnings:
