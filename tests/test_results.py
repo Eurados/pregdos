@@ -605,3 +605,26 @@ def test_plan_uid_is_none_without_a_topas_input(tmp_path):
 def test_particle_filter_is_parsed_from_the_real_csv():
     assert parse_scorer_csv(NEUTRON).particle == "neutron"
     assert parse_scorer_csv(PROTON).particle == "proton"
+
+
+# --- BEAM_NAME (#129) ---
+
+def test_the_beam_name_comes_from_the_field_header(tmp_path):
+    p = tmp_path / "topas_field01.txt"
+    p.write_text("# Topas input file for field 1\n# BEAM_NUMBER: 1\n# BEAM_NAME: LAO 30 hip\ns:X = 1\n")
+    assert results.field_beam_name(p) == "LAO 30 hip"
+
+
+def test_a_field_without_a_beam_name_has_none(tmp_path):
+    """dicomexport < 2.0 wrote none; a missing file is no error on a page render."""
+    p = tmp_path / "topas_field01.txt"
+    p.write_text("# Topas input file for field 1\ns:X = 1\n")
+    assert results.field_beam_name(p) == ""
+    assert results.field_beam_name(tmp_path / "absent.txt") == ""
+
+
+def test_only_the_head_of_the_input_is_searched(tmp_path):
+    """The run page asks on every poll, and a sources-mode input runs to thousands of lines."""
+    p = tmp_path / "topas_field01.txt"
+    p.write_text("# header\n" + "s:X = 1\n" * 100 + "# BEAM_NAME: too late\n")
+    assert results.field_beam_name(p) == ""

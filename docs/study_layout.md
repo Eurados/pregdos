@@ -30,6 +30,12 @@ and auto-reaped after ~30 days so stale runs do not pile up.
 The exact files depend on selected scorers, executor backend, and whether DICOM RTDOSE export
 was requested.
 
+With the in-field scorer kept, each field writes a raw TOPAS dose cube, `topas_field<nn>.dcm`, on
+the RTDOSE grid. Since dicomexport 2.0 it holds 32 bits per pixel, so the low out-of-field dose is
+not rounded to zero; it is about twice the size of the earlier 16-bit cube, e.g. 61 MB per field
+for the head phantom's grid. Size study storage accordingly. Runs from before dicomexport 2.0 named
+the cube without zero padding (`topas_field1.dcm`); PregDos reads both.
+
 `<material_table>.txt` is a copy of the table chosen at upload. `dicomexport` pastes its
 contents into every generated field and into the mask pre-pass, so TOPAS does not read the file
 itself. A table that includes other files still needs those files where TOPAS runs.

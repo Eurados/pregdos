@@ -315,6 +315,27 @@ def plan_uid(run_dir: str | Path) -> Optional[str]:
     return uids.pop() if len(uids) == 1 else None
 
 
+# `# BEAM_NAME: Field 1` -- the TPS's name for the field, dicomexport >= 2.0 (#129).
+_BEAM_NAME_RE = re.compile(r"^#\s*BEAM_NAME:\s*(?P<name>.+?)\s*$")
+_HEADER_LINES = 40
+
+
+def field_beam_name(topas_input: str | Path) -> str:
+    """The field's ``BEAM_NAME`` from the head of its TOPAS input, or "" if absent.
+
+    Reads only the first lines: the run page asks for every field on every poll, and a
+    sources-mode input runs to thousands of lines.
+    """
+    try:
+        with open(topas_input, encoding="utf-8", errors="replace") as handle:
+            for _, line in zip(range(_HEADER_LINES), handle):
+                if (m := _BEAM_NAME_RE.match(line)):
+                    return m.group("name")
+    except OSError:
+        pass
+    return ""
+
+
 def parse_plan_scaling(topas_input: str | Path) -> Optional[PlanScaling]:
     """Read the plan particle budget from a generated TOPAS input file.
 

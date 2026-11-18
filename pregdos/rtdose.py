@@ -2,9 +2,17 @@
 
 The in-field scorer dicomexport writes is a valid enough RTDOSE for TOPAS, but not for a
 clinical TPS: Type-1 attributes are missing (Eclipse rejects the file on ``DoseSummationType``
-(3004,000A), then on ``DoseType`` (3004,0004)), the dose is raw *simulation* dose rather than
-what the plan delivers, and it is 16-bit -- which, on a grid scaled to a target dose of tens of
-Gy, rounds every out-of-field (fetal) dose to zero.
+(3004,000A), then on ``DoseType`` (3004,0004)), and the dose is raw *simulation* dose rather than
+what the plan delivers.
+
+**Bit depth is decided before PregDos sees the cube, and nothing here can repair it.**  TOPAS
+scales each cube to its own peak, so at 16 bits it writes every voxel below about 1/65535 of the
+field's peak as zero: on a grid whose peak is the target dose, that is the out-of-field (fetal)
+region.  The zeros are in the file, and re-encoding them at any depth keeps them zeros.
+dicomexport >= 2.0, the minimum PregDos accepts, has TOPAS write 32 bits per pixel instead
+(#127), which keeps that region.  The cube is read as ``pixel_array * DoseGridScaling``
+whatever its depth, and written at the depth of the clinical template, re-scaled if the dose
+would not fit (:func:`_encode`).
 
 Rather than repair the TOPAS cube tag by tag, **each output is built from the study's own
 clinical RTDOSE as a template**, with only the dose grid replaced.  Everything a TPS is fussy

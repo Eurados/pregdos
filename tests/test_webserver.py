@@ -1903,7 +1903,7 @@ def test_rtdose_bundle_is_refused_while_the_run_is_unfinished(client, tmp_path):
         "backend": "local", "submitted": "now",
         "fields": [{"topas_file": "topas_field01.txt", "ident": "1"}],
     }))
-    (run_dir / "topas_field1.dcm").write_bytes(b"cube")     # a cube exists, but the run does not
+    (run_dir / "topas_field01.dcm").write_bytes(b"cube")     # a cube exists, but the run does not
 
     resp = client.get(f"/studies/alpha/{run_id}/rtdose", follow_redirects=True)
 
@@ -1913,7 +1913,7 @@ def test_rtdose_bundle_is_refused_while_the_run_is_unfinished(client, tmp_path):
 
 def test_rtdose_bundle_is_built_on_demand_and_served(client, tmp_path, mocker):
     run_id, run_dir = _completed_run(tmp_path)
-    (run_dir / "topas_field1.dcm").write_bytes(b"cube")
+    (run_dir / "topas_field01.dcm").write_bytes(b"cube")
 
     def fake_export(target):
         (Path(target) / "rtdose_plan_eclipse_import.zip").write_bytes(b"PK\x03\x04bundle")
@@ -1931,7 +1931,7 @@ def test_rtdose_bundle_is_built_on_demand_and_served(client, tmp_path, mocker):
 def test_rtdose_bundle_reports_why_it_could_not_be_built(client, tmp_path, mocker):
     """A study with no clinical RTDOSE to clone must flash, not 500."""
     run_id, run_dir = _completed_run(tmp_path)
-    (run_dir / "topas_field1.dcm").write_bytes(b"cube")
+    (run_dir / "topas_field01.dcm").write_bytes(b"cube")
     mocker.patch("pregdos.webserver.rtdose.ensure_dose_export",
                  return_value=([], ["study needs both an RTPLAN and a clinical RTDOSE"]))
 
@@ -1947,7 +1947,7 @@ def test_run_page_offers_the_export_only_when_a_cube_exists(client, tmp_path):
     assert f"/studies/alpha/{run_id}/rtdose".encode() not in body
     assert b"Download dose for TPS" not in body
 
-    (run_dir / "topas_field1.dcm").write_bytes(b"cube")
+    (run_dir / "topas_field01.dcm").write_bytes(b"cube")
     body = client.get(f"/studies/alpha/{run_id}").data
     assert f"/studies/alpha/{run_id}/rtdose".encode() in body
     assert b"RTDOSE" in body
@@ -1965,7 +1965,7 @@ def _dose_only_run(tmp_path, study="alpha"):
     _make_study(tmp_path, study)
     run_id, run_dir = studies.create_run(tmp_path, study)
     (run_dir / _REAL_TOPAS.name).write_bytes(_REAL_TOPAS.read_bytes())
-    (run_dir / "topas_field1.dcm").write_bytes(b"cube")
+    (run_dir / "topas_field01.dcm").write_bytes(b"cube")
     (run_dir / "topas_field01.exit_code").write_text("0\n")
     (run_dir / "run.json").write_text(json.dumps({
         "backend": "local", "submitted": "2026-09-15T10:00:00",
@@ -1994,7 +1994,7 @@ def test_a_dose_only_run_offers_its_dose_instead_of_reporting_as_empty(client, t
 def test_a_run_with_neither_scorers_nor_a_cube_still_reports_as_empty(client, tmp_path):
     """The other half: "nothing came out of this run" must still be sayable."""
     run_id, run_dir = _dose_only_run(tmp_path)
-    (run_dir / "topas_field1.dcm").unlink()
+    (run_dir / "topas_field01.dcm").unlink()
 
     body = client.get(f"/studies/alpha/{run_id}").data.decode()
 
@@ -2138,6 +2138,17 @@ def test_progress_fragment_returns_the_live_block(client, tmp_path):
     assert "progress-meter" in body["html"]      # the bars are in the fragment
     assert "<html" not in body["html"]           # ...and only the fragment
 
+
+
+def test_progress_shows_each_field_by_its_tps_name(client, tmp_path):
+    """BEAM_NAME from the field's header, next to the file name, so a field can be recognised."""
+    run_id, run_dir = _completed_run(tmp_path)
+    field = run_dir / "topas_field01.txt"
+    field.write_text("# BEAM_NAME: LAO 30 hip\n" + field.read_text())
+
+    html = client.get(f"/studies/alpha/{run_id}/progress").get_json()["html"]
+
+    assert "<code>topas_field01.txt</code> <span>LAO 30 hip</span>" in html
 
 
 def test_progress_fragment_carries_results_finished_so_far(client, tmp_path):

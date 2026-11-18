@@ -79,7 +79,7 @@ def test_postprocess_refuses_a_run_that_is_short_a_cube(tmp_path):
     whole course, which is worse than no export at all."""
     for n in (1, 2, 3):
         (tmp_path / f"topas_field{n:02d}.txt").write_text("input")
-    (tmp_path / "topas_field2.dcm").write_bytes(b"cube")
+    (tmp_path / "topas_field02.dcm").write_bytes(b"cube")
 
     with pytest.raises(rtdose.RTDoseError, match=r"field\(s\) 1, 3 produced no dose cube"):
         rtdose.postprocess(tmp_path)
@@ -89,7 +89,7 @@ def test_ensure_dose_export_turns_the_refusal_into_a_warning(tmp_path):
     """The web layer must get a message, not a traceback."""
     (tmp_path / "topas_field01.txt").write_text("input")
     (tmp_path / "topas_field02.txt").write_text("input")
-    (tmp_path / "topas_field1.dcm").write_bytes(b"cube")
+    (tmp_path / "topas_field01.dcm").write_bytes(b"cube")
 
     paths, warnings = rtdose.ensure_dose_export(tmp_path)
 
@@ -97,11 +97,14 @@ def test_ensure_dose_export_turns_the_refusal_into_a_warning(tmp_path):
     assert len(warnings) == 1 and "produced no dose cube" in warnings[0]
 
 
-def test_missing_field_cubes_is_empty_when_every_field_wrote_one(tmp_path):
+def test_unpadded_cubes_from_dicomexport_before_2_still_match_their_fields(tmp_path):
+    """dicomexport < 2.0 wrote topas_field2.dcm for topas_field02.txt, and runs made with it are
+    still on disk.  The number is parsed, so both spellings key on the same field (#129)."""
     for n in (1, 2):
         (tmp_path / f"topas_field{n:02d}.txt").write_text("input")
         (tmp_path / f"topas_field{n}.dcm").write_bytes(b"cube")
 
+    assert [n for n, _ in rtdose.field_cubes(tmp_path)] == [1, 2]
     assert rtdose.missing_field_cubes(tmp_path) == []
 
 
@@ -119,7 +122,7 @@ def test_missing_field_cubes_names_the_fields_that_did_not(tmp_path):
     """The inputs say which fields the run has; the cubes say which ones produced dose."""
     for n in (1, 2, 3):
         (tmp_path / f"topas_field{n:02d}.txt").write_text("input")
-    (tmp_path / "topas_field2.dcm").write_bytes(b"cube")
+    (tmp_path / "topas_field02.dcm").write_bytes(b"cube")
 
     assert rtdose.missing_field_cubes(tmp_path) == [1, 3]
 
@@ -127,7 +130,7 @@ def test_missing_field_cubes_names_the_fields_that_did_not(tmp_path):
 def test_missing_field_cubes_ignores_the_mask_prepass_input(tmp_path):
     """structure_mask_prepass.txt is a TOPAS input but not a field, and has no cube of its own."""
     (tmp_path / "topas_field01.txt").write_text("input")
-    (tmp_path / "topas_field1.dcm").write_bytes(b"cube")
+    (tmp_path / "topas_field01.dcm").write_bytes(b"cube")
     (tmp_path / "structure_mask_prepass.txt").write_text("prepass")
 
     assert rtdose.missing_field_cubes(tmp_path) == []
@@ -197,7 +200,7 @@ def test_write_plan_import_bundle_contains_total_dose_and_referenced_plan(tmp_pa
 
 def test_ensure_dose_export_is_idempotent(tmp_path, mocker):
     """Built once on first request, reused after -- the page must not rebuild 11M-voxel grids."""
-    (tmp_path / "topas_field1.dcm").write_bytes(b"cube")
+    (tmp_path / "topas_field01.dcm").write_bytes(b"cube")
     def fake_postprocess(d):
         path = tmp_path / rtdose.PLAN_DOSE_NAME
         path.write_bytes(b"x")
@@ -218,7 +221,7 @@ def test_ensure_dose_export_without_a_cube_does_nothing(tmp_path):
 
 
 def test_ensure_dose_export_reports_failure_instead_of_raising(tmp_path, mocker):
-    (tmp_path / "topas_field1.dcm").write_bytes(b"cube")
+    (tmp_path / "topas_field01.dcm").write_bytes(b"cube")
     mocker.patch("pregdos.rtdose.postprocess",
                  side_effect=rtdose.RTDoseError("no clinical RTDOSE"))
 
@@ -272,7 +275,7 @@ def _study_with_cube(tmp_path, beams, field):
     cube = _template()
     cube.DoseGridScaling = "1"
     cube.PixelData = np.ones((1, 2, 2), dtype="<u4").tobytes()
-    cube.save_as(run / f"topas_field{field}.dcm", enforce_file_format=True)
+    cube.save_as(run / f"topas_field{field:02d}.dcm", enforce_file_format=True)
     (run / f"topas_field{field:02d}.txt").write_text(
         "# PARTICLE_SCALING: 1\n# REQUESTED_HISTORIES: 1\n")
     return run
@@ -308,3 +311,33 @@ def test_postprocess_stamps_beam_number_not_ordinal_position(tmp_path):
     out = pydicom.dcmread(run / "rtdose_field03.dcm", stop_before_pixels=True)
     ref = out.ReferencedRTPlanSequence[0].ReferencedFractionGroupSequence[0].ReferencedBeamSequence[0]
     assert ref.ReferencedBeamNumber == 3
+
+
+def test_a_32_bit_cube_is_read_with_its_scaling_and_keeps_its_low_dose(tmp_path):
+    """#127: at 16 bits TOPAS writes every voxel below ~1/65535 of the peak as zero, which is
+    the out-of-field region.  dicomexport >= 2.0 asks for 32 bits.  A cube holding such a voxel
+    must be read as pixel_array * DoseGridScaling and carried into the export.
+
+    The template's scaling is set fine enough to hold it: the export keeps the clinical
+    template's DoseGridScaling whenever the dose fits (_encode), so its resolution is the
+    template's, and a coarse template rounds the low dose away again.  See the PR for #127.
+    """
+    run = _study_with_cube(tmp_path, [3], field=3)
+    template_path = run.parent / "dicom" / "RD.dcm"
+    template = pydicom.dcmread(template_path)
+    template.DoseGridScaling = "1e-12"
+    template.save_as(template_path, enforce_file_format=True)
+    cube_path = run / "topas_field03.dcm"
+    cube = pydicom.dcmread(cube_path)
+    cube.DoseGridScaling = "1e-09"
+    stored = np.array([[[1000, 4_000_000_000], [2_000_000_000, 3_000_000_000]]], dtype="<u4")
+    cube.PixelData = stored.tobytes()
+    cube.save_as(cube_path, enforce_file_format=True)
+    assert stored.min() / stored.max() < 1 / 65535          # zero in any 16-bit cube
+
+    rtdose.postprocess(run)
+
+    out = pydicom.dcmread(run / "rtdose_field03.dcm")
+    dose = out.pixel_array.astype(np.float64) * float(out.DoseGridScaling)
+    assert dose.min() > 0
+    assert dose.min() / dose.max() == pytest.approx(stored.min() / stored.max(), rel=1e-3)
