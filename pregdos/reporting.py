@@ -198,7 +198,7 @@ def _scaling_warning(scaling: results.PlanScaling) -> str | None:
                 "dose is scaled without the correction for rounded spot weights, and has no "
                 "statistical uncertainty.")
     if scaling.spot_mode == "sources" and scaling.runs == 1:
-        return ("a quick test: the field ran as a single batch, so its dose has no statistical "
+        return ("the field ran as a single batch, so its dose has no statistical "
                 "uncertainty.")
     return None
 

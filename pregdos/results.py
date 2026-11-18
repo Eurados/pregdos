@@ -55,7 +55,7 @@ uncertainty we report depends on how the field was run (see
   ``Standard_Deviation`` is not usable here: it is taken over events, and an event holds one
   proton from every spot still firing, so it measures how unequal the events are, not noise.
   Measured on the head phantom, it overstated the uncertainty 3-26× (#130).  A single batch
-  (a quick test) has no uncertainty.
+  (a "single batch" run) has no uncertainty.
 * **time-feature mode**: ``√N · SD / Sum`` with N the protons simulated.  Conservative, since it
   counts the spread between spots as noise (about 2× batch means in-field, same phantom).
 
@@ -241,7 +241,7 @@ class ScorerResult:
 
             SE(dose)/dose = √B · SD(batch sums) / Σ batch sums
 
-        with B >= 2.  A sources-mode field that ran as one batch -- a quick test -- has none:
+        with B >= 2.  A sources-mode field that ran as one batch -- "single batch" on the setup page -- has none:
         TOPAS's per-event ``Standard_Deviation`` overstates it many times (module docstring).
 
         **Time-feature mode**: TOPAS reports ``Sum`` (the total over ``N`` simulated histories) and

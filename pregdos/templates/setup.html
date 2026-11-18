@@ -83,9 +83,10 @@
       </div>
       {% if sources_mode %}
       <div class="form-row">
-        <label class="scorer-checkbox-label">
-          <input type="checkbox" name="quick_test" value="1" {% if quick_test %}checked{% endif %}>
-          Quick test
+        <label class="scorer-checkbox-label"
+               title="Each field normally runs as {{ batches }} identical batches, and the spread between their results is the statistical uncertainty. One batch is quicker, but leaves nothing to compare, so there are no error bars. Use it to check a setup, not to report a dose.">
+          <input type="checkbox" name="single_batch" value="1" {% if single_batch %}checked{% endif %}>
+          Single batch (no error bars)
         </label>
         <small class="hint">Runs each field as one batch instead of {{ batches }}: quicker, but
           the results have <strong>no statistical uncertainty</strong>. For checking a setup,

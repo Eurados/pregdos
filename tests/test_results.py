@@ -388,7 +388,7 @@ def test_batch_means_is_the_uncertainty_of_a_batched_field():
     assert combined.relative_uncertainty(None) == pytest.approx(expected)
 
 
-def test_a_quick_test_has_no_uncertainty(tmp_path):
+def test_a_single_batch_has_no_uncertainty(tmp_path):
     """One sources-mode batch: TOPAS's per-event SD would overstate it many times (#130)."""
     s = parse_plan_scaling(_header(tmp_path, "SIMULATED_HISTORIES: 19940", "SPOT_MODE: sources",
                                    "RUNS: 1", "EVENTS_PER_RUN: 150"))

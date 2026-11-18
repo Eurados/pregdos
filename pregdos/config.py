@@ -183,7 +183,7 @@ class Conversion:
     spot_mode: str = "sources"
 
 
-#: Batches per field in sources mode, unless the user asks for a quick test (1 batch, no
+#: Batches per field in sources mode, unless the user asks for a single batch (no
 #: uncertainty).  Not a setting: 10 gives the batch-means uncertainty 9 degrees of freedom.
 BATCHES = 10
 

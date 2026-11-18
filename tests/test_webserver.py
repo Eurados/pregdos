@@ -2327,14 +2327,14 @@ def test_dicomexport_is_asked_for_ten_batches_of_sources_by_default(mocker, tmp_
     assert _spot_flags(mocker, tmp_path) == ("sources", "10")
 
 
-def test_a_quick_test_runs_a_single_batch(mocker, tmp_path):
+def test_single_batch_runs_one_batch(mocker, tmp_path):
     from pregdos import webserver
 
     run = mocker.patch("pregdos.webserver.subprocess.run",
                        return_value=mocker.Mock(stdout="", stderr=""))
     (tmp_path / "topas_field01.txt").write_text("# topas")
     params = _conversion_params(tmp_path)
-    params.quick_test = True
+    params.single_batch = True
     webserver.run_conversion(params, [])
     cmd = run.call_args[0][0]
     assert cmd[cmd.index("--batches") + 1] == "1"
@@ -2349,7 +2349,7 @@ def test_time_feature_mode_always_runs_one_batch(write_config, mocker, tmp_path)
 @pytest.mark.parametrize("requested, runs, warned", [
     (20000, 10, False),     # 3.03 per spot per batch: the lowest tested
     (19000, 10, True),
-    (1000, 1, False),       # a quick test is not split, so nothing is rounded per batch
+    (1000, 1, False),       # a single batch is not split, so nothing is rounded per batch
 ])
 def test_too_few_primaries_for_the_batches_are_warned_about(tmp_path, requested, runs, warned):
     from pregdos import webserver
@@ -2360,7 +2360,7 @@ def test_too_few_primaries_for_the_batches_are_warned_about(tmp_path, requested,
     messages = webserver._batch_statistics_warnings(tmp_path, ["topas_field01.txt"])
     assert bool(messages) == warned
     if warned:
-        assert "19,770" in messages[0] and "quick test" in messages[0]
+        assert "19,770" in messages[0] and "Single batch" in messages[0]
 
 
 def _config_dir_passed(mocker, tmp_path):

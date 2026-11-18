@@ -754,7 +754,7 @@ def _setup_page(root, study_name, beam_model_name, material_table_name, form=Non
         output_basename=form.get("output_basename") or "topas",
         nstat=form.get("nstat") or "1000000",
         nstat_custom=form.get("nstat_custom") or "",
-        quick_test=bool(form.get("quick_test")),
+        single_batch=bool(form.get("single_batch")),
         sources_mode=config.load().conversion.spot_mode == "sources",
         batches=config.BATCHES,
         # Checked by default on a fresh setup page; on a refusal, whatever was submitted -- the
@@ -906,11 +906,11 @@ def run_conversion(params: ConversionParameters, selected_structures: list) -> C
     cmd = _dicomexport_cmd_prefix() + ["-b", params.beam_model_rel, "-S", params.material_table_rel]
     # [conversion] spot_mode (#130) and the batch count, always passed explicitly so a change
     # of dicomexport's defaults can never change what PregDos computes.  Sources mode runs
-    # BATCHES batches, whose spread is the uncertainty, or 1 for a quick test.  dicomexport
+    # BATCHES batches, whose spread is the uncertainty, or 1 when asked for a single batch.  dicomexport
     # refuses more than one in time-feature mode.  Progress, plan scaling and the uncertainty
     # read the resulting layout from the field's header.
     spot_mode = config.load().conversion.spot_mode
-    batches = 1 if (spot_mode != "sources" or params.quick_test) else config.BATCHES
+    batches = 1 if (spot_mode != "sources" or params.single_batch) else config.BATCHES
     cmd += ["--spot-mode", spot_mode, "--batches", str(batches)]
     cmd += ["--config-dir", dicomexport_config_dir()]
     if params.field_nr is not None:
@@ -1017,7 +1017,7 @@ def convert():
         output_basename=output_basename,
         field_nr=None,
         nstat=nstat,
-        quick_test=bool(request.form.get("quick_test")),
+        single_batch=bool(request.form.get("single_batch")),
     )
 
     try:
@@ -1093,7 +1093,7 @@ def _batch_statistics_warnings(run_dir: Path, out_files: list) -> list[str]:
                 f"{name}: {layout.requested_histories:,} primaries over {layout.spots:,} spots in "
                 f"{layout.runs} batches is fewer than {MIN_PROTONS_PER_SPOT_PER_BATCH} protons per "
                 f"spot per batch. Spot weights are rounded per batch, so the field may be "
-                f"distorted. Use at least {needed:,} primaries, or run a quick test."
+                f"distorted. Use at least {needed:,} primaries, or tick Single batch (no error bars)."
             )
     return messages
 

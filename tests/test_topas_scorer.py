@@ -203,7 +203,7 @@ def test_append_scorers_keeps_the_sources_mode_beam(tmp_path, keep_infield):
 
 @pytest.mark.parametrize("layout, after_run", [
     ("# SPOT_MODE: sources\n# RUNS: 10\n", True),       # batches: one result per batch
-    ("# SPOT_MODE: sources\n# RUNS: 1\n", False),       # a quick test: one batch, one result
+    ("# SPOT_MODE: sources\n# RUNS: 1\n", False),       # a single batch: one result
     ("# SPOT_MODE: timefeature\n# RUNS: 659\n", False), # runs are spots, not batches
     ("", False),                                          # dicomexport < 2.0
 ])

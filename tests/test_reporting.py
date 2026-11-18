@@ -192,11 +192,11 @@ def test_a_field_without_simulated_histories_is_warned_about():
     assert "neither SIMULATED_HISTORIES nor Tf/spotWeight" in reporting._scaling_warning(scaling)
 
 
-def test_a_quick_test_is_warned_about():
+def test_a_single_batch_run_is_warned_about():
     """One batch: no uncertainty.  The report says why the column is empty."""
     scaling = results.PlanScaling(particle_scaling=1.0, requested_histories=100, simulated_histories=99,
                                   spot_mode="sources", runs=1, events_per_run=15)
-    assert "quick test" in reporting._scaling_warning(scaling)
+    assert "single batch" in reporting._scaling_warning(scaling)
 
 
 def test_a_complete_header_is_not_warned_about():

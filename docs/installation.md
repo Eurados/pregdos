@@ -555,8 +555,8 @@ batch means in-field. In sources mode an event holds one proton from every spot 
 the first events of a run carry far more spots than the last; TOPAS's figure there was 3 to 26
 times too large, at any statistics. PregDos therefore never uses it in sources mode.
 
-**Quick test.** The setup page offers a quick test in sources mode: each field runs as a single
-batch, which is quicker, and its results have no statistical uncertainty. It is for checking a
+**Single batch.** In sources mode the setup page offers **Single batch (no error bars)**: each
+field runs as one batch, which is quicker, and its results have no statistical uncertainty. It is for checking a
 setup, not for reporting a dose.
 
 **Enough primaries.** Spot weights are rounded per batch, so a batched field needs enough

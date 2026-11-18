@@ -229,8 +229,8 @@
 ## How dicomexport lays out each treatment field for TOPAS.
 ##   "sources"      one TOPAS source per spot.  Each field runs as 10 identical batches, each
 ##                  with 1/10 of every spot's protons, and the spread of the 10 batch results
-##                  gives the statistical uncertainty (batch means).  A quick test on the
-##                  setup page runs a single batch and reports no uncertainty.
+##                  gives the statistical uncertainty (batch means).  "Single batch" on the
+##                  setup page runs one batch and reports no uncertainty.
 ##   "timefeature"  one Geant4 run per spot, stepping one source through the spots, as
 ##                  PregDos did before dicomexport 2.0; kept to cross-check sources mode.  Its
 ##                  uncertainty is per proton, which counts the spread between spots as noise
