@@ -2554,6 +2554,28 @@ def test_dicomexport_warnings_are_shown_after_a_successful_conversion(client, tm
     assert "Using the defaults shipped" not in body
 
 
+@pytest.mark.parametrize("line, shown", [
+    # dicomexport 2.0's three statistics warnings, verbatim apart from the numbers.
+    ("Field 1: rounding spot weights to whole histories per batch changes them by 1.6% of all primaries; "
+     "99890 primaries are simulated for -N 100000. Increase -N or lower --batches.",
+     "Field 1: rounding spot weights to whole histories per batch changes them by 1.6% of all primaries; "
+     "99890 primaries are simulated for 100000 requested. Request more primaries or tick Single batch (no error bars)."),
+    ("Field 1: 35 of 659 spots round to 0 histories at -N 1000 and are left out (14.9 of 1e+03 primaries). "
+     "Increase -N to keep them.",
+     "Field 1: 35 of 659 spots round to 0 histories at 1000 primaries and are left out (14.9 of 1e+03 primaries). "
+     "Request more primaries to keep them."),
+    ("Field 2: no spot gets a single history per batch at -N 10. Increase -N.",
+     "Field 2: no spot gets a single history per batch at 10 primaries. Request more primaries."),
+    # Anything else passes unchanged.
+    ("Multiple DICOM RTDOSE files found, using the first one: RD.x.dcm",
+     "Multiple DICOM RTDOSE files found, using the first one: RD.x.dcm"),
+])
+def test_dicomexport_warnings_speak_the_setup_page_s_terms(line, shown):
+    """The user has a form, not dicomexport's -N and --batches."""
+    from pregdos import webserver
+    assert webserver._in_pregdos_terms(line) == shown
+
+
 def test_a_scored_and_overridden_structure_is_warned_about(client, tmp_path, mocker):
     mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
     form = _study_with_structures(tmp_path)
