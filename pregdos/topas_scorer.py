@@ -42,12 +42,11 @@ _SCORER_MARKER_RE = re.compile(
     re.MULTILINE,
 )
 
-# Matches the "TIME FEATURES" banner that immediately follows the scorer block.
-# Time features encode the spot-delivery sequence and must be preserved unchanged.
-_TIME_MARKER_RE = re.compile(
-    r"#{40,50}\n###\s+T\s+I\s+M\s+E\s+F\s+E\s+A\s+T\s+U\s+R\s+E\s+S\s+###\n#{40,50}\n",
-    re.MULTILINE,
-)
+# Any section banner: a rule, one or more `### TITLE ###` lines, a rule.  The scorer block
+# ends at the next one, whatever it is: "TIME FEATURES" in time-feature mode, but in sources
+# mode (dicomexport >= 2.0) the per-spot sources, under a two-line "BEAM: ONE SOURCE PER
+# SPOT" banner.  Everything from there on is the beam and must be kept unchanged.
+_BANNER_RE = re.compile(r"^#{40,50}\n(?:###.*###\n)+#{40,50}\n", re.MULTILINE)
 
 # ---------------------------------------------------------------------------
 # Neutron fluence-to-dose-equivalent table -- loaded from the package data CSV file.
@@ -472,7 +471,8 @@ def append_scorers(topas_file_path: str, config: ScorerConfig) -> None:
     2. Locates the ``SCORER SET UP`` block (written by dicomexport).
     3. Optionally strips the DoseToWater scorer if ``config.keep_infield`` is False.
     4. Appends the user-selected out-of-field scorer blocks.
-    5. Re-inserts the ``TIME FEATURES`` section unchanged at the end.
+    5. Re-inserts everything after the scorer block unchanged: the ``TIME FEATURES`` in
+       time-feature mode, the per-spot sources in sources mode.
     6. Writes the modified content back to the same file path.
 
     Parameters
@@ -500,25 +500,24 @@ def append_scorers(topas_file_path: str, config: ScorerConfig) -> None:
     # with recognisable, field-specific names.
     output_base = path.stem
 
-    # Locate the start of the scorer section and the start of the time features
+    # Locate the start of the scorer section and the section after it
     scorer_match = _SCORER_MARKER_RE.search(content)
-    tf_match = _TIME_MARKER_RE.search(content)
 
     if scorer_match:
-        # Split the file into three regions:
-        #   before       — geometry, setup, beam definition
-        #   scorer_header — the "### SCORER SET UP ###" banner itself
+        # Split the file into four regions:
+        #   before          — geometry, setup, beam definition
+        #   scorer_header   — the "### SCORER SET UP ###" banner itself
         #   old_scorer_body — existing scorer lines (DoseToWater etc.)
-        #   time_features — spot delivery parameters that must be kept intact
+        #   time_features   — what follows: the spot delivery, kept intact
         before = content[: scorer_match.start()]
         scorer_header = content[scorer_match.start() : scorer_match.end()]
 
-        if tf_match and tf_match.start() > scorer_match.start():
-            # Normal case: scorer section is followed by time features
-            old_scorer_body = content[scorer_match.end() : tf_match.start()]
-            time_features = content[tf_match.start() :]
+        next_match = _BANNER_RE.search(content, scorer_match.end())
+        if next_match:
+            old_scorer_body = content[scorer_match.end() : next_match.start()]
+            time_features = content[next_match.start() :]
         else:
-            # Edge case: no time features (e.g. file generated without beam model)
+            # The scorer block is the last section
             old_scorer_body = content[scorer_match.end() :]
             time_features = ""
     else:

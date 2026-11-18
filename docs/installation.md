@@ -484,7 +484,8 @@ command, so an offline package upgrade requires no new service command or proxy.
 
 The sections are `[paths]` (`work_dir`, `topas_bin`, `dicomexport`, `dicomexport_timeout`,
 `dicomexport_config_dir`), `[scheduler]` (see below), `[server]` (`host`, `port`, `ssl_cert`,
-`ssl_key`), `[auth]` (see [Authentication](#authentication)), and `[network]` (`update_check`).
+`ssl_key`), `[auth]` (see [Authentication](#authentication)), `[network]` (`update_check`), and
+`[conversion]` (`spot_mode`, `batches`; see [Spot mode](#spot-mode)).
 
 #### The site's dicomexport data
 
@@ -525,6 +526,30 @@ range shifters without anything on the page saying so.
 If `[paths] dicomexport` names a different dicomexport installation from the one PregDos imports,
 set `dicomexport_config_dir` as well: the shipped examples PregDos falls back to are those of its
 own installation.
+
+#### Spot mode
+
+`[conversion] spot_mode` sets how dicomexport lays out each field for TOPAS:
+
+- **`timefeature`** (the default): one Geant4 run per spot, stepping one source through the
+  spots. The progress bar counts spots, weighted by their protons.
+- **`sources`**: one TOPAS source per spot. The field runs as `batches` identical runs (10 by
+  default), each with 1/`batches` of every spot's protons. The progress bar counts batches.
+
+Both give the same dose. They differ in what TOPAS's `Standard_Deviation` is taken over, so
+PregDos computes the statistical uncertainty differently: per proton in time-feature mode, per
+event in sources mode, where an event holds one proton from every spot still firing and a run
+has only as many events as its heaviest spot has protons. Each field's TOPAS input records its
+mode and layout in its header, so results are always read correctly, whatever the setting is
+now.
+
+```toml
+[conversion]
+spot_mode = "sources"
+batches = 10
+```
+
+TIMING_GUIDANCE_PLACEHOLDER
 
 #### Airgapped sites
 

@@ -2311,18 +2311,31 @@ def _conversion_params(run_dir):
     )
 
 
-def test_dicomexport_is_asked_for_timefeature_spot_mode(mocker, tmp_path):
-    """dicomexport 2.0 defaults to sources mode, which has no Tf/spotWeight line for
-    progress and plan scaling to read.  Until #130, PregDos must ask for timefeature."""
+def _spot_flags(mocker, tmp_path):
     from pregdos import webserver
 
     run = mocker.patch("pregdos.webserver.subprocess.run",
                        return_value=mocker.Mock(stdout="", stderr=""))
     (tmp_path / "topas_field01.txt").write_text("# topas")
-
     webserver.run_conversion(_conversion_params(tmp_path), [])
     cmd = run.call_args[0][0]
-    assert cmd[cmd.index("--spot-mode") + 1] == "timefeature"
+    return cmd[cmd.index("--spot-mode") + 1], cmd[cmd.index("--batches") + 1]
+
+
+def test_dicomexport_is_asked_for_time_features_by_default(mocker, tmp_path):
+    """Both flags always explicit, so dicomexport's own default (sources) never applies.
+    dicomexport refuses more than one batch in time-feature mode."""
+    assert _spot_flags(mocker, tmp_path) == ("timefeature", "1")
+
+
+def test_dicomexport_is_asked_for_the_configured_sources_mode(write_config, mocker, tmp_path):
+    write_config('[conversion]\nspot_mode = "sources"\nbatches = 5\n')
+    assert _spot_flags(mocker, tmp_path) == ("sources", "5")
+
+
+def test_batches_are_ignored_in_time_feature_mode(write_config, mocker, tmp_path):
+    write_config('[conversion]\nspot_mode = "timefeature"\nbatches = 5\n')
+    assert _spot_flags(mocker, tmp_path) == ("timefeature", "1")
 
 
 def _config_dir_passed(mocker, tmp_path):

@@ -901,11 +901,13 @@ def run_conversion(params: ConversionParameters, selected_structures: list) -> C
     # -S: that is how the readers find it.  Once any -s/-S is given, dicomexport adds no
     # table of its own, so the table is always named.
     cmd = _dicomexport_cmd_prefix() + ["-b", params.beam_model_rel, "-S", params.material_table_rel]
-    # One Geant4 run per spot, with the weights in `uv:Tf/spotWeight/Values`.  Progress
-    # (executor) and plan scaling (results) read that line.  dicomexport 2.0 defaults to
-    # `sources`, which writes no such line; moving to it is #130.  Passed explicitly so a
-    # change of dicomexport's default can never change what PregDos computes.
-    cmd += ["--spot-mode", "timefeature"]
+    # [conversion] spot_mode and batches (#130), always passed explicitly so a change of
+    # dicomexport's defaults can never change what PregDos computes.  Batches exist only in
+    # sources mode; dicomexport refuses more than one in time-feature mode.  Progress, plan
+    # scaling and the uncertainty read the resulting layout from the field's header.
+    conversion = config.load().conversion
+    batches = conversion.batches if conversion.spot_mode == "sources" else 1
+    cmd += ["--spot-mode", conversion.spot_mode, "--batches", str(batches)]
     cmd += ["--config-dir", dicomexport_config_dir()]
     if params.field_nr is not None:
         cmd += ["-f", str(params.field_nr)]
@@ -1334,6 +1336,7 @@ def _live_state(run_dir: Path):
             "runs_started": p.runs_started,
             "total_runs": p.total_runs,
             "failure": p.failure,
+            "unit": p.unit,
         }
         for p in field_progress
     ]

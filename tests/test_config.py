@@ -276,6 +276,18 @@ def test_zero_stays_meaningful(write_config, body):
     config.load()      # raises if zero was caught up in the negativity check
 
 
+def test_an_unknown_spot_mode_is_an_error_with_a_suggestion(write_config):
+    write_config('[conversion]\nspot_mode = "source"\n')
+    with pytest.raises(config.ConfigError, match="spot_mode: 'source' is not one of.*did you mean 'sources'"):
+        config.load()
+
+
+def test_batches_must_be_at_least_one(write_config):
+    write_config("[conversion]\nbatches = 0\n")
+    with pytest.raises(config.ConfigError, match="batches: 0 must be at least 1"):
+        config.load()
+
+
 def test_a_relative_dicomexport_config_dir_is_an_error(write_config):
     """dicomexport runs in the run directory, so a relative path would differ for every run."""
     write_config('[paths]\ndicomexport_config_dir = "dicomexport"\n')

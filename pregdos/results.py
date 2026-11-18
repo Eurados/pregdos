@@ -36,16 +36,20 @@ histories.  dicomexport records the plan's particle budget in the TOPAS input's 
 field-specific factor, so it -- not the raw ratio -- is the value to build on.  But TOPAS does
 not simulate ``REQUESTED_HISTORIES``: the per-spot weights are integers, and their sum is what
 actually runs (19990 rather than 20000 in the example above; at low statistics whole spots
-round away and the gap grows).  Hence::
+round away and the gap grows).  dicomexport >= 2.0 records that sum as
+``# SIMULATED_HISTORIES:``; older inputs have only ``uv:Tf/spotWeight/Values`` to add up.
+Hence::
 
-    scale = PARTICLE_SCALING * REQUESTED_HISTORIES / sum(spotWeight)
+    scale = PARTICLE_SCALING * REQUESTED_HISTORIES / SIMULATED_HISTORIES
 
 Uncertainty
 -----------
 TOPAS's ``Standard_Deviation`` column is the sample SD of the *per-history* contributions --
 not a standard error, and √N too small as an error on the reported ``Sum``.  The statistical
-uncertainty we report is the standard error of the estimated dose, ``√N · SD / Sum`` (N =
-simulated histories), which is invariant under the deterministic plan scaling.  See
+uncertainty we report is the standard error of the estimated dose, ``√N · SD / Sum``, where N
+is the number of samples behind SD: protons in time-feature mode, events in sources mode (see
+:attr:`PlanScaling.uncertainty_samples`).  It is invariant under the deterministic plan
+scaling.  See
 :meth:`ScorerResult.relative_uncertainty`.
 
 .. warning::
@@ -76,6 +80,8 @@ _VERSION_RE = re.compile(r"^#\s*TOPAS Version:\s*(?P<version>.+?)\s*$")
 
 # Plan scaling, from the header dicomexport writes into the TOPAS input.
 _HEADER_VALUE_RE = re.compile(r"^#\s*(?P<key>[A-Z_]+):\s*(?P<value>[-\d.eE+]+)\s*$", re.MULTILINE)
+# `# SPOT_MODE: sources` -- a word, so `_HEADER_VALUE_RE` does not cover it.
+_SPOT_MODE_RE = re.compile(r"^#\s*SPOT_MODE:\s*(?P<mode>\w+)\s*$", re.MULTILINE)
 _SPOT_WEIGHT_RE = re.compile(r"uv:Tf/spotWeight/Values\s*=\s*(?P<count>\d+)(?P<values>(?:\s+\d+)+)")
 # dicomexport stamps the RTPLAN's SOPInstanceUID into every field it generates:
 #     # SOP_INSTANCE_UID 1.2.246.352.221.5164...
@@ -109,9 +115,31 @@ class PlanScaling:
     requested_histories: int
     """``REQUESTED_HISTORIES`` -- what was asked for, not what ran."""
     simulated_histories: int
-    """``sum(uv:Tf/spotWeight/Values)`` -- what TOPAS actually ran."""
+    """Protons TOPAS actually ran: ``SIMULATED_HISTORIES``, or ``sum(uv:Tf/spotWeight/Values)``
+    for an input from dicomexport < 2.0.  0 when neither is there."""
     total_particles: Optional[float] = None
     """``TOTAL_NUMBER_OF_PARTICLES``, kept for display."""
+    spot_mode: str = "timefeature"
+    """``SPOT_MODE``.  Inputs from dicomexport < 2.0 have none, and are time-feature."""
+    runs: int = 0
+    """``RUNS``: batches in sources mode, spots in time-feature mode.  0 if absent."""
+    events_per_run: int = 0
+    """``EVENTS_PER_RUN``, sources mode only: the heaviest spot's protons per run."""
+
+    @property
+    def uncertainty_samples(self) -> int:
+        """N for the uncertainty: the number of samples behind TOPAS's ``Standard_Deviation``.
+
+        TOPAS takes the SD over **events** (Geant4 histories).  In time-feature mode an event is
+        one proton, so N is :attr:`simulated_histories`.  In sources mode an event holds one
+        proton from every spot still firing, and a run has only ``EVENTS_PER_RUN`` of them;
+        the scorers accumulate over all ``RUNS``, so N = ``RUNS × EVENTS_PER_RUN``.  Using
+        protons there would overstate the uncertainty by √(protons / events), easily 10×.
+        0 when the header does not say.
+        """
+        if self.spot_mode == "sources":
+            return self.runs * self.events_per_run
+        return self.simulated_histories
 
     @property
     def factor(self) -> float:
@@ -214,8 +242,9 @@ class ScorerResult:
 
             SE(dose)/dose = √N · s / Sum   =   (s / mean) / √N
 
-        ``N`` is the number of histories actually simulated (``Σ spotWeight``), which we
-        already parse for the plan scaling.  This ratio is dimensionless and **invariant under
+        ``N`` is the number of samples behind ``s``, :attr:`PlanScaling.uncertainty_samples`:
+        protons in time-feature mode, events in sources mode.  This ratio is dimensionless and
+        **invariant under
         the plan scaling** -- multiplying ``Sum`` by a constant to reach plan dose multiplies
         the absolute error by the same constant -- so it applies unchanged to the scaled dose.
         It depends on how many histories were *simulated*, never on the plan's proton count.
@@ -224,7 +253,7 @@ class ScorerResult:
             return None
         sd = self.raw_standard_deviation
         total = self.raw_sum
-        n = scaling.simulated_histories
+        n = scaling.uncertainty_samples
         if sd is None or math.isnan(sd) or total in (None, 0.0) or math.isnan(total) or n <= 0:
             return None
         return math.sqrt(n) * sd / abs(total)
@@ -294,17 +323,28 @@ def parse_plan_scaling(topas_input: str | Path) -> Optional[PlanScaling]:
     except ValueError:
         return None
 
-    # TOPAS runs sum(spotWeight) histories, not `requested`: the weights are integers.
+    # TOPAS runs SIMULATED_HISTORIES protons, not `requested`: the spot weights are integers.
+    # Inputs from dicomexport < 2.0 lack the key; there it is sum(spotWeight).
     simulated = 0
-    match = _SPOT_WEIGHT_RE.search(text)
-    if match:
-        simulated = sum(int(v) for v in match.group("values").split())
+    try:
+        if "SIMULATED_HISTORIES" in header:
+            simulated = int(float(header["SIMULATED_HISTORIES"]))
+        elif (match := _SPOT_WEIGHT_RE.search(text)):
+            simulated = sum(int(v) for v in match.group("values").split())
+        runs = int(float(header.get("RUNS", 0)))
+        events_per_run = int(float(header.get("EVENTS_PER_RUN", 0)))
+    except ValueError:
+        return None
+    mode = _SPOT_MODE_RE.search(text)
 
     return PlanScaling(
         particle_scaling=particle_scaling,
         requested_histories=requested,
         simulated_histories=simulated,
         total_particles=total,
+        spot_mode=mode.group("mode") if mode else "timefeature",
+        runs=runs,
+        events_per_run=events_per_run,
     )
 
 

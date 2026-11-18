@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from pregdos import results
-from pregdos.results import ResultsError, parse_plan_scaling, parse_scorer_csv
+from pregdos.results import ResultsError, ScorerResult, parse_plan_scaling, parse_scorer_csv
 
 DATA = Path(__file__).parent / "data"
 NEUTRON = DATA / "topas_field01_neutron_BrainStem.csv"
@@ -349,6 +349,53 @@ def test_scaling_falls_back_when_spot_weights_absent(tmp_path):
     assert s.simulated_histories == 0
     assert s.factor == 42.0          # no correction available; do not divide by zero
     assert s.rounding_correction == 1.0
+
+
+def _header(tmp_path, *lines):
+    p = tmp_path / "t.txt"
+    p.write_text("# REQUESTED_HISTORIES: 20000\n# PARTICLE_SCALING: 953179.27\n" + "".join(f"# {line}\n" for line in lines))
+    return p
+
+
+def test_simulated_histories_come_from_the_header_when_present(tmp_path):
+    """dicomexport >= 2.0 records them; they win over a spot-weight sum."""
+    p = _header(tmp_path, "SIMULATED_HISTORIES: 19940", "SPOT_MODE: sources", "RUNS: 10", "EVENTS_PER_RUN: 15")
+    p.write_text(p.read_text() + "uv:Tf/spotWeight/Values = 2 1 1\n")
+
+    s = parse_plan_scaling(p)
+
+    assert s.simulated_histories == 19940
+    assert s.factor == pytest.approx(953179.27 * 20000 / 19940)
+    assert (s.spot_mode, s.runs, s.events_per_run) == ("sources", 10, 15)
+
+
+def test_sources_mode_uncertainty_counts_events_not_protons(tmp_path):
+    """TOPAS's SD is per event; an event holds one proton from every spot still firing.
+    With protons as N the uncertainty would be sqrt(19940 / 150), about 11x, too large."""
+    s = parse_plan_scaling(_header(tmp_path, "SIMULATED_HISTORIES: 19940", "SPOT_MODE: sources",
+                                   "RUNS: 10", "EVENTS_PER_RUN: 15"))
+    assert s.uncertainty_samples == 150
+    r = ScorerResult(csv_name="x.csv", scorer="x", quantity="DoseToWater", unit="Gy",
+                     columns=["Sum", "Standard_Deviation"],
+                     rows=[((), {"Sum": 3.0, "Standard_Deviation": 0.5})])
+    assert r.relative_uncertainty(s) == pytest.approx(150 ** 0.5 * 0.5 / 3.0)
+
+
+def test_time_feature_uncertainty_still_counts_protons(tmp_path):
+    s = parse_plan_scaling(_header(tmp_path, "SIMULATED_HISTORIES: 19999", "SPOT_MODE: timefeature",
+                                   "SPOTS: 659", "RUNS: 659"))
+    assert s.uncertainty_samples == 19999
+
+
+def test_input_without_spot_mode_is_time_feature(tmp_path):
+    """dicomexport < 2.0 wrote no SPOT_MODE, and only had one mode."""
+    assert parse_plan_scaling(TOPAS_INPUT).spot_mode == "timefeature"
+    assert parse_plan_scaling(TOPAS_INPUT).uncertainty_samples == 19990
+
+
+def test_sources_mode_without_the_event_count_has_no_uncertainty(tmp_path):
+    s = parse_plan_scaling(_header(tmp_path, "SIMULATED_HISTORIES: 19940", "SPOT_MODE: sources"))
+    assert s.uncertainty_samples == 0
 
 
 @pytest.mark.parametrize("text", [

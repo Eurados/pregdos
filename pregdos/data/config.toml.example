@@ -223,3 +223,19 @@
 ## airgapped site: the request can never succeed and costs a timeout on the first page load
 ## of each worker process.
 # update_check = true
+
+[conversion]
+
+## How dicomexport lays out each treatment field for TOPAS.
+##   "timefeature"  one Geant4 run per spot, stepping one source through the spots.
+##   "sources"      one TOPAS source per spot; the field runs as `batches` identical runs,
+##                  each with 1/batches of every spot's protons.  Faster on many cores, but
+##                  each run then has only as many events as its heaviest spot has protons,
+##                  so low statistics leave most threads idle.
+## The statistical uncertainty is computed accordingly: per proton in time-feature mode, per
+## event in sources mode (an event holds one proton from every spot still firing).
+# spot_mode = "timefeature"
+
+## Sources mode only: the number of identical runs per field.  Time-feature mode always runs 1.
+## Spot weights are rounded per run, so a larger value needs more histories.
+# batches = 10

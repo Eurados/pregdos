@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from typing import List, Optional
 
-from . import config, portable, structure_metrics, topas_include
+from . import config, portable, results, structure_metrics, topas_include
 from .textio import read_text_lenient
 
 # Backend identifiers, also written into run.json.
@@ -681,7 +681,8 @@ def run_status(run_dir: str | os.PathLike) -> str:
 # Progress -- how far a running field has got, from its log
 # ---------------------------------------------------------------------------
 
-# dicomexport delivers the plan as one Geant4 run per spot; TOPAS prints a line per run start.
+# TOPAS prints a line per run start -- per spot in time-feature mode, per batch in sources
+# mode, where it reads `Begin processing for Run: R, History: H` once per event.
 _RUN_LINE_RE = re.compile(r"Begin processing for Run:\s*(\d+)")
 # The per-spot history counts: `uv:Tf/spotWeight/Values = <count> w0 w1 ...`.  Spot k is run k.
 _SPOT_WEIGHTS_RE = re.compile(r"uv:Tf/spotWeight/Values\s*=\s*\d+((?:\s+\d+)+)")
@@ -691,15 +692,16 @@ _SPOT_WEIGHTS_RE = re.compile(r"uv:Tf/spotWeight/Values\s*=\s*\d+((?:\s+\d+)+)")
 class FieldProgress:
     """How far one field has run, for a progress bar.
 
-    Progress is measured in **histories**, not spots: spot weights are very uneven (early
-    spots can carry thousands of particles, late spots a handful), so "spot 600 of 659" can be
-    anywhere from a fifth to nearly all of the work.  Weighting each started spot by its
-    weight makes the bar track the actual compute done.
+    Progress is measured in **histories**, not runs.  In time-feature mode each Geant4 run is
+    one spot, and spot weights are very uneven (early spots can carry thousands of particles,
+    late spots a handful), so "spot 600 of 659" can be anywhere from a fifth to nearly all of
+    the work.  Weighting each started spot by its weight makes the bar track the compute
+    done.  In sources mode each run is one of ``RUNS`` identical batches, each worth an equal
+    share (#130).
 
-    The counters keep the name ``runs_*`` because that is what they count: one Geant4 run per
-    spot is how dicomexport happens to emit a field today (nbassler/dicomexport#88 would put
-    every spot in a single run).  The UI says "spot" because that is the unit a planner knows,
-    and because "run" already means a PregDos run on the same page.
+    The counters keep the name ``runs_*`` because that is what they count.  The UI says
+    :attr:`unit` -- "spot" or "batch" -- because "run" already means a PregDos run on the
+    same page.
     """
 
     topas_file: str
@@ -710,6 +712,8 @@ class FieldProgress:
     total_runs: int
     failure: Optional[str] = None
     """Decoded reason a failed field failed; None while running or on success."""
+    unit: str = "spot"
+    """What one Geant4 run is: "spot" in time-feature mode, "batch" in sources mode."""
 
     @property
     def fraction(self) -> float:
@@ -721,14 +725,26 @@ class FieldProgress:
         return min(1.0, self.histories_done / self.histories_total)
 
 
-def _spot_weights(run_dir: Path, topas_file: str) -> List[int]:
-    """Per-run history counts from the TOPAS input (weights[k] = histories in run k)."""
+def _run_weights(run_dir: Path, topas_file: str) -> tuple[str, List[int]]:
+    """``(unit, weights)``: what one Geant4 run is, and the protons in each run.
+
+    Time-feature mode: ``("spot", per-spot weights)`` from ``uv:Tf/spotWeight/Values``.
+    Sources mode: ``("batch", equal shares)``, ``RUNS`` of them adding up to
+    ``SIMULATED_HISTORIES`` -- each batch has 1/RUNS of every spot's protons.
+    """
+    scaling = results.parse_plan_scaling(run_dir / topas_file)
+    if scaling is not None and scaling.spot_mode == "sources":
+        runs, total = scaling.runs, scaling.simulated_histories
+        if runs <= 0:
+            return "batch", []
+        share, extra = divmod(total, runs)
+        return "batch", [share + (1 if k < extra else 0) for k in range(runs)]
     try:
         text = read_text_lenient(run_dir / topas_file)
     except OSError:
-        return []
+        return "spot", []
     m = _SPOT_WEIGHTS_RE.search(text)
-    return [int(v) for v in m.group(1).split()] if m else []
+    return "spot", [int(v) for v in m.group(1).split()] if m else []
 
 
 def _runs_started(run_dir: Path, topas_file: str) -> set:
@@ -748,7 +764,7 @@ def field_progress(run_dir: str | os.PathLike, topas_file: str) -> FieldProgress
     """Progress of one field, weighted by histories, from its sentinel, input and log."""
     run_dir = Path(run_dir)
     status = field_status(run_dir, topas_file)
-    weights = _spot_weights(run_dir, topas_file)
+    unit, weights = _run_weights(run_dir, topas_file)
     total_runs = len(weights)
     histories_total = sum(weights)
 
@@ -764,6 +780,7 @@ def field_progress(run_dir: str | os.PathLike, topas_file: str) -> FieldProgress
         histories_done=histories_done, histories_total=histories_total,
         runs_started=len(started), total_runs=total_runs,
         failure=field_failure(run_dir, topas_file) if status == FAILED else None,
+        unit=unit,
     )
 
 
@@ -776,7 +793,7 @@ def run_progress(run_dir: str | os.PathLike) -> List[FieldProgress]:
     if _local_run_is_queued(run_dir, info):
         progress = []
         for f in info.fields:
-            weights = _spot_weights(run_dir, f.topas_file)
+            unit, weights = _run_weights(run_dir, f.topas_file)
             progress.append(FieldProgress(
                 topas_file=f.topas_file,
                 status=QUEUED,
@@ -784,6 +801,7 @@ def run_progress(run_dir: str | os.PathLike) -> List[FieldProgress]:
                 histories_total=sum(weights),
                 runs_started=0,
                 total_runs=len(weights),
+                unit=unit,
             ))
         return progress
     return [field_progress(run_dir, f.topas_file) for f in info.fields]
