@@ -31,8 +31,8 @@ import subprocess
 import sys
 import shutil
 
-from . import (audit, auth, config, dicom_intake, executor, portable, report_pdf, reporting,
-               results, rtdose, structure_metrics, studies, versions)
+from . import (audit, auth, config, dicom_intake, executor, overrides, portable, report_pdf,
+               reporting, results, rtdose, structure_metrics, studies, versions)
 from .models import ConversionParameters, ConversionResult
 from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
@@ -760,7 +760,26 @@ def _setup_page(root, study_name, beam_model_name, material_table_name, form=Non
         # Checked by default on a fresh setup page; on a refusal, whatever was submitted -- the
         # form has to show the state the message is complaining about.
         keep_infield=bool(form.get("keep_infield")) if form else True,
+        **_override_context(form),
     )
+
+
+def _override_context(form) -> dict:
+    """The material-override card: the materials on offer, and the rows to show.
+
+    Without a readable config dir only TOPAS's built-in materials are offered; the upload page
+    has already said why.  Submitted rows are carried back on a refusal, plus one spare.
+    """
+    try:
+        materials_file = overrides.materials_file_of(dicomexport_listing())
+    except RuntimeError:
+        materials_file = None
+    rows = [row for row in overrides.submitted_rows(form) if any(row)]
+    return {
+        "site_materials": overrides.site_materials(materials_file),
+        "builtin_materials": overrides.BUILTIN_MATERIALS,
+        "override_rows": rows + [("", "")] * (1 if rows else 2),
+    }
 
 
 @app.route("/upload", methods=["GET", "POST"])
@@ -904,6 +923,13 @@ def run_conversion(params: ConversionParameters, selected_structures: list) -> C
     # -S: that is how the readers find it.  Once any -s/-S is given, dicomexport adds no
     # table of its own, so the table is always named.
     cmd = _dicomexport_cmd_prefix() + ["-b", params.beam_model_rel, "-S", params.material_table_rel]
+    # Material overrides (#126): the site's materials pasted after the table -- never before
+    # it, the readers take the first pasted file as the table -- then one option per
+    # structure, in the order given, since TOPAS uses the first where structures overlap.
+    if params.material_overrides and params.materials_file:
+        cmd += ["-S", params.materials_file]
+    for roi, material in params.material_overrides:
+        cmd += ["--material-override", f"{roi}={material}"]
     # [conversion] spot_mode (#130) and the batch count, always passed explicitly so a change
     # of dicomexport's defaults can never change what PregDos computes.  Sources mode runs
     # BATCHES batches, whose spread is the uncertainty, or 1 when asked for a single batch.  dicomexport
@@ -930,7 +956,7 @@ def run_conversion(params: ConversionParameters, selected_structures: list) -> C
         )
     except subprocess.CalledProcessError as e:
         out = (e.stdout or "").strip()
-        err = (e.stderr or str(e)).strip()
+        err = _without_shipped_defaults_note(e.stderr or str(e)).strip()
         msg = "".join([part for part in (err, out) if part])
         raise RuntimeError(f"Error running dicomexport: {msg}") from e
     except subprocess.TimeoutExpired as e:
@@ -1001,6 +1027,23 @@ def convert():
               "for one structure to get scorer results.")
         return _setup_page(root, study_name, beam_model_name, material_table_name, request.form)
 
+    # Material overrides (#126), checked against what the setup page offered, before anything
+    # exists on disk.  The config dir is listed only when a row is filled in.
+    material_overrides: list = []
+    materials_file = None
+    if any(any(row) for row in overrides.submitted_rows(request.form)):
+        try:
+            materials_file = overrides.materials_file_of(dicomexport_listing())
+        except RuntimeError:
+            materials_file = None
+        try:
+            material_overrides = overrides.from_form(
+                request.form, get_structures(root, study_name),
+                [*overrides.site_materials(materials_file), *overrides.BUILTIN_MATERIALS])
+        except (ValueError, StudyError) as e:
+            flash(str(e))
+            return _setup_page(root, study_name, beam_model_name, material_table_name, request.form)
+
     try:
         study_path = studies.study_path(root, study_name)
         run_id, run_dir = studies.create_run(root, study_name)
@@ -1018,15 +1061,19 @@ def convert():
         field_nr=None,
         nstat=nstat,
         single_batch=bool(request.form.get("single_batch")),
+        material_overrides=material_overrides,
+        materials_file=materials_file if material_overrides else None,
     )
 
     try:
         result = run_conversion(params, selected_structures)
     except RuntimeError as err:
-        # A failed conversion leaves nothing behind: the run dir is empty or partial.
+        # A failed conversion leaves nothing behind: the run dir is empty or partial.  Back to
+        # the setup page with the choices kept: most refusals name one of them -- a structure
+        # an override cannot use, say (#126) -- and the study itself is fine.
         shutil.rmtree(run_dir, ignore_errors=True)
         flash(str(err))
-        return redirect(url_for("upload_files"))
+        return _setup_page(root, study_name, beam_model_name, material_table_name, request.form)
 
     # Inject the requested out-of-field scorer blocks, and optionally drop the in-field
     # DoseToWater scorer that dicomexport always writes.  Validated above, before the run dir.
@@ -1057,6 +1104,16 @@ def convert():
 
     for warning in _batch_statistics_warnings(run_dir, result.out_files):
         flash(warning)
+    # dicomexport's warnings: spots rounded away, an RTSTRUCT's own overrides that no option
+    # covers (#126).  They were discarded on success before.
+    for line in _without_shipped_defaults_note(result.stderr or "").splitlines():
+        if line.strip():
+            flash(f"dicomexport: {line.strip()}")
+    for roi, material in material_overrides:
+        if roi in selected_structures:
+            flash(f"{roi} is both scored and given {material}: TOPAS uses {material}, but the "
+                  f"structure's mass, which some scorers are normalised by, is still computed "
+                  f"from the CT numbers.")
 
     # Only now is there a run directory that survived conversion, scorer injection and the
     # mask pre-pass.  Every failure above deletes it again.
@@ -1071,6 +1128,15 @@ def convert():
         run_id=result.run_id,
         selected_structures=result.selected_structures,
     )
+
+
+# dicomexport prints this whenever it uses its shipped examples.  The upload page already
+# says so, prominently, so it is not repeated with every conversion.
+_SHIPPED_DEFAULTS_NOTE = "Using the defaults shipped with dicomexport"
+
+
+def _without_shipped_defaults_note(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith(_SHIPPED_DEFAULTS_NOTE))
 
 
 #: Protons per spot per batch below which a batched field is warned about.  The lowest
