@@ -1428,6 +1428,8 @@ def _live_state(run_dir: Path):
     progress = [
         {
             "field": p.topas_file,
+            # The TPS's name for the field, so it can be recognised (#129).
+            "beam_name": results.field_beam_name(run_dir / p.topas_file),
             "status": p.status,
             "percent": round(100 * p.fraction),
             "histories_done": p.histories_done,

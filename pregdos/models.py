@@ -41,8 +41,9 @@ class ConversionParameters:
     output_basename: str
     """Base name for output files; dicomexport appends ``_fieldNN.txt`` suffixes."""
     field_nr: Optional[int] = None
-    """If set, export only this treatment field (1-based index).
-    None means export all fields."""
+    """If set, export only the field with this DICOM ``BeamNumber`` (dicomexport ``-f``; not
+    the field's position in the plan, since dicomexport 2.0).  None means export all fields,
+    which is all PregDos ever asks for."""
     nstat: Optional[int] = None
     """Number of primary proton histories per spot weight.
     Passed through as the ``-N`` flag to dicomexport; None uses the default."""
