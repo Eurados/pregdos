@@ -2311,18 +2311,56 @@ def _conversion_params(run_dir):
     )
 
 
-def test_dicomexport_is_asked_for_timefeature_spot_mode(mocker, tmp_path):
-    """dicomexport 2.0 defaults to sources mode, which has no Tf/spotWeight line for
-    progress and plan scaling to read.  Until #130, PregDos must ask for timefeature."""
+def _spot_flags(mocker, tmp_path):
     from pregdos import webserver
 
     run = mocker.patch("pregdos.webserver.subprocess.run",
                        return_value=mocker.Mock(stdout="", stderr=""))
     (tmp_path / "topas_field01.txt").write_text("# topas")
-
     webserver.run_conversion(_conversion_params(tmp_path), [])
     cmd = run.call_args[0][0]
-    assert cmd[cmd.index("--spot-mode") + 1] == "timefeature"
+    return cmd[cmd.index("--spot-mode") + 1], cmd[cmd.index("--batches") + 1]
+
+
+def test_dicomexport_is_asked_for_ten_batches_of_sources_by_default(mocker, tmp_path):
+    """Both flags always explicit, so dicomexport's own defaults never apply."""
+    assert _spot_flags(mocker, tmp_path) == ("sources", "10")
+
+
+def test_single_batch_runs_one_batch(mocker, tmp_path):
+    from pregdos import webserver
+
+    run = mocker.patch("pregdos.webserver.subprocess.run",
+                       return_value=mocker.Mock(stdout="", stderr=""))
+    (tmp_path / "topas_field01.txt").write_text("# topas")
+    params = _conversion_params(tmp_path)
+    params.single_batch = True
+    webserver.run_conversion(params, [])
+    cmd = run.call_args[0][0]
+    assert cmd[cmd.index("--batches") + 1] == "1"
+
+
+def test_time_feature_mode_always_runs_one_batch(write_config, mocker, tmp_path):
+    """dicomexport refuses more than one batch in time-feature mode."""
+    write_config('[conversion]\nspot_mode = "timefeature"\n')
+    assert _spot_flags(mocker, tmp_path) == ("timefeature", "1")
+
+
+@pytest.mark.parametrize("requested, runs, warned", [
+    (20000, 10, False),     # 3.03 per spot per batch: the lowest tested
+    (19000, 10, True),
+    (1000, 1, False),       # a single batch is not split, so nothing is rounded per batch
+])
+def test_too_few_primaries_for_the_batches_are_warned_about(tmp_path, requested, runs, warned):
+    from pregdos import webserver
+
+    (tmp_path / "topas_field01.txt").write_text(
+        f"# REQUESTED_HISTORIES: {requested}\n# PARTICLE_SCALING: 1.0\n# SIMULATED_HISTORIES: {requested}\n"
+        f"# SPOT_MODE: sources\n# SPOTS: 659\n# RUNS: {runs}\n# EVENTS_PER_RUN: 15\n")
+    messages = webserver._batch_statistics_warnings(tmp_path, ["topas_field01.txt"])
+    assert bool(messages) == warned
+    if warned:
+        assert "19,770" in messages[0] and "Single batch" in messages[0]
 
 
 def _config_dir_passed(mocker, tmp_path):

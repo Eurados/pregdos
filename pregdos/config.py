@@ -169,6 +169,25 @@ class Network:
     update_check: bool = True        # false for airgapped sites
 
 
+SPOT_MODES = ("timefeature", "sources")
+
+
+@dataclass(frozen=True)
+class Conversion:
+    """How dicomexport lays a field out for TOPAS (#130).  Always passed explicitly, so a change
+    of dicomexport's own default never changes what PregDos computes."""
+
+    # "sources": one TOPAS source per spot, the field run as BATCHES identical runs whose
+    # spread gives the statistical uncertainty (batch means).  "timefeature": one Geant4 run
+    # per spot, the previous behaviour, kept to cross-check sources mode.
+    spot_mode: str = "sources"
+
+
+#: Batches per field in sources mode, unless the user asks for a single batch (no
+#: uncertainty).  Not a setting: 10 gives the batch-means uncertainty 9 degrees of freedom.
+BATCHES = 10
+
+
 @dataclass(frozen=True)
 class Config:
     paths: Paths = field(default_factory=Paths)
@@ -176,12 +195,14 @@ class Config:
     server: Server = field(default_factory=Server)
     auth: Auth = field(default_factory=Auth)
     network: Network = field(default_factory=Network)
+    conversion: Conversion = field(default_factory=Conversion)
 
 
 # The whole schema.  Both the validator and the anti-drift test derive from this, so adding a
 # section is a one-line change here plus a dataclass.
 _SECTIONS: Dict[str, type] = {
     "paths": Paths, "scheduler": Scheduler, "server": Server, "auth": Auth, "network": Network,
+    "conversion": Conversion,
 }
 
 # Set by `pregdos-web --config PATH`.  Beats $PREGDOS_CONFIG: the flag is the more explicit,
@@ -321,6 +342,12 @@ def _validate_values(cfg: Config, sources: List[Path]) -> None:
                 f"or 0 to {meaning_of_zero}."
             )
 
+    if cfg.conversion.spot_mode not in SPOT_MODES:
+        raise ConfigError(
+            f"{where}: [conversion] spot_mode: {cfg.conversion.spot_mode!r} is not one of "
+            f"{', '.join(repr(m) for m in SPOT_MODES)}"
+            f"{_did_you_mean(cfg.conversion.spot_mode, SPOT_MODES)}"
+        )
     # dicomexport runs with the run directory as its cwd, so a relative path would name a
     # different, nonexistent directory for every run.
     config_dir = cfg.paths.dicomexport_config_dir

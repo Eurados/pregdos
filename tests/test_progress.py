@@ -87,6 +87,40 @@ def test_missing_spot_weights_degrades_gracefully(tmp_path):
     assert p.fraction == 0.0                    # no total -> no false progress
 
 
+def _sources_field(run_dir, runs=10, simulated=19940, runs_seen=(), name="topas_field01.txt"):
+    """A sources-mode input (dicomexport >= 2.0): no spot weights, the layout in the header."""
+    (run_dir / name).write_text(
+        f"# SIMULATED_HISTORIES: {simulated}\n# SPOT_MODE: sources\n# SPOTS: 659\n"
+        f"# RUNS: {runs}\n# EVENTS_PER_RUN: 15\n# REQUESTED_HISTORIES: 20000\n# PARTICLE_SCALING: 1.0\n"
+    )
+    # One line per event, as TOPAS logs it with ShowHistoryCountAtInterval = 1.
+    (run_dir / f"{name[:-4]}.log").write_text("".join(
+        f"G4WT{h % 4} > Begin processing for Run: {k}, History: {h}\n" for k in runs_seen for h in range(15)
+    ))
+
+
+def test_sources_mode_progress_counts_batches(tmp_path):
+    """Identical batches, each an equal share: 3 of 10 started is 30 %."""
+    _sources_field(tmp_path, runs_seen=[0, 1, 2])
+    p = executor.field_progress(tmp_path, "topas_field01.txt")
+    assert p.unit == "batch"
+    assert (p.runs_started, p.total_runs) == (3, 10)
+    assert p.histories_total == 19940
+    assert p.histories_done == 3 * 1994
+    assert round(100 * p.fraction) == 30
+
+
+def test_time_feature_progress_is_still_in_spots(tmp_path):
+    _field(tmp_path, weights=[10, 20], runs_seen=[0])
+    assert executor.field_progress(tmp_path, "topas_field01.txt").unit == "spot"
+
+
+def test_batch_shares_add_up_when_runs_do_not_divide_the_histories(tmp_path):
+    _sources_field(tmp_path, runs=3, simulated=10, runs_seen=[0, 1, 2])
+    p = executor.field_progress(tmp_path, "topas_field01.txt")
+    assert p.histories_total == 10 and p.histories_done == 10
+
+
 def test_run_progress_covers_all_fields_in_order(tmp_path):
     _field(tmp_path, weights=[10, 10], runs_seen=[0, 1], name="topas_field01.txt", exit_code=0)
     _field(tmp_path, weights=[10, 10], runs_seen=[0], name="topas_field02.txt")

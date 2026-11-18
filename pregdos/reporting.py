@@ -191,6 +191,18 @@ def group_rows(rows: list) -> list:
     return out
 
 
+def _scaling_warning(scaling: results.PlanScaling) -> str | None:
+    """Why a field's dose or uncertainty is less than it should be, or None."""
+    if scaling.simulated_histories <= 0:
+        return ("its TOPAS input records neither SIMULATED_HISTORIES nor Tf/spotWeight, so the "
+                "dose is scaled without the correction for rounded spot weights, and has no "
+                "statistical uncertainty.")
+    if scaling.spot_mode == "sources" and scaling.runs == 1:
+        return ("the field ran as a single batch, so its dose has no statistical "
+                "uncertainty.")
+    return None
+
+
 def result_rows(run_dir: Path, study: str, root: str | Path):
     """Parsed, plan-scaled scorer rows for one run, ready for the results table.
 
@@ -213,9 +225,15 @@ def result_rows(run_dir: Path, study: str, root: str | Path):
     fraction_multiplier = plan_fractions or 1
 
     rows = []
+    warned_fields: set[str] = set()
     for r in parsed:
         scaling = results.scaling_for(r, run_dir)
         total, sd = r.scaled(scaling)
+        # Say so once per field rather than fall back silently (#130).
+        if (scaling is not None and r.parameter_file not in warned_fields
+                and (message := _scaling_warning(scaling))):
+            warned_fields.add(r.parameter_file)
+            warnings.append(f"{r.parameter_file}: {message}")
         metric = None
         mass_normalized = False
         volume_normalized = False

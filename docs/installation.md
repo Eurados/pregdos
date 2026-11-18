@@ -484,7 +484,8 @@ command, so an offline package upgrade requires no new service command or proxy.
 
 The sections are `[paths]` (`work_dir`, `topas_bin`, `dicomexport`, `dicomexport_timeout`,
 `dicomexport_config_dir`), `[scheduler]` (see below), `[server]` (`host`, `port`, `ssl_cert`,
-`ssl_key`), `[auth]` (see [Authentication](#authentication)), and `[network]` (`update_check`).
+`ssl_key`), `[auth]` (see [Authentication](#authentication)), `[network]` (`update_check`), and
+`[conversion]` (`spot_mode`, `batches`; see [Spot mode](#spot-mode)).
 
 #### The site's dicomexport data
 
@@ -525,6 +526,45 @@ range shifters without anything on the page saying so.
 If `[paths] dicomexport` names a different dicomexport installation from the one PregDos imports,
 set `dicomexport_config_dir` as well: the shipped examples PregDos falls back to are those of its
 own installation.
+
+#### Spot mode
+
+`[conversion] spot_mode` sets how dicomexport lays out each field for TOPAS:
+
+- **`sources`** (the default): one TOPAS source per spot. Each field runs as 10 identical
+  batches, each with a tenth of every spot's protons. The dose is the sum of the batches, and its
+  statistical uncertainty is the spread between them (batch means). The progress bar counts
+  batches.
+- **`timefeature`**: one Geant4 run per spot, stepping one source through the spots, as PregDos
+  did before dicomexport 2.0. Keep it for cross-checking sources mode. The progress bar counts
+  spots, weighted by their protons.
+
+```toml
+[conversion]
+spot_mode = "timefeature"
+```
+
+Both modes give the same dose. On the head phantom (field 1, 20 000 primaries, 12 threads) they
+agreed within 1 σ for the CTV, a brain-stem dose and the whole-body neutron dose equivalent, and
+sources mode took 645 s against 991 s.
+
+The uncertainty differs between the modes, and only batch means is a fair one. TOPAS's own
+`Standard_Deviation` treats every event as an equal sample. In time-feature mode an event is one
+proton, and the spread between spots counts as noise, so the reported uncertainty is about twice
+batch means in-field. In sources mode an event holds one proton from every spot still firing, and
+the first events of a run carry far more spots than the last; TOPAS's figure there was 3 to 26
+times too large, at any statistics. PregDos therefore never uses it in sources mode.
+
+**Single batch.** In sources mode the setup page offers **Single batch (no error bars)**: each
+field runs as one batch, which is quicker, and its results have no statistical uncertainty. It is for checking a
+setup, not for reporting a dose.
+
+**Enough primaries.** Spot weights are rounded per batch, so a batched field needs enough
+primaries: PregDos warns after conversion when a field gets fewer than 3 protons per spot per
+batch, the lowest tested. For a field of 659 spots that is about 20 000 primaries.
+
+Each field's TOPAS input records its mode and layout in its header, so results are always read
+correctly, whatever the setting is now.
 
 #### Airgapped sites
 

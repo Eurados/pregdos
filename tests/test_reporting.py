@@ -6,7 +6,7 @@ separate decision from what TOPAS wrote.
 
 import pytest
 
-from pregdos import executor, report_pdf, reporting
+from pregdos import executor, report_pdf, reporting, results
 
 
 # --- display scorer name ---
@@ -181,3 +181,25 @@ def test_pdf_keeps_the_hash_when_the_filename_is_too_long_to_fit(name_len):
 
     assert clipped.endswith("(ba7816bf)")
     assert pdf.get_string_width(clipped) <= width - 2
+
+
+# --- plan-scaling warnings (#130) ---
+
+def test_a_field_without_simulated_histories_is_warned_about():
+    """Neither SIMULATED_HISTORIES nor Tf/spotWeight: the dose loses its rounding correction
+    and its uncertainty.  Say so instead of falling back silently."""
+    scaling = results.PlanScaling(particle_scaling=1.0, requested_histories=100, simulated_histories=0)
+    assert "neither SIMULATED_HISTORIES nor Tf/spotWeight" in reporting._scaling_warning(scaling)
+
+
+def test_a_single_batch_run_is_warned_about():
+    """One batch: no uncertainty.  The report says why the column is empty."""
+    scaling = results.PlanScaling(particle_scaling=1.0, requested_histories=100, simulated_histories=99,
+                                  spot_mode="sources", runs=1, events_per_run=15)
+    assert "single batch" in reporting._scaling_warning(scaling)
+
+
+def test_a_complete_header_is_not_warned_about():
+    scaling = results.PlanScaling(particle_scaling=1.0, requested_histories=100, simulated_histories=99,
+                                  spot_mode="sources", runs=10, events_per_run=15)
+    assert reporting._scaling_warning(scaling) is None

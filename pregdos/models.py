@@ -46,6 +46,9 @@ class ConversionParameters:
     nstat: Optional[int] = None
     """Number of primary proton histories per spot weight.
     Passed through as the ``-N`` flag to dicomexport; None uses the default."""
+    single_batch: bool = False
+    """Run each field as a single batch: quicker, but with no statistical uncertainty.
+    Only matters in sources mode, where a field otherwise runs as ``config.BATCHES``."""
 
 
 @dataclass(slots=True)
