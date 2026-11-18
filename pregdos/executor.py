@@ -768,6 +768,16 @@ class FieldProgress:
     """Decoded reason a failed field failed; None while running or on success."""
     unit: str = "spot"
     """What one Geant4 run is: "spot" in time-feature mode, "batch" in sources mode."""
+    started: bool = True
+    """Whether TOPAS has started on this field: its log exists.  A field of a running run
+    that has not is waiting -- behind the fields before it, or in the SLURM queue."""
+
+    @property
+    def initialising(self) -> bool:
+        """Running, with nothing done yet: TOPAS is still setting up -- loading the CT, building
+        the geometry -- or, in sources mode, the threads are in their first events, which carry
+        minutes of one-off setup each (#144).  Shown as such rather than as a bar stuck at 0."""
+        return self.status == RUNNING and self.started and self.histories_done == 0
 
     @property
     def fraction(self) -> float:
@@ -926,6 +936,7 @@ def field_progress(run_dir: str | os.PathLike, topas_file: str) -> FieldProgress
         runs_started=runs_started, total_runs=total_runs,
         failure=field_failure(run_dir, topas_file) if status == FAILED else None,
         unit=unit,
+        started=(run_dir / log_name(topas_file)).exists(),
     )
 
 

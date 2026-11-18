@@ -30,6 +30,8 @@
             {% elif p.status == 'canceled' %}canceled
             {% elif p.status == 'failed' %}failed at {{ p.unit }} {{ p.runs_started }}/{{ p.total_runs }}{% if p.failure %} · {{ p.failure }}{% endif %}
             {% elif p.status == 'queued' %}queued
+            {% elif p.status == 'running' and not p.started %}waiting…
+            {% elif p.initialising %}<span title="TOPAS is setting up, and in sources mode the first events carry minutes of one-off setup. Progress shows once the first events have finished.">initialising…</span>
             {% elif p.total_runs %}{{ p.unit }} {{ p.runs_started }}/{{ p.total_runs }} · {{ '{:,}'.format(p.histories_done) }}/{{ '{:,}'.format(p.histories_total) }} histories
             {% else %}starting…{% endif %}
           </span>

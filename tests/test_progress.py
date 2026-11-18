@@ -318,3 +318,32 @@ def test_submission_sets_the_interval_for_a_sources_field_only(tmp_path):
     assert "i:Ts/ShowHistoryCountAtInterval         = 73\n" in sources.read_text()
     assert sources.read_text().count("ShowHistoryCountAtInterval") == 1      # replaced, not added
     assert "ShowHistoryCountAtInterval = 100000" in timefeature.read_text()
+
+
+# --- initialising (#144) ---
+
+def test_a_running_field_with_nothing_done_is_initialising(tmp_path):
+    """The real case: every thread in its first event, minutes of one-off setup.  Not a bar
+    stuck at 0 %."""
+    _sources_spots(tmp_path, [734, 700, 500], runs=1, events=[(0, e) for e in range(0, 78, 7)], threads=12)
+    p = executor.field_progress(tmp_path, "topas_field01.txt")
+    assert p.status == executor.RUNNING and p.initialising
+
+
+def test_a_field_is_no_longer_initialising_once_an_event_has_finished(tmp_path):
+    _sources_spots(tmp_path, [734, 700, 500], runs=1,
+                   events=[(0, e) for e in range(0, 78, 7)] + [(0, 1)], threads=12)
+    assert not executor.field_progress(tmp_path, "topas_field01.txt").initialising
+
+
+def test_queued_and_finished_fields_are_not_initialising(tmp_path):
+    _field(tmp_path, weights=[10, 20], runs_seen=[], exit_code=0)
+    assert not executor.field_progress(tmp_path, "topas_field01.txt").initialising
+
+
+def test_a_field_topas_has_not_started_is_waiting_not_initialising(tmp_path):
+    """Local fields run one after another: field 2 waits for field 1, with no log yet."""
+    _sources_spots(tmp_path, [5, 3, 1], runs=1, events=[])
+    (tmp_path / "topas_field01.log").unlink()
+    p = executor.field_progress(tmp_path, "topas_field01.txt")
+    assert p.status == executor.RUNNING and not p.started and not p.initialising
