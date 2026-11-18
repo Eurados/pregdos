@@ -15,6 +15,7 @@ from flask import (
 from markupsafe import Markup, escape
 import importlib.metadata
 import json
+import re
 import pydicom
 
 import argparse
@@ -1122,7 +1123,7 @@ def convert():
     # covers (#126).  They were discarded on success before.
     for line in _without_shipped_defaults_note(result.stderr or "").splitlines():
         if line.strip():
-            flash(f"dicomexport: {line.strip()}")
+            flash(f"dicomexport: {_in_pregdos_terms(line.strip())}")
     for roi, material in material_overrides:
         if roi in selected_structures:
             flash(f"{roi} is both scored and given {material}: TOPAS uses {material}, but the "
@@ -1147,6 +1148,24 @@ def convert():
 # dicomexport prints this whenever it uses its shipped examples.  The upload page already
 # says so, prominently, so it is not repeated with every conversion.
 _SHIPPED_DEFAULTS_NOTE = "Using the defaults shipped with dicomexport"
+
+
+# dicomexport's warnings speak its command line; the user here has a form.  "-N" is the number
+# of primaries asked for, and "lower --batches" is the Single batch checkbox: the only batch
+# counts PregDos runs are 10 and 1.
+_CLI_TO_FORM = (
+    (re.compile(r"\blower --batches\b"), "tick Single batch (no error bars)"),
+    (re.compile(r"\bIncrease -N\b"), "Request more primaries"),
+    (re.compile(r"\bat -N (\d+)"), r"at \1 primaries"),
+    (re.compile(r"\bfor -N (\d+)"), r"for \1 requested"),
+)
+
+
+def _in_pregdos_terms(line: str) -> str:
+    """A dicomexport warning, in the terms of the setup page rather than of its options."""
+    for pattern, replacement in _CLI_TO_FORM:
+        line = pattern.sub(replacement, line)
+    return line
 
 
 def _without_shipped_defaults_note(text: str) -> str:

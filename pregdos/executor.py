@@ -692,6 +692,10 @@ def run_status(run_dir: str | os.PathLike) -> str:
 _RUN_LINE_RE = re.compile(r"Begin processing for Run:\s*(\d+)")
 # The per-spot history counts: `uv:Tf/spotWeight/Values = <count> w0 w1 ...`.  Spot k is run k.
 _SPOT_WEIGHTS_RE = re.compile(r"uv:Tf/spotWeight/Values\s*=\s*\d+((?:\s+\d+)+)")
+# Sources mode: one source per spot, each firing this many protons in every batch.
+_SOURCE_WEIGHT_RE = re.compile(r"^\s*i:So/[^/\s]+/NumberOfHistoriesInRun\s*=\s*(\d+)", re.MULTILINE)
+# `Begin processing for Run: 3, History: 12` -- batch 3, event 12 (ShowHistoryCountAtInterval = 1).
+_EVENT_LINE_RE = re.compile(r"Begin processing for Run:\s*(\d+),\s*History:\s*(\d+)")
 
 
 @dataclass
@@ -738,19 +742,82 @@ def _run_weights(run_dir: Path, topas_file: str) -> tuple[str, List[int]]:
     Sources mode: ``("batch", equal shares)``, ``RUNS`` of them adding up to
     ``SIMULATED_HISTORIES`` -- each batch has 1/RUNS of every spot's protons.
     """
+    unit, weights, _ = _layout(run_dir, topas_file)
+    return unit, weights
+
+
+def _threads(text: str) -> int:
+    """TOPAS worker threads for this input: ``Ts/NumberOfThreads``, pinned at submission
+    (:func:`set_thread_count`).  0 means every core and -1 all but one, of this machine."""
+    m = _THREADS_RE.search(text)
+    value = int(m.group(2)) if m else 0
+    cores = os.cpu_count() or 1
+    return value if value > 0 else max(1, cores + value) if value < 0 else cores
+
+
+def _layout(run_dir: Path, topas_file: str) -> tuple[str, List[int], List[int]]:
+    """:func:`_run_weights`, plus each spot's protons per batch in sources mode ([] otherwise).
+
+    In sources mode every batch fires each spot ``NumberOfHistoriesInRun`` times, so a batch
+    holds ``sum`` of them and the field ``RUNS`` times that -- exactly ``SIMULATED_HISTORIES``.
+    """
     scaling = results.parse_plan_scaling(run_dir / topas_file)
-    if scaling is not None and scaling.spot_mode == "sources":
-        runs, total = scaling.runs, scaling.simulated_histories
-        if runs <= 0:
-            return "batch", []
-        share, extra = divmod(total, runs)
-        return "batch", [share + (1 if k < extra else 0) for k in range(runs)]
     try:
         text = read_text_lenient(run_dir / topas_file)
     except OSError:
-        return "spot", []
+        return ("batch" if scaling is not None and scaling.spot_mode == "sources" else "spot"), [], []
+    if scaling is not None and scaling.spot_mode == "sources":
+        runs = scaling.runs
+        if runs <= 0:
+            return "batch", [], []
+        spot_weights = [int(v) for v in _SOURCE_WEIGHT_RE.findall(text)]
+        if spot_weights:
+            return "batch", [sum(spot_weights)] * runs, spot_weights
+        # No sources to read (a truncated input): equal shares of SIMULATED_HISTORIES, by batch.
+        share, extra = divmod(scaling.simulated_histories, runs)
+        return "batch", [share + (1 if k < extra else 0) for k in range(runs)], []
     m = _SPOT_WEIGHTS_RE.search(text)
-    return "spot", [int(v) for v in m.group(1).split()] if m else []
+    return "spot", [int(v) for v in m.group(1).split()] if m else [], []
+
+
+def _events_seen(run_dir: Path, topas_file: str) -> dict:
+    """``{batch: highest event seen}`` from the log of a sources-mode field.
+
+    Threads log events slightly out of order, so the highest seen is taken, not the last.
+    """
+    try:
+        text = read_text_lenient(run_dir / log_name(topas_file))
+    except OSError:
+        return {}
+    seen: dict = {}
+    for m in _EVENT_LINE_RE.finditer(text):
+        batch, event = int(m.group(1)), int(m.group(2))
+        seen[batch] = max(event, seen.get(batch, -1))
+    return seen
+
+
+def _batch_progress(run_dir: Path, topas_file: str, batches: int,
+                    spot_weights: List[int], threads: int) -> tuple[int, int]:
+    """``(protons done, batches started)`` of a sources-mode field (#95).
+
+    The batches run one after another -- TOPAS starts a run only once the last has ended -- so
+    every batch before the latest one seen is done.  Within the latest, event ``k`` fires one
+    proton from every spot with more than ``k`` left: the first events hold nearly every spot,
+    the last only the heaviest.  So once ``m`` events have *finished*, ``sum(min(w, m))`` of
+    the batch's protons have, far more than ``m / events`` of them early on.
+
+    The log only says when an event *starts*, and the threads start the first ``threads``
+    events at once.  At most ``threads`` events are in flight, so of ``S`` started at least
+    ``S - threads`` have finished; only those are counted.  Counting the started ones put a
+    real single-batch field at 84 % before any event had finished.
+    """
+    seen = {b: e for b, e in _events_seen(run_dir, topas_file).items() if 0 <= b < batches}
+    if not seen:
+        return 0, 0
+    latest = max(seen)
+    finished = max(0, seen[latest] + 1 - threads)
+    done = latest * sum(spot_weights) + sum(min(w, finished) for w in spot_weights)
+    return done, latest + 1
 
 
 def _runs_started(run_dir: Path, topas_file: str) -> set:
@@ -770,21 +837,27 @@ def field_progress(run_dir: str | os.PathLike, topas_file: str) -> FieldProgress
     """Progress of one field, weighted by histories, from its sentinel, input and log."""
     run_dir = Path(run_dir)
     status = field_status(run_dir, topas_file)
-    unit, weights = _run_weights(run_dir, topas_file)
+    unit, weights, spot_weights = _layout(run_dir, topas_file)
     total_runs = len(weights)
     histories_total = sum(weights)
 
     if status == COMPLETED:
-        started = set(range(total_runs))
+        histories_done, runs_started = histories_total, total_runs
+    elif spot_weights:
+        try:
+            threads = _threads(read_text_lenient(run_dir / topas_file))
+        except OSError:
+            threads = os.cpu_count() or 1
+        histories_done, runs_started = _batch_progress(run_dir, topas_file, total_runs, spot_weights, threads)
     else:
         # Only count runs we actually have a weight for, so a stray index can't overshoot.
         started = {k for k in _runs_started(run_dir, topas_file) if 0 <= k < total_runs}
+        histories_done, runs_started = sum(weights[k] for k in started), len(started)
 
-    histories_done = sum(weights[k] for k in started)
     return FieldProgress(
         topas_file=topas_file, status=status,
         histories_done=histories_done, histories_total=histories_total,
-        runs_started=len(started), total_runs=total_runs,
+        runs_started=runs_started, total_runs=total_runs,
         failure=field_failure(run_dir, topas_file) if status == FAILED else None,
         unit=unit,
     )
