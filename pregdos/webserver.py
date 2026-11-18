@@ -31,7 +31,7 @@ import subprocess
 import sys
 import shutil
 
-from . import (audit, auth, config, dicom_intake, executor, overrides, portable, report_pdf,
+from . import (audit, auth, config, ct_table, dicom_intake, executor, overrides, portable, report_pdf,
                reporting, results, rtdose, structure_metrics, studies, versions)
 from .models import ConversionParameters, ConversionResult
 from .studies import StudyError
@@ -829,6 +829,20 @@ def upload_files():
             return redirect(request.url)
         if (study_zip and study_zip.filename) and study_dir_files:
             flash("Please choose either ZIP or Folder, not both.")
+            return redirect(request.url)
+        # The CT-number-to-material table decides every density.  One that TOPAS would read
+        # out of bounds runs without an error and gives undefined densities, so check it now,
+        # as it is chosen, not when the run is submitted (#131).
+        if table_file is not None:
+            table_name, table_bytes = table_file.name, table_file.read_bytes()
+        elif material_table is not None:           # an upload, required above
+            table_name, table_bytes = material_table.filename, material_table.read()
+            material_table.stream.seek(0)          # saved into the study below
+        else:
+            table_name, table_bytes = "", b""
+        if table_problems := ct_table.problems_in_bytes(table_bytes):
+            for problem in table_problems:
+                flash(f"CT-number-to-material table {table_name} cannot be used: {problem}.")
             return redirect(request.url)
 
         root = studies_root()

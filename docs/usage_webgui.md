@@ -75,6 +75,24 @@ Provide:
 The chosen files are copied into the study, so later changes to the site's directory do not
 change a study that was already uploaded.
 
+**The table is checked when you upload**, whether it comes from the site's directory or from
+your computer. TOPAS reads its `DensityCorrection` vector without a bounds check, so a faulty
+table does not stop a run: it runs on with undefined densities. PregDos therefore refuses a
+table, naming the numbers and the fix, when:
+
+- it is not UTF-8 text, or `ImagingToMaterialConverter` is not `"Schneider"`;
+- a vector's declared count differs from its values, or a parameter is defined twice;
+- `DensityCorrection` does not have exactly `sections[-1] - sections[0]` values, where `sections`
+  is `SchneiderHounsfieldUnitSections` (TOPAS aborts otherwise);
+- `MinImagingValue` (-1000 if the table does not set it) differs from `sections[0]`. That is the
+  only setting that keeps TOPAS's lookup inside the vector. A table whose sections start at
+  -1024 needs `i:Ge/Patient/MinImagingValue = -1024`.
+
+What cannot be checked is whether the table expects the quantity your images hold: Hounsfield
+units or stopping-power ratio. DICOM's `RescaleType` can read `HU` even on a derived
+stopping-power map. Choosing the right table stays your responsibility; the `HUtoMaterial*` and
+`SPRtoMaterial*` filename convention helps.
+
 When no site directory is configured, the page offers **the examples shipped with
 dicomexport** and says so in a warning: DCPT's beam models, and the OpenTOPAS example
 `HUtoMaterialSchneider.txt`, whose density corrections are XiO-specific. They are not a
