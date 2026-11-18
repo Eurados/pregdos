@@ -2227,6 +2227,20 @@ def _conversion_params(run_dir):
     )
 
 
+def test_dicomexport_is_asked_for_timefeature_spot_mode(mocker, tmp_path):
+    """dicomexport 2.0 defaults to sources mode, which has no Tf/spotWeight line for
+    progress and plan scaling to read.  Until #130, PregDos must ask for timefeature."""
+    from pregdos import webserver
+
+    run = mocker.patch("pregdos.webserver.subprocess.run",
+                       return_value=mocker.Mock(stdout="", stderr=""))
+    (tmp_path / "topas_field01.txt").write_text("# topas")
+
+    webserver.run_conversion(_conversion_params(tmp_path), [])
+    cmd = run.call_args[0][0]
+    assert cmd[cmd.index("--spot-mode") + 1] == "timefeature"
+
+
 def test_dicomexport_timeout_reaches_subprocess(write_config, mocker, tmp_path):
     from pregdos import webserver
 

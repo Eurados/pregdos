@@ -105,6 +105,16 @@ def test_missing_field_cubes_is_empty_when_every_field_wrote_one(tmp_path):
     assert rtdose.missing_field_cubes(tmp_path) == []
 
 
+def test_zero_padded_cubes_are_matched_to_their_fields(tmp_path):
+    """dicomexport >= 2.0 names the cube like its input: topas_field02.txt -> topas_field02.dcm."""
+    for n in (1, 2, 10):
+        (tmp_path / f"topas_field{n:02d}.txt").write_text("input")
+        (tmp_path / f"topas_field{n:02d}.dcm").write_bytes(b"cube")
+
+    assert [n for n, _ in rtdose.field_cubes(tmp_path)] == [1, 2, 10]
+    assert rtdose.missing_field_cubes(tmp_path) == []
+
+
 def test_missing_field_cubes_names_the_fields_that_did_not(tmp_path):
     """The inputs say which fields the run has; the cubes say which ones produced dose."""
     for n in (1, 2, 3):
