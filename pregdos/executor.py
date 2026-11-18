@@ -32,6 +32,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -806,16 +807,21 @@ def _batch_progress(run_dir: Path, topas_file: str, batches: int,
     the last only the heaviest.  So once ``m`` events have *finished*, ``sum(min(w, m))`` of
     the batch's protons have, far more than ``m / events`` of them early on.
 
-    The log only says when an event *starts*, and the threads start the first ``threads``
-    events at once.  At most ``threads`` events are in flight, so of ``S`` started at least
-    ``S - threads`` have finished; only those are counted.  Counting the started ones put a
-    real single-batch field at 84 % before any event had finished.
+    The log only says when an event *starts*, and Geant4 hands events to its threads in
+    blocks: each thread claims ``int(sqrt(events // threads))`` at a time (Geant4's default
+    event modulo) and works through them in order.  So up to ``threads x block`` events are
+    in flight, and of ``S`` started at least ``S - threads x block`` have finished; only those
+    are counted.  This is a lower bound, never an overstatement.  Counting started events put
+    a real field at 84 % before any had finished, and counting one in flight per thread put a
+    100 000-primary single batch at 42 % while all 84 events of its first round -- half its
+    protons -- were still running.
     """
     seen = {b: e for b, e in _events_seen(run_dir, topas_file).items() if 0 <= b < batches}
     if not seen:
         return 0, 0
     latest = max(seen)
-    finished = max(0, seen[latest] + 1 - threads)
+    block = max(1, int(math.sqrt(max(spot_weights) // threads)))
+    finished = max(0, seen[latest] + 1 - threads * block)
     done = latest * sum(spot_weights) + sum(min(w, finished) for w in spot_weights)
     return done, latest + 1
 

@@ -138,39 +138,53 @@ def _sources_spots(run_dir, spot_weights, runs, events, threads=1, name="topas_f
 
 def test_progress_within_a_batch_follows_the_protons_not_the_events(tmp_path):
     """#95: an event fires one proton from every spot with any left, so the first events carry
-    most of a batch.  Spots of 5, 3 and 1, one thread: event 2 started, so 2 finished, and
-    2 + 2 + 1 = 5 of the batch's 9 protons are done."""
-    _sources_spots(tmp_path, [5, 3, 1], runs=2, events=[(0, e) for e in range(5)] + [(1, 0), (1, 1), (1, 2)])
+    most of a batch.  Spots of 5, 3 and 1, one thread taking blocks of int(sqrt(5 // 1)) = 2:
+    with event 4 started, at least 3 have finished, and 3 + 3 + 1 = 7 of 9 protons are done."""
+    _sources_spots(tmp_path, [5, 3, 1], runs=2, events=[(0, e) for e in range(5)] + [(1, e) for e in range(5)])
     p = executor.field_progress(tmp_path, "topas_field01.txt")
     assert (p.runs_started, p.total_runs) == (2, 2)
     assert p.histories_total == 18
-    assert p.histories_done == 9 + 5                # batch 0 done, batch 1 at 5 of 9
+    assert p.histories_done == 9 + 7                # batch 0 done, batch 1 at 7 of 9
+
+
+def test_a_round_of_geant4_blocks_still_running_counts_nothing(tmp_path):
+    """The real case behind this (head phantom, 100 000 primaries, one batch): 12 threads each
+    claim a block of int(sqrt(734 // 12)) = 7 events, and the log shows only each block's
+    start, 0, 7, ... 77.  All 84 events, the heaviest half of the protons, are in flight.
+    Assuming one per thread in flight put this at 42 %."""
+    _sources_spots(tmp_path, [734, 700, 500], runs=1, events=[(0, e) for e in range(0, 78, 7)], threads=12)
+    assert executor.field_progress(tmp_path, "topas_field01.txt").histories_done == 0
+
+
+def test_once_a_thread_moves_on_its_block_counts(tmp_path):
+    """A thread starting event 84 has finished its first block: one event is now certain."""
+    _sources_spots(tmp_path, [734, 700, 500], runs=1, events=[(0, e) for e in range(0, 85, 7)], threads=12)
+    assert executor.field_progress(tmp_path, "topas_field01.txt").histories_done == 3
 
 
 def test_events_still_in_flight_are_not_counted(tmp_path):
-    """The threads start the first events together, and those are the heaviest.  Counting
-    started events put a real single-batch field at 84 % before any had finished."""
+    """The threads start the first events together, and those are the heaviest."""
     _sources_spots(tmp_path, [5, 3, 1], runs=1, events=[(0, e) for e in range(4)], threads=4)
     assert executor.field_progress(tmp_path, "topas_field01.txt").histories_done == 0
 
 
 def test_a_single_batch_no_longer_jumps_from_nothing_to_done(tmp_path):
-    """One event of five finished is already 3 of 9 protons: the bar moves within the batch."""
-    _sources_spots(tmp_path, [5, 3, 1], runs=1, events=[(0, 0), (0, 1)])
+    """Two events of five finished are already 5 of 9 protons: the bar moves within the batch."""
+    _sources_spots(tmp_path, [5, 3, 1], runs=1, events=[(0, e) for e in range(4)])
     p = executor.field_progress(tmp_path, "topas_field01.txt")
-    assert p.histories_done == 3 and round(100 * p.fraction) == 33
+    assert p.histories_done == 5 and round(100 * p.fraction) == 56
 
 
 def test_events_logged_out_of_order_count_by_the_highest(tmp_path):
     _sources_spots(tmp_path, [5, 3, 1], runs=1, events=[(0, 3), (0, 1), (0, 2)])
     p = executor.field_progress(tmp_path, "topas_field01.txt")
-    assert p.histories_done == 3 + 3 + 1             # 4 events started, 3 finished
+    assert p.histories_done == 2 + 2 + 1             # 4 started, a block of 2 in flight
 
 
 def test_a_stray_batch_index_cannot_overshoot(tmp_path):
     _sources_spots(tmp_path, [5, 3, 1], runs=2, events=[(0, 0), (0, 1), (7, 4)])
     p = executor.field_progress(tmp_path, "topas_field01.txt")
-    assert p.runs_started == 1 and p.histories_done == 3
+    assert p.runs_started == 1 and p.histories_done == 0
 
 
 def test_run_progress_covers_all_fields_in_order(tmp_path):
