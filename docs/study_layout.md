@@ -24,7 +24,7 @@ and auto-reaped after ~30 days so stale runs do not pile up.
       topas_field01_<scorer>.csv
       structure_mask_prepass.txt
       structure_metrics.json
-      rtdose_plan_eclipse_import.zip
+      rtdose_eclipse_import.zip
 ```
 
 The exact files depend on selected scorers, executor backend, and whether DICOM RTDOSE export

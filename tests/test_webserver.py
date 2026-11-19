@@ -1958,7 +1958,7 @@ def test_rtdose_bundle_is_refused_while_the_run_is_unfinished(client, tmp_path):
     resp = client.get(f"/studies/alpha/{run_id}/rtdose", follow_redirects=True)
 
     assert b"must finish" in resp.data
-    assert not (run_dir / "rtdose_plan_eclipse_import.zip").exists()
+    assert not (run_dir / "rtdose_eclipse_import.zip").exists()
 
 
 def test_rtdose_bundle_is_built_on_demand_and_served(client, tmp_path, mocker):
@@ -1966,8 +1966,8 @@ def test_rtdose_bundle_is_built_on_demand_and_served(client, tmp_path, mocker):
     (run_dir / "topas_field01.dcm").write_bytes(b"cube")
 
     def fake_export(target):
-        (Path(target) / "rtdose_plan_eclipse_import.zip").write_bytes(b"PK\x03\x04bundle")
-        return [Path(target) / "rtdose_plan_eclipse_import.zip"], []
+        (Path(target) / "rtdose_eclipse_import.zip").write_bytes(b"PK\x03\x04bundle")
+        return [Path(target) / "rtdose_eclipse_import.zip"], []
 
     export = mocker.patch("pregdos.webserver.rtdose.ensure_dose_export", side_effect=fake_export)
 
@@ -2035,7 +2035,7 @@ def test_a_dose_only_run_offers_its_dose_instead_of_reporting_as_empty(client, t
     assert "No scorer output found in this run" not in body
     assert "No structure scorers were selected" in body
     assert f"/studies/alpha/{run_id}/rtdose" in body
-    assert "rtdose_plan_eclipse_import.zip" in body       # named, since the import needs it
+    assert "rtdose_eclipse_import.zip" in body       # named, since the import needs it
     # The CSV and PDF summarise structure scorers, so with none they would be empty reports.
     assert f"/studies/alpha/{run_id}/report.csv" not in body
     assert f"/studies/alpha/{run_id}/report.pdf" not in body
@@ -2060,12 +2060,19 @@ def test_a_dose_only_run_names_the_export_uids_once_it_has_been_built(client, tm
     body = client.get(f"/studies/alpha/{run_id}").data.decode()
     assert "built the first time it is downloaded" in body
 
-    plan = dicom_factory.write(run_dir / "rtdose_plan.dcm", "RTDOSE")
-    ds = pydicom.dcmread(plan)
+    dose = pydicom.dcmread(dicom_factory.write(run_dir / "rtdose_plan.dcm", "RTDOSE"))
+    plan_path = dicom_factory.write(tmp_path / "rtplan_pregdos.dcm", "RTPLAN")
+    plan = pydicom.dcmread(plan_path)
+    plan.RTPlanLabel = "Brain_fin2_MC"
+    plan.save_as(plan_path)
+    with zipfile.ZipFile(run_dir / "rtdose_eclipse_import.zip", "w") as zf:
+        zf.write(plan_path, "rtplan_pregdos.dcm")
+        zf.write(run_dir / "rtdose_plan.dcm", "rtdose_plan.dcm")
 
     body = client.get(f"/studies/alpha/{run_id}").data.decode()
-    assert str(ds.SeriesInstanceUID) in body
-    assert str(ds.SOPInstanceUID) in body
+    assert "Brain_fin2_MC" in body
+    assert str(plan.SOPInstanceUID) in body
+    assert str(dose.SeriesInstanceUID) in body
 
 
 def test_a_dose_only_run_that_is_still_going_says_so(client, tmp_path):
@@ -2126,7 +2133,7 @@ def test_downloading_an_incomplete_export_is_refused(client, tmp_path):
     assert resp.status_code == 200
     assert b"produced no dose cube" in resp.data
     assert b"describing itself as the whole course" in resp.data
-    assert not (run_dir / "rtdose_plan_eclipse_import.zip").exists()
+    assert not (run_dir / "rtdose_eclipse_import.zip").exists()
 
 
 # --- studies-root resolution (issue #71) ---
