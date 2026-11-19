@@ -22,7 +22,7 @@ dependencies = [
     "werkzeug",
     # Pinned: pregdos subclasses gthread's TConn to bound TLS handshakes and socket I/O
     # (#110), which reaches into gunicorn internals.  Re-run tests/test_tls.py on a bump.
-    "gunicorn==26.2.0",
+    "gunicorn==27.0.1",
     "requests",
     "fpdf2>=2.8.7",
     "dicomexport @ git+https://github.com/nbassler/dicomexport@v1.5.1",
