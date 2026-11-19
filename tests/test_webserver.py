@@ -3197,3 +3197,17 @@ def test_a_refusal_keeps_the_ticked_scorers(client, tmp_path, mocker):
     assert "&#39;Femur&#39; is not a structure of this study" in body
     ticked = set(re.findall(r'name="score_(\w+)" value="([^"]+)"\s*checked', body))
     assert ticked == {("neutron", "CTV"), ("gamma", "Hip implant")}
+
+
+@pytest.mark.parametrize("basename", ["rtdose", "RTDOSE", "RtDose"])
+def test_the_basename_rtdose_is_reserved_for_the_export(client, tmp_path, mocker, basename):
+    """Its field cubes would be rtdose_field<nn>.dcm, which the RTDOSE export writes over --
+    in any case, on a case-insensitive file system."""
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    form = _study_with_structures(tmp_path)
+    form.update({"output_basename": basename})
+
+    body = client.post("/convert", data=form, follow_redirects=True).data.decode()
+
+    assert "reserved for the RTDOSE export" in body
+    assert studies.list_runs(tmp_path, "mystudy") == []

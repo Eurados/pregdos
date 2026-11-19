@@ -305,7 +305,7 @@ def plan_uid(run_dir: str | Path) -> Optional[str]:
     and no single UID describes it, so return None rather than name one of them.
     """
     uids = set()
-    for topas_input in sorted(Path(run_dir).glob("topas_field*.txt")):
+    for topas_input in field_inputs(run_dir).values():
         try:
             text = read_text_lenient(topas_input)
         except OSError:
@@ -573,17 +573,32 @@ def planned_fractions(rtplan_path: Optional[str | Path]) -> Optional[int]:
     return None
 
 
-_FIELD_INPUT_RE = re.compile(r"^topas_field(\d+)\.txt$")
+# `<basename>_field<nn>.txt`: the basename is the setup page's "output basename", `topas` by
+# default.  The scorer outputs are .csv, the logs .log and the pre-pass input names no field, so
+# nothing else in a run directory matches.
+_FIELD_INPUT_RE = re.compile(r"^(?P<base>.+)_field(?P<number>\d+)\.txt$")
+
+
+def field_inputs(run_dir: str | Path) -> Dict[int, Path]:
+    """The generated TOPAS input of each field of a run, by field number.
+
+    Found by pattern, whatever the output basename: a fix that only looked for ``topas_`` was
+    bypassed by a run named otherwise (Codex review of #132).
+    """
+    found: Dict[int, Path] = {}
+    for path in sorted(Path(run_dir).glob("*_field*.txt")):
+        if (m := _FIELD_INPUT_RE.match(path.name)):
+            found.setdefault(int(m.group("number")), path)
+    return found
 
 
 def run_fields(run_dir: str | Path) -> set:
-    """The field numbers a run has: one generated input ``topas_field<nn>.txt`` each.
+    """The field numbers a run has: one generated input each (:func:`field_inputs`).
 
     The inputs, not the results, say which fields there are, so a field with no result at all
     is still counted -- the same rule as :func:`pregdos.rtdose.missing_field_cubes`.
     """
-    return {int(m.group(1)) for path in Path(run_dir).glob("topas_field*.txt")
-            if (m := _FIELD_INPUT_RE.match(path.name))}
+    return set(field_inputs(run_dir))
 
 
 def collect_results(run_dir: str | Path, finished: Optional[set] = None) -> Tuple[List[ScorerResult], List[str]]:

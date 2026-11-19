@@ -428,3 +428,41 @@ def test_metrics_record_how_much_of_a_structure_an_override_covers(tmp_path, mon
     # An override covers itself entirely; one outside a structure is not listed.
     assert [o["override"] for o in payload["structures"]["Implant"]["override_overlaps"]] == ["Implant"]
     assert [o["override"] for o in payload["structures"]["Marker"]["override_overlaps"]] == ["Marker"]
+
+
+def test_structures_whose_names_sanitise_alike_get_distinct_masks(tmp_path):
+    """Scoring "Femoral Head" and overriding "Femoral-Head" defined PregDosMask_Femoral_Head
+    twice, and TOPAS stops on that."""
+    topas = tmp_path / "topas_field01.txt"
+    topas.write_text('s:Ge/Patient/DicomDirectory = "../dicom"\n')
+
+    structure_metrics.write_mask_prepass(topas, ["Femoral Head"], overridden=["Femoral-Head"])
+
+    text = (tmp_path / "structure_mask_prepass.txt").read_text()
+    assert text.count('s:Sc/PregDosMask_Femoral_Head/Quantity') == 1
+    assert text.count('s:Sc/PregDosMask_Femoral_Head_2/Quantity') == 1
+    assert dict(structure_metrics._prepass_structures(tmp_path)) == {
+        "Femoral Head": "Femoral_Head", "Femoral-Head": "Femoral_Head_2"}
+
+
+def test_an_override_claims_only_the_voxels_no_earlier_override_decides(tmp_path, monkeypatch):
+    """A steel implant listed before an enclosing water override: TOPAS uses steel in the
+    implant, so the implant's voxels must not also count as water."""
+    import numpy as np
+
+    _prepass_with_masks(tmp_path, structures=("Uterus", "Implant", "Body"))
+    prepass = tmp_path / "structure_mask_prepass.txt"
+    prepass.write_text('s:Ge/Patient/DicomDirectory = "../dicom"\nincludeFile = ../t.txt\n' + prepass.read_text())
+    (tmp_path / "check_field01.txt").write_text(              # a custom basename, too
+        "# CONFIG_DIR: /cfg\n# MATERIAL_OVERRIDE: Implant=Steel\n# MATERIAL_OVERRIDE: Body=G4_WATER\n")
+    masks = {"Uterus": [0, 0, -1, -1], "Implant": [0, -1, -1, -1], "Body": [0, 0, 0, 0]}
+    for name, values in masks.items():
+        (tmp_path / f"structure_mask_{name}.bin").write_bytes(np.array(values, dtype="<f8").tobytes())
+    _patch_ct(monkeypatch, tmp_path)
+
+    payload = structure_metrics.compute_metrics(tmp_path)
+
+    assert [(o["override"], o["voxel_count"]) for o in payload["structures"]["Uterus"]["override_overlaps"]] == [
+        ("Implant", 1), ("Body", 1)]
+    assert [(o["override"], o["voxel_count"]) for o in payload["structures"]["Body"]["override_overlaps"]] == [
+        ("Implant", 1), ("Body", 3)]

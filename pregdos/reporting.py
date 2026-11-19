@@ -206,8 +206,8 @@ def uncertainty_notes(run_dir: Path) -> list[str]:
     of the per-history contributions.  See :meth:`results.ScorerResult.relative_uncertainty`.
     """
     layouts = set()
-    for number in sorted(results.run_fields(run_dir)):
-        scaling = results.parse_plan_scaling(Path(run_dir) / f"topas_field{number:02d}.txt")
+    for topas_input in results.field_inputs(run_dir).values():
+        scaling = results.parse_plan_scaling(topas_input)
         if scaling is not None:
             layouts.add((scaling.spot_mode, scaling.runs if scaling.spot_mode == "sources" else 0))
     notes = []
@@ -246,10 +246,13 @@ def _override_overlap_warnings(structure: str, metric: dict | None) -> list[str]
         if volume and overlap["volume_cm3"] < OVERLAP_WARNING_SHARE * volume:
             continue
         roi, material = overlap["override"], overlap["material"]
-        if roi == structure:
+        share = f" ({100 * overlap['volume_cm3'] / volume:.2g} % of it)" if volume else ""
+        if roi == structure and volume and overlap["volume_cm3"] >= 0.999 * volume:
             where = f"{structure} is itself overridden with {material}"
+        elif roi == structure:
+            # Partly: an override listed before it decides the rest (first one given wins).
+            where = f"{overlap['volume_cm3']:.3g} cm³ of {structure}{share} are overridden with {material}"
         else:
-            share = f" ({100 * overlap['volume_cm3'] / volume:.2g} % of it)" if volume else ""
             where = f"{overlap['volume_cm3']:.3g} cm³ of {structure}{share} lie in {roi}, overridden with {material}"
         out.append(f"{where}. TOPAS used {material} there, but {structure}'s mass, which turns its "
                    f"energy deposit into DoseToMedium, comes from the CT numbers, so that dose is "

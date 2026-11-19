@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import copy
 import io
-import re
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -50,13 +49,12 @@ from pydicom.uid import ExplicitVRLittleEndian, ImplicitVRLittleEndian, generate
 
 from . import portable, results
 
-# The in-field cube is ``topas_field<nn>.dcm``, named like the input it came from
-# (``topas_field<nn>.txt``).  dicomexport before 2.0 wrote the cube unpadded
-# (``topas_field<n>.dcm``), and runs made with it still exist on disk.  Both regexes parse the
-# number, so either spelling is keyed on the same field number.
-_CUBE_RE = re.compile(r"^topas_field(\d+)\.dcm$")
-# The generated inputs, which say which fields the run *has*.
-_INPUT_RE = re.compile(r"^topas_field(\d+)\.txt$")
+# The in-field cube is named like the input it came from: ``<basename>_field<nn>.dcm`` for
+# ``<basename>_field<nn>.txt`` (results.field_inputs), the basename being ``topas`` unless the
+# setup page named it otherwise.  dicomexport before 2.0 wrote the cube unpadded
+# (``topas_field<n>.dcm``), and runs made with it still exist on disk.  Cubes are looked up from
+# the inputs, never by a pattern of their own: ``*_field<nn>.dcm`` would also match the
+# export's own ``rtdose_field<nn>.dcm``.
 
 FIELD_DOSE_PREFIX = "rtdose_field"
 PLAN_DOSE_NAME = "rtdose_plan.dcm"
@@ -186,12 +184,13 @@ def _plan_template(doses: List[Dataset], cube: Dataset) -> Tuple[Dataset, bool]:
 
 def field_cubes(run_dir: str | Path) -> list[tuple[int, Path]]:
     """``(field_number, cube_path)`` for every TOPAS dose cube in the run, in field order."""
-    run_dir = Path(run_dir)
     out = []
-    for path in run_dir.glob("topas_field*.dcm"):
-        match = _CUBE_RE.match(path.name)
-        if match:
-            out.append((int(match.group(1)), path))
+    for number, topas_input in results.field_inputs(run_dir).items():
+        base = topas_input.name.rsplit("_field", 1)[0]
+        for cube in (topas_input.with_suffix(".dcm"), topas_input.with_name(f"{base}_field{number}.dcm")):
+            if cube.is_file():
+                out.append((number, cube))
+                break
     return sorted(out)
 
 
@@ -205,23 +204,19 @@ def missing_field_cubes(run_dir: str | Path) -> list[int]:
     course, which is what makes it dangerous rather than merely incomplete.
 
     The generated inputs are the authority for which fields the run has; :func:`_plan_scale`
-    already treats ``topas_field<nn>.txt`` that way, so this introduces no second convention.
+    already treats them that way, so this introduces no second convention.
     """
-    run_dir = Path(run_dir)
-    expected = {
-        int(match.group(1))
-        for path in run_dir.glob("topas_field*.txt")
-        if (match := _INPUT_RE.match(path.name))
-    }
+    expected = results.run_fields(run_dir)
     return sorted(expected - {number for number, _ in field_cubes(run_dir)})
 
 
 def _plan_scale(run_dir: Path, field_number: int) -> float:
     """Factor converting a field's scored dose into the dose the plan delivers per fraction."""
-    topas_input = run_dir / f"topas_field{field_number:02d}.txt"
-    scaling = results.parse_plan_scaling(topas_input)
+    topas_input = results.field_inputs(run_dir).get(field_number)
+    scaling = results.parse_plan_scaling(topas_input) if topas_input else None
     if scaling is None:
-        raise RTDoseError(f"no plan scaling for field {field_number} ({topas_input.name})")
+        name = topas_input.name if topas_input else f"field {field_number}'s input"
+        raise RTDoseError(f"no plan scaling for field {field_number} ({name})")
     return scaling.factor
 
 
@@ -442,6 +437,20 @@ def ensure_dose_export(run_dir: str | Path) -> Tuple[List[Path], List[str]]:
             return [], [str(exc)]
 
 
+def _overwritten_inputs(run_dir: Path, cubes: list[tuple[int, Path]]) -> list[str]:
+    """The run's own files the export would write over, compared case-insensitively.
+
+    A run converted with the output basename ``rtdose`` -- refused at setup now, but older runs
+    may have it, and ``RTDOSE`` on a case-insensitive file system -- names its cubes
+    ``rtdose_field<nn>.dcm``.  The export would replace them with scaled doses, and a rebuild
+    would then scale those again (Codex review of #132).
+    """
+    outputs = {f"{FIELD_DOSE_PREFIX}{number:02d}.dcm".lower() for number, _ in cubes}
+    outputs |= {PLAN_DOSE_NAME.lower(), IMPORT_BUNDLE_NAME.lower(), (IMPORT_BUNDLE_NAME + ".partial").lower()}
+    own = [path.name for _, path in cubes] + [path.name for path in results.field_inputs(run_dir).values()]
+    return sorted({name for name in own if name.lower() in outputs})
+
+
 def postprocess(run_dir: str | Path) -> List[Path]:
     """Write importable per-field (BEAM) and summed (PLAN) RTDOSE files for a finished run.
 
@@ -467,6 +476,12 @@ def postprocess(run_dir: str | Path) -> List[Path]:
             f"field(s) {fields} produced no dose cube, so the plan dose would be the sum of the "
             f"remaining fields only while still describing itself as the whole course. Rerun the "
             f"missing field(s) before exporting."
+        )
+
+    if clash := _overwritten_inputs(run_dir, cubes):
+        raise RTDoseError(
+            f"this run's TOPAS files are named like the export's own ({', '.join(clash)}), so "
+            f"exporting would overwrite them. Convert the study again with another output basename."
         )
 
     plan_path = _rtplan_path(run_dir)
