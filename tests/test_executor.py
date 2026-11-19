@@ -63,7 +63,48 @@ def test_field_command_quotes_hostile_names(monkeypatch):
 # --- local backend ---
 
 @pytest.mark.parametrize("backend", [executor.SLURM, executor.LOCAL])
+def test_material_identity_comes_from_the_pasted_table(run_dir, monkeypatch, mocker, backend):
+    """dicomexport >= 2.0 pastes the table (-S) and records its SHA-256.  That is what TOPAS
+    reads, so it is the identity -- not whatever file sits at that path now."""
+    sha = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"     # sha256("abc")
+    (run_dir.parent / "HUtoMaterial Site.txt").write_bytes(b"changed since conversion")
+    (run_dir / "topas_field01.txt").write_text(
+        f"# INCLUDE_INLINE: ../HUtoMaterial Site.txt sha256={sha}\n"
+        f"# BEGIN INCLUDE_INLINE: ../HUtoMaterial Site.txt sha256={sha}\n"
+        "abc\n"
+        "# END INCLUDE_INLINE: ../HUtoMaterial Site.txt\n"
+    )
+    monkeypatch.setenv("PREGDOS_EXECUTOR", backend)
+    mocker.patch.object(executor.subprocess, "run", return_value=mocker.Mock(
+        returncode=0, stdout="Submitted batch job 123\n"))
+    mocker.patch.object(executor, "start_next_local_run")
+
+    executor.submit_run(run_dir, ["topas_field01.txt"])
+
+    saved = executor.read_run_metadata(run_dir)
+    assert saved.material_table == "HUtoMaterial Site.txt"
+    assert saved.material_table_sha256 == sha
+
+
+def test_submission_records_what_the_run_was_converted_with(run_dir, monkeypatch, mocker):
+    """From the first field's header, into run.json -- so a report can say it after the site's
+    directory or dicomexport itself has changed (#132)."""
+    from tests.test_provenance import FIELD
+
+    (run_dir / "topas_field01.txt").write_text(FIELD)
+    monkeypatch.setenv("PREGDOS_EXECUTOR", executor.LOCAL)
+    mocker.patch.object(executor, "start_next_local_run")
+
+    executor.submit_run(run_dir, ["topas_field01.txt"])
+
+    record = executor.read_run_metadata(run_dir).conversion
+    assert record.material_overrides == ["Hip implant=ImplantSteel", "BODY=G4_WATER"]
+    assert record.config_dir == "/etc/dicomexport (--config-dir)"
+
+
+@pytest.mark.parametrize("backend", [executor.SLURM, executor.LOCAL])
 def test_submission_preserves_material_identity_after_file_changes(run_dir, monkeypatch, mocker, backend):
+    """A field converted by dicomexport 1.x names the table with includeFile."""
     table = run_dir.parent / "HUtoMaterial Site.txt"
     table.write_bytes(b"abc")
     (run_dir / "topas_field01.txt").write_text(

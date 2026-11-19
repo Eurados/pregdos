@@ -59,6 +59,13 @@
                 </td>
                 <td>{{ dt.unit }}</td>
               </tr>
+            {% elif g.missing_fields %}
+              {# A total over the fields that happen to have results would look complete. #}
+              <tr class="scorer-total">
+                <td colspan="3"></td>
+                <td><strong>All fields</strong></td>
+                <td colspan="3" class="hint">No total: no result for field {{ g.missing_fields | join(", ") }}</td>
+              </tr>
             {% endif %}
           </tbody>
         {% endfor %}
@@ -103,7 +110,8 @@
       <li><strong>CSV</strong>: raw numeric results, provenance, histories, and normalization audit fields.</li>
       <li><strong>PDF</strong>: formatted dose report for review and archiving.</li>
       {% if can_export_dose %}
-        <li><strong>RTDOSE</strong>: DICOM dose export for TPS import, in Gy(RBE) for the whole course.</li>
+        <li><strong>RTDOSE</strong>: <code>{{ dose_bundle_name }}</code> for Eclipse's DICOM Import — a copy
+          of the RTPLAN and the dose of each field and of the plan, in Gy(RBE) for the whole course.</li>
       {% endif %}
     </ul>
   {% elif status in ('running', 'queued') %}
@@ -152,22 +160,22 @@
       </div>
     </div>
     <ul class="download-notes">
-      <li><strong>RTDOSE</strong>: <code>{{ dose_bundle_name }}</code> — the summed plan dose
-        <code>rtdose_plan.dcm</code> plus the RTPLAN needed to connect it on import, in Gy(RBE)
-        for the whole course.</li>
+      <li><strong>RTDOSE</strong>: <code>{{ dose_bundle_name }}</code> for Eclipse's DICOM Import — a copy
+        of the RTPLAN and the dose of each field and of the plan, in Gy(RBE) for the whole course.</li>
       {% if dose_only %}
         <li>No CSV or PDF report: both summarise structure scorers, and this run has none.</li>
       {% endif %}
     </ul>
     {% if dose_identity %}
       <div class="hint-box">
-        The exported dose object is identified by
-        SeriesInstanceUID <code>{{ dose_identity.series_uid }}</code> and
-        SOPInstanceUID <code>{{ dose_identity.sop_uid }}</code>.
+        The import creates plan <code>{{ dose_identity.plan_label }}</code>
+        (SOPInstanceUID <code>{{ dose_identity.plan_uid }}</code>), unapproved, with its doses in
+        series <code>{{ dose_identity.series_uid }}</code>. The separate <code>rtdose_*.dcm</code>
+        files in the file list reference the clinical plan, for Import Dosegrid.
       </div>
     {% else %}
-      <p class="hint">The cube is built the first time it is downloaded; its
-        SeriesInstanceUID and SOPInstanceUID are shown here once it exists.</p>
+      <p class="hint">The export is built the first time it is downloaded; the plan and UIDs
+        it creates on import are shown here once it exists.</p>
     {% endif %}
     {% endif %}
   {% else %}

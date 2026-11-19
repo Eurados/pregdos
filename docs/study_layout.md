@@ -24,15 +24,34 @@ and auto-reaped after ~30 days so stale runs do not pile up.
       topas_field01_<scorer>.csv
       structure_mask_prepass.txt
       structure_metrics.json
-      rtdose_plan_eclipse_import.zip
+      rtdose_eclipse_import.zip
 ```
 
 The exact files depend on selected scorers, executor backend, and whether DICOM RTDOSE export
 was requested.
 
+With the in-field scorer kept, each field writes a raw TOPAS dose cube, `topas_field<nn>.dcm`, on
+the RTDOSE grid. Since dicomexport 2.0 it holds 32 bits per pixel, so the low out-of-field dose is
+not rounded to zero; it is about twice the size of the earlier 16-bit cube, e.g. 61 MB per field
+for the head phantom's grid. Size study storage accordingly. Runs from before dicomexport 2.0 named
+the cube without zero padding (`topas_field1.dcm`); PregDos reads both.
+
+`<material_table>.txt` is a copy of the table chosen at upload. `dicomexport` pastes its
+contents into every generated field and into the mask pre-pass, so TOPAS does not read the file
+itself. A table that includes other files still needs those files where TOPAS runs.
+
 At submission, `run.json` records the material conversion table's filename and full SHA-256
-hash. CSV and PDF reports carry that as one field, `filename (12345678)`, where the hash is
-truncated to its first eight characters. Older runs without this metadata report the table
+hash. Both are taken from the generated field, where `dicomexport` recorded them when it pasted
+the table, so they describe exactly what TOPAS reads. CSV and PDF reports carry that as one
+field, `filename (12345678)`, where the hash is truncated to its first eight characters. Older
+runs without this metadata report the table as unavailable.
+
+`run.json` also records what `dicomexport` converted the run with, read at submission from the
+header it writes into each field: the dicomexport version, the configuration directory and how it
+was found, the beam model, the range-shifter catalog, every included file with its SHA-256 when
+pasted, every material override in order, and the spot mode with its batch count. The reports show
+these under Provenance, and give the dicomexport version that converted the run rather than the
+one installed when the report is downloaded. Runs converted by dicomexport before 2.0 report them
 as unavailable.
 
 ## Study Names And Run IDs
@@ -53,7 +72,7 @@ This invariant is load-bearing:
 > TOPAS inputs must be generated in the same run directory where TOPAS will execute them.
 
 `dicomexport` writes paths directly into the generated TOPAS input, including
-`s:Ge/Patient/DicomDirectory` and `includeFile`. PregDos therefore runs `dicomexport` with the
+`s:Ge/Patient/DicomDirectory`. PregDos therefore runs `dicomexport` with the
 run directory as its current working directory and passes paths relative to that directory.
 Later, PregDos also runs TOPAS from that same directory.
 

@@ -28,6 +28,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from . import results
 from .textio import read_text_lenient
 
 
@@ -42,12 +43,11 @@ _SCORER_MARKER_RE = re.compile(
     re.MULTILINE,
 )
 
-# Matches the "TIME FEATURES" banner that immediately follows the scorer block.
-# Time features encode the spot-delivery sequence and must be preserved unchanged.
-_TIME_MARKER_RE = re.compile(
-    r"#{40,50}\n###\s+T\s+I\s+M\s+E\s+F\s+E\s+A\s+T\s+U\s+R\s+E\s+S\s+###\n#{40,50}\n",
-    re.MULTILINE,
-)
+# Any section banner: a rule, one or more `### TITLE ###` lines, a rule.  The scorer block
+# ends at the next one, whatever it is: "TIME FEATURES" in time-feature mode, but in sources
+# mode (dicomexport >= 2.0) the per-spot sources, under a two-line "BEAM: ONE SOURCE PER
+# SPOT" banner.  Everything from there on is the beam and must be kept unchanged.
+_BANNER_RE = re.compile(r"^#{40,50}\n(?:###.*###\n)+#{40,50}\n", re.MULTILINE)
 
 # ---------------------------------------------------------------------------
 # Neutron fluence-to-dose-equivalent table -- loaded from the package data CSV file.
@@ -346,7 +346,8 @@ def _user_grid_geometry(grid: UserDefinedGrid) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
-def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefinedGrid] = None) -> str:
+def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefinedGrid] = None,
+                 after_run: bool = False) -> str:
     """Build and return a TOPAS scorer configuration block as a string.
 
     Parameters
@@ -461,6 +462,11 @@ def scorer_block(entry: ScorerEntry, output_base: str, grid: Optional[UserDefine
             f'sv:Sc/{name}/Report                                 = 2 "Sum" "Standard_Deviation"',
         ]
 
+    if after_run:
+        # One result per batch, `<OutputFile>_Run_0000.csv` onwards, cleared between batches:
+        # their spread is the batch-means uncertainty (#130).  TOPAS then writes no total of
+        # its own, so pregdos.results adds the batches up.
+        lines.append(f'b:Sc/{name}/OutputAfterRun                          = "True"')
     return "\n".join(lines) + "\n"
 
 
@@ -472,7 +478,8 @@ def append_scorers(topas_file_path: str, config: ScorerConfig) -> None:
     2. Locates the ``SCORER SET UP`` block (written by dicomexport).
     3. Optionally strips the DoseToWater scorer if ``config.keep_infield`` is False.
     4. Appends the user-selected out-of-field scorer blocks.
-    5. Re-inserts the ``TIME FEATURES`` section unchanged at the end.
+    5. Re-inserts everything after the scorer block unchanged: the ``TIME FEATURES`` in
+       time-feature mode, the per-spot sources in sources mode.
     6. Writes the modified content back to the same file path.
 
     Parameters
@@ -500,25 +507,29 @@ def append_scorers(topas_file_path: str, config: ScorerConfig) -> None:
     # with recognisable, field-specific names.
     output_base = path.stem
 
-    # Locate the start of the scorer section and the start of the time features
+    # A sources-mode field run as several batches: each added scorer reports per batch.
+    # The in-field DICOM dose is left alone: it adds up over the batches by itself.
+    layout = results.parse_plan_scaling(path)
+    after_run = layout is not None and layout.spot_mode == "sources" and layout.runs > 1
+
+    # Locate the start of the scorer section and the section after it
     scorer_match = _SCORER_MARKER_RE.search(content)
-    tf_match = _TIME_MARKER_RE.search(content)
 
     if scorer_match:
-        # Split the file into three regions:
-        #   before       — geometry, setup, beam definition
-        #   scorer_header — the "### SCORER SET UP ###" banner itself
+        # Split the file into four regions:
+        #   before          — geometry, setup, beam definition
+        #   scorer_header   — the "### SCORER SET UP ###" banner itself
         #   old_scorer_body — existing scorer lines (DoseToWater etc.)
-        #   time_features — spot delivery parameters that must be kept intact
+        #   time_features   — what follows: the spot delivery, kept intact
         before = content[: scorer_match.start()]
         scorer_header = content[scorer_match.start() : scorer_match.end()]
 
-        if tf_match and tf_match.start() > scorer_match.start():
-            # Normal case: scorer section is followed by time features
-            old_scorer_body = content[scorer_match.end() : tf_match.start()]
-            time_features = content[tf_match.start() :]
+        next_match = _BANNER_RE.search(content, scorer_match.end())
+        if next_match:
+            old_scorer_body = content[scorer_match.end() : next_match.start()]
+            time_features = content[next_match.start() :]
         else:
-            # Edge case: no time features (e.g. file generated without beam model)
+            # The scorer block is the last section
             old_scorer_body = content[scorer_match.end() :]
             time_features = ""
     else:
@@ -550,7 +561,7 @@ def append_scorers(topas_file_path: str, config: ScorerConfig) -> None:
     # Append each requested out-of-field scorer block
     for entry in config.scorers:
         parts.append("\n")
-        parts.append(scorer_block(entry, output_base, config.grid))
+        parts.append(scorer_block(entry, output_base, config.grid, after_run=after_run))
 
     parts.append("\n")
 

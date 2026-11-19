@@ -32,6 +32,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -41,10 +42,10 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import List, Optional
 
-from . import config, portable, structure_metrics
+from . import config, portable, provenance, results, structure_metrics, topas_include
 from .textio import read_text_lenient
 
 # Backend identifiers, also written into run.json.
@@ -127,6 +128,47 @@ def _cpus_per_task(topas_file: str) -> int:
 
 # `i:Ts/NumberOfThreads = N` as dicomexport writes it, with its own spacing.
 _THREADS_RE = re.compile(r"^([ \t]*i:Ts/NumberOfThreads[ \t]*=[ \t]*)(-?\d+)", re.MULTILINE)
+# `i:Ts/ShowHistoryCountAtInterval = N`: TOPAS logs the start of every N-th event.
+_INTERVAL_RE = re.compile(r"^([ \t]*i:Ts/ShowHistoryCountAtInterval[ \t]*=[ \t]*)(-?\d+)", re.MULTILINE)
+#: At most about this many event lines per batch, whatever the statistics.
+MAX_EVENT_LINES_PER_BATCH = 1000
+
+
+def geant4_block(events: int, threads: int) -> int:
+    """Events each thread claims at a time: Geant4's default event modulo,
+    ``int(sqrt(events // threads))``, at least 1."""
+    return max(1, int(math.sqrt(events // max(1, threads))))
+
+
+def history_interval(events: int, threads: int) -> int:
+    """How often TOPAS should log an event start in a sources-mode batch of ``events`` (#95).
+
+    A few times per Geant4 block, so progress can move while a round of blocks runs -- which
+    matters at low statistics, where the first round holds most of a batch's protons -- and
+    never more than about :data:`MAX_EVENT_LINES_PER_BATCH` lines, where the statistics are
+    high and blocks are a small part of the batch anyway.
+    """
+    return max(1, geant4_block(events, threads) // 4, events // MAX_EVENT_LINES_PER_BATCH)
+
+
+def set_history_interval(path: str | os.PathLike, threads: int) -> None:
+    """Set ``Ts/ShowHistoryCountAtInterval`` for a sources-mode field, for ``threads`` threads.
+
+    Done at submission with :func:`set_thread_count`, since the block size depends on the
+    threads.  A time-feature field keeps dicomexport's interval: its progress comes from
+    run starts, one per spot.
+    """
+    path = Path(path)
+    content = read_text_lenient(path)
+    layout = results.parse_plan_scaling(path)
+    if layout is None or layout.spot_mode != "sources" or layout.events_per_run <= 0:
+        return
+    interval = history_interval(layout.events_per_run, threads)
+    replacement, count = _INTERVAL_RE.subn(rf"\g<1>{interval}", content, count=1)
+    if count == 0:
+        replacement = content + f"\ni:Ts/ShowHistoryCountAtInterval = {interval}\n"
+    if replacement != content:
+        path.write_text(replacement)
 
 
 def set_thread_count(path: str | os.PathLike, threads: int) -> None:
@@ -206,6 +248,9 @@ class RunInfo:
     errors: List[str] = field(default_factory=list)
     material_table: str = ""
     material_table_sha256: str = ""
+    conversion: Optional[provenance.ConversionRecord] = None
+    """What dicomexport converted the run with, from the first field's header at submission.
+    None for a run converted by dicomexport < 2.0, or submitted before this was recorded."""
 
 
 def _write_run_metadata(run_dir: Path, info: RunInfo) -> None:
@@ -229,6 +274,7 @@ def _write_run_metadata(run_dir: Path, info: RunInfo) -> None:
         "fields": [{"topas_file": f.topas_file, "ident": f.ident} for f in info.fields],
         "material_table": info.material_table,
         "material_table_sha256": info.material_table_sha256,
+        "conversion": info.conversion.to_json() if info.conversion else None,
     }
     fd, tmp_name = tempfile.mkstemp(dir=str(run_dir), prefix=RUN_METADATA + ".", suffix=".tmp")
     tmp = Path(tmp_name)
@@ -289,6 +335,7 @@ def read_run_metadata(run_dir: str | os.PathLike) -> Optional[RunInfo]:
         fields=fields,
         material_table=material_table if isinstance(material_table, str) else "",
         material_table_sha256=material_table_sha256 if isinstance(material_table_sha256, str) else "",
+        conversion=provenance.ConversionRecord.from_json(raw.get("conversion")),
     )
 
 
@@ -535,13 +582,20 @@ def _submit_local(run_dir: Path, topas_files: List[str], info: RunInfo) -> None:
 def _material_table_identity(run_dir: Path, topas_files: List[str]) -> tuple[str, str]:
     """Snapshot the one table included by PregDos's generated fields and mask pre-pass.
 
-    Hash the bytes at submission, not when a report is downloaded: the study's table
-    could have been changed or removed by then. Missing inputs leave provenance unknown.
+    dicomexport >= 2.0 pastes the table into the field (``-S``) and records its SHA-256, so
+    the identity comes from the field itself: it is what TOPAS reads, whatever has happened
+    to the file since.  A field converted by dicomexport 1.x names the table with
+    ``includeFile`` instead; hash those bytes at submission, not when a report is
+    downloaded, since the study's table could have been changed or removed by then.
+    Missing inputs leave provenance unknown.
     """
     if not topas_files:
         return "", ""
     try:
         text = read_text_lenient(run_dir / topas_files[0])
+        pasted = topas_include.material_table(text)
+        if pasted is not None:
+            return PureWindowsPath(pasted.path).name, pasted.sha256
         value = structure_metrics.parameter_value(text, "includeFile")
         if not value:
             return "", ""
@@ -562,13 +616,16 @@ def submit_run(run_dir: str | os.PathLike, topas_files: List[str]) -> RunInfo:
     backend = select_backend()
     info = RunInfo(backend=backend, submitted=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     info.material_table, info.material_table_sha256 = _material_table_identity(run_dir, topas_files)
+    info.conversion = provenance.of_field(run_dir / topas_files[0]) if topas_files else None
 
     # Do this here rather than at conversion time: the thread count has to match the CPUs
     # this run is about to be given, and `cpus_per_task` can change between converting a
     # study and submitting it.
     for topas_file in topas_files:
         try:
-            set_thread_count(run_dir / topas_file, _cpus_per_task(topas_file))
+            threads = _cpus_per_task(topas_file)
+            set_thread_count(run_dir / topas_file, threads)
+            set_history_interval(run_dir / topas_file, threads)
         except OSError as exc:
             info.errors.append(f"could not set the thread count in {topas_file}: {exc}")
 
@@ -674,25 +731,31 @@ def run_status(run_dir: str | os.PathLike) -> str:
 # Progress -- how far a running field has got, from its log
 # ---------------------------------------------------------------------------
 
-# dicomexport delivers the plan as one Geant4 run per spot; TOPAS prints a line per run start.
+# TOPAS prints a line per run start -- per spot in time-feature mode, per batch in sources
+# mode, where it reads `Begin processing for Run: R, History: H` once per event.
 _RUN_LINE_RE = re.compile(r"Begin processing for Run:\s*(\d+)")
 # The per-spot history counts: `uv:Tf/spotWeight/Values = <count> w0 w1 ...`.  Spot k is run k.
 _SPOT_WEIGHTS_RE = re.compile(r"uv:Tf/spotWeight/Values\s*=\s*\d+((?:\s+\d+)+)")
+# Sources mode: one source per spot, each firing this many protons in every batch.
+_SOURCE_WEIGHT_RE = re.compile(r"^\s*i:So/[^/\s]+/NumberOfHistoriesInRun\s*=\s*(\d+)", re.MULTILINE)
+# `Begin processing for Run: 3, History: 12` -- batch 3, event 12 (ShowHistoryCountAtInterval = 1).
+_EVENT_LINE_RE = re.compile(r"Begin processing for Run:\s*(\d+),\s*History:\s*(\d+)")
 
 
 @dataclass
 class FieldProgress:
     """How far one field has run, for a progress bar.
 
-    Progress is measured in **histories**, not spots: spot weights are very uneven (early
-    spots can carry thousands of particles, late spots a handful), so "spot 600 of 659" can be
-    anywhere from a fifth to nearly all of the work.  Weighting each started spot by its
-    weight makes the bar track the actual compute done.
+    Progress is measured in **histories**, not runs.  In time-feature mode each Geant4 run is
+    one spot, and spot weights are very uneven (early spots can carry thousands of particles,
+    late spots a handful), so "spot 600 of 659" can be anywhere from a fifth to nearly all of
+    the work.  Weighting each started spot by its weight makes the bar track the compute
+    done.  In sources mode each run is one of ``RUNS`` identical batches, each worth an equal
+    share (#130).
 
-    The counters keep the name ``runs_*`` because that is what they count: one Geant4 run per
-    spot is how dicomexport happens to emit a field today (nbassler/dicomexport#88 would put
-    every spot in a single run).  The UI says "spot" because that is the unit a planner knows,
-    and because "run" already means a PregDos run on the same page.
+    The counters keep the name ``runs_*`` because that is what they count.  The UI says
+    :attr:`unit` -- "spot" or "batch" -- because "run" already means a PregDos run on the
+    same page.
     """
 
     topas_file: str
@@ -703,6 +766,18 @@ class FieldProgress:
     total_runs: int
     failure: Optional[str] = None
     """Decoded reason a failed field failed; None while running or on success."""
+    unit: str = "spot"
+    """What one Geant4 run is: "spot" in time-feature mode, "batch" in sources mode."""
+    started: bool = True
+    """Whether TOPAS has started on this field: its log exists.  A field of a running run
+    that has not is waiting -- behind the fields before it, or in the SLURM queue."""
+
+    @property
+    def initialising(self) -> bool:
+        """Running, with nothing done yet: TOPAS is still setting up -- loading the CT, building
+        the geometry -- or, in sources mode, the threads are in their first events, which carry
+        minutes of one-off setup each (#144).  Shown as such rather than as a bar stuck at 0."""
+        return self.status == RUNNING and self.started and self.histories_done == 0
 
     @property
     def fraction(self) -> float:
@@ -714,14 +789,111 @@ class FieldProgress:
         return min(1.0, self.histories_done / self.histories_total)
 
 
-def _spot_weights(run_dir: Path, topas_file: str) -> List[int]:
-    """Per-run history counts from the TOPAS input (weights[k] = histories in run k)."""
+def _run_weights(run_dir: Path, topas_file: str) -> tuple[str, List[int]]:
+    """``(unit, weights)``: what one Geant4 run is, and the protons in each run.
+
+    Time-feature mode: ``("spot", per-spot weights)`` from ``uv:Tf/spotWeight/Values``.
+    Sources mode: ``("batch", equal shares)``, ``RUNS`` of them adding up to
+    ``SIMULATED_HISTORIES`` -- each batch has 1/RUNS of every spot's protons.
+    """
+    unit, weights, _ = _layout(run_dir, topas_file)
+    return unit, weights
+
+
+def _threads(text: str) -> int:
+    """TOPAS worker threads for this input: ``Ts/NumberOfThreads``, pinned at submission
+    (:func:`set_thread_count`).  0 means every core and -1 all but one, of this machine."""
+    m = _THREADS_RE.search(text)
+    value = int(m.group(2)) if m else 0
+    cores = os.cpu_count() or 1
+    return value if value > 0 else max(1, cores + value) if value < 0 else cores
+
+
+def _layout(run_dir: Path, topas_file: str) -> tuple[str, List[int], List[int]]:
+    """:func:`_run_weights`, plus each spot's protons per batch in sources mode ([] otherwise).
+
+    In sources mode every batch fires each spot ``NumberOfHistoriesInRun`` times, so a batch
+    holds ``sum`` of them and the field ``RUNS`` times that -- exactly ``SIMULATED_HISTORIES``.
+    """
+    scaling = results.parse_plan_scaling(run_dir / topas_file)
     try:
         text = read_text_lenient(run_dir / topas_file)
     except OSError:
-        return []
+        return ("batch" if scaling is not None and scaling.spot_mode == "sources" else "spot"), [], []
+    if scaling is not None and scaling.spot_mode == "sources":
+        runs = scaling.runs
+        if runs <= 0:
+            return "batch", [], []
+        spot_weights = [int(v) for v in _SOURCE_WEIGHT_RE.findall(text)]
+        if spot_weights:
+            return "batch", [sum(spot_weights)] * runs, spot_weights
+        # No sources to read (a truncated input): equal shares of SIMULATED_HISTORIES, by batch.
+        share, extra = divmod(scaling.simulated_histories, runs)
+        return "batch", [share + (1 if k < extra else 0) for k in range(runs)], []
     m = _SPOT_WEIGHTS_RE.search(text)
-    return [int(v) for v in m.group(1).split()] if m else []
+    return "spot", [int(v) for v in m.group(1).split()] if m else [], []
+
+
+def _events_seen(run_dir: Path, topas_file: str) -> dict:
+    """``{batch: set of events whose start was logged}`` from the log of a sources-mode field.
+
+    Threads log out of order, so it is a set, not a sequence.
+    """
+    try:
+        text = read_text_lenient(run_dir / log_name(topas_file))
+    except OSError:
+        return {}
+    seen: dict = {}
+    for m in _EVENT_LINE_RE.finditer(text):
+        seen.setdefault(int(m.group(1)), set()).add(int(m.group(2)))
+    return seen
+
+
+def _batch_progress(run_dir: Path, topas_file: str, batches: int,
+                    spot_weights: List[int], threads: int) -> tuple[int, int]:
+    """``(protons done, batches started)`` of a sources-mode field (#95).  A lower bound.
+
+    The batches run one after another -- TOPAS starts a run only once the last has ended -- so
+    every batch before the latest one seen is done.
+
+    Within the latest, event ``k`` fires one proton from every spot with more than ``k`` left,
+    so events ``0..x-1`` hold ``P(x) = sum(min(w, x))`` protons: the first events nearly
+    every spot, the last only the heaviest.
+
+    The log only says when an event *starts*, every ``ShowHistoryCountAtInterval``-th one.
+    Geant4 hands events out in blocks of :func:`geant4_block`, aligned at multiples of the
+    block size and claimed in order; each thread works through one block at a time.  So:
+
+    * of the blocks claimed so far -- up to the newest one with a logged start -- all but the
+      newest ``threads`` are finished;
+    * within each of those newest blocks, a logged start of event ``h`` means the block's
+      events before ``h`` are finished.
+
+    Nothing else is counted.  Counting started events put a real field at 84 % before any
+    had finished, and counting one in flight per thread put a 100 000-primary single batch
+    at 42 % while its whole first round of blocks -- half its protons -- was still running.
+    """
+    seen = {b: e for b, e in _events_seen(run_dir, topas_file).items() if 0 <= b < batches and e}
+    if not seen:
+        return 0, 0
+    latest = max(seen)
+    events = sorted(seen[latest])
+    block = geant4_block(max(spot_weights), threads)
+
+    def protons(x: int) -> int:
+        return sum(min(w, x) for w in spot_weights)
+
+    newest = events[-1] // block
+    finished_blocks = max(0, newest - threads + 1)          # blocks 0 .. newest - threads
+    done = protons(finished_blocks * block)
+    highest_in_block: dict = {}
+    for event in events:
+        b = event // block
+        if b >= finished_blocks:
+            highest_in_block[b] = max(event, highest_in_block.get(b, -1))
+    for b, h in highest_in_block.items():
+        done += protons(h) - protons(b * block)            # events b*block .. h-1 finished
+    return latest * sum(spot_weights) + done, latest + 1
 
 
 def _runs_started(run_dir: Path, topas_file: str) -> set:
@@ -741,22 +913,30 @@ def field_progress(run_dir: str | os.PathLike, topas_file: str) -> FieldProgress
     """Progress of one field, weighted by histories, from its sentinel, input and log."""
     run_dir = Path(run_dir)
     status = field_status(run_dir, topas_file)
-    weights = _spot_weights(run_dir, topas_file)
+    unit, weights, spot_weights = _layout(run_dir, topas_file)
     total_runs = len(weights)
     histories_total = sum(weights)
 
     if status == COMPLETED:
-        started = set(range(total_runs))
+        histories_done, runs_started = histories_total, total_runs
+    elif spot_weights:
+        try:
+            threads = _threads(read_text_lenient(run_dir / topas_file))
+        except OSError:
+            threads = os.cpu_count() or 1
+        histories_done, runs_started = _batch_progress(run_dir, topas_file, total_runs, spot_weights, threads)
     else:
         # Only count runs we actually have a weight for, so a stray index can't overshoot.
         started = {k for k in _runs_started(run_dir, topas_file) if 0 <= k < total_runs}
+        histories_done, runs_started = sum(weights[k] for k in started), len(started)
 
-    histories_done = sum(weights[k] for k in started)
     return FieldProgress(
         topas_file=topas_file, status=status,
         histories_done=histories_done, histories_total=histories_total,
-        runs_started=len(started), total_runs=total_runs,
+        runs_started=runs_started, total_runs=total_runs,
         failure=field_failure(run_dir, topas_file) if status == FAILED else None,
+        unit=unit,
+        started=(run_dir / log_name(topas_file)).exists(),
     )
 
 
@@ -769,7 +949,7 @@ def run_progress(run_dir: str | os.PathLike) -> List[FieldProgress]:
     if _local_run_is_queued(run_dir, info):
         progress = []
         for f in info.fields:
-            weights = _spot_weights(run_dir, f.topas_file)
+            unit, weights = _run_weights(run_dir, f.topas_file)
             progress.append(FieldProgress(
                 topas_file=f.topas_file,
                 status=QUEUED,
@@ -777,6 +957,7 @@ def run_progress(run_dir: str | os.PathLike) -> List[FieldProgress]:
                 histories_total=sum(weights),
                 runs_started=0,
                 total_runs=len(weights),
+                unit=unit,
             ))
         return progress
     return [field_progress(run_dir, f.topas_file) for f in info.fields]

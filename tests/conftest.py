@@ -15,6 +15,7 @@ def isolated_config(monkeypatch, tmp_path_factory):
     """Every test starts from the built-in defaults and an empty discovery stack."""
     empty = tmp_path_factory.mktemp("xdg")
     monkeypatch.delenv(config.CONFIG_ENV, raising=False)
+    monkeypatch.delenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(empty))
     monkeypatch.setattr(config, "SYSTEM_CONFIG_PATH", empty / "absent.toml")
     config.set_config_path(None)

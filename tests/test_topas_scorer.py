@@ -1,3 +1,4 @@
+import pytest
 import textwrap
 
 from pregdos.topas_scorer import (
@@ -165,6 +166,57 @@ def test_append_scorers_removes_infield_when_requested(tmp_path):
     assert "DoseToWater" not in result
     assert "DoseGamma_fetus" in result
     assert _TIME_BODY in result
+
+
+# dicomexport >= 2.0 in sources mode: the per-spot sources follow the scorer block under a
+# two-line banner, and there is no TIME FEATURES banner at all.
+_SOURCES_HEADER = (
+    "##############################################\n"
+    "###   B E A M :   O N E   S O U R C E      ###\n"
+    "###          P E R   S P O T               ###\n"
+    "##############################################\n"
+)
+
+_SOURCES_BODY = textwrap.dedent("""\
+    i:Tf/NumberOfSequentialTimes                 = 10
+    s:So/Spot0001/Type                           = "Emittance"
+    i:So/Spot0001/NumberOfHistoriesInRun         = 3
+""")
+
+
+@pytest.mark.parametrize("keep_infield", [True, False])
+def test_append_scorers_keeps_the_sources_mode_beam(tmp_path, keep_infield):
+    """The bug this guards: the scorer block was taken to run to TIME FEATURES, or to the end
+    of the file without one, so in sources mode the whole beam was dropped with the in-field
+    scorer.  TOPAS then ran its demo source with 0 histories and reported 0 dose, cleanly."""
+    p = tmp_path / "topas_field01.txt"
+    p.write_text("# header\n\n" + _SCORER_HEADER + _INFIELD_BLOCK + _SOURCES_HEADER + _SOURCES_BODY)
+
+    append_scorers(str(p), ScorerConfig(scorers=[_make_entry(ScorerType.GAMMA_DOSE)],
+                                        keep_infield=keep_infield))
+
+    result = p.read_text()
+    assert result.endswith(_SOURCES_HEADER + _SOURCES_BODY)
+    assert "DoseGamma_fetus" in result
+    assert ("DoseToWater" in result) == keep_infield
+
+
+@pytest.mark.parametrize("layout, after_run", [
+    ("# SPOT_MODE: sources\n# RUNS: 10\n", True),       # batches: one result per batch
+    ("# SPOT_MODE: sources\n# RUNS: 1\n", False),       # a single batch: one result
+    ("# SPOT_MODE: timefeature\n# RUNS: 659\n", False), # runs are spots, not batches
+    ("", False),                                          # dicomexport < 2.0
+])
+def test_added_scorers_report_per_batch_only_in_a_batched_field(tmp_path, layout, after_run):
+    p = tmp_path / "topas_field01.txt"
+    p.write_text("# REQUESTED_HISTORIES: 1000\n# PARTICLE_SCALING: 1.0\n" + layout
+                 + _SCORER_HEADER + _INFIELD_BLOCK + _SOURCES_HEADER + _SOURCES_BODY)
+
+    append_scorers(str(p), ScorerConfig(scorers=[_make_entry(ScorerType.GAMMA_DOSE)], keep_infield=True))
+
+    result = p.read_text()
+    assert ('b:Sc/DoseGamma_fetus/OutputAfterRun' in result) == after_run
+    assert "Sc/Dose/OutputAfterRun" not in result         # the DICOM cube adds up by itself
 
 
 def test_append_scorers_multiple_scorers(tmp_path):

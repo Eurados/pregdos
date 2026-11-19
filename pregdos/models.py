@@ -8,7 +8,7 @@ the dicomexport subprocess call, and the TOPAS scorer post-processing step.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 @dataclass(slots=True)
@@ -20,9 +20,9 @@ class ConversionParameters:
 
     Every path here is **relative to** :attr:`run_dir`, which is also the working
     directory dicomexport is invoked from and the directory TOPAS will later run in.
-    dicomexport copies its arguments verbatim into the generated TOPAS input, so
-    relative arguments produce relative ``DicomDirectory`` / ``includeFile`` entries,
-    and the study directory stays movable.  See :mod:`pregdos.studies`.
+    dicomexport copies its arguments verbatim into the generated TOPAS input, so a
+    relative argument produces a relative ``DicomDirectory`` entry, and the study directory
+    stays movable.  See :mod:`pregdos.studies`.
     """
 
     study_name: str
@@ -35,16 +35,27 @@ class ConversionParameters:
     """Pencil-beam model CSV, relative to ``run_dir``.  Read by dicomexport at
     generation time only; its path is never embedded in the TOPAS input."""
     material_table_rel: str
-    """CT-number-to-material table, relative to ``run_dir``.  Embedded verbatim into
-    the generated file as ``includeFile``, so it must stay relative."""
+    """CT-number-to-material table, relative to ``run_dir``.  Passed with ``-S``: dicomexport
+    pastes the file's contents into each field and records this path, so it must stay
+    relative.  TOPAS does not read the file itself."""
     output_basename: str
     """Base name for output files; dicomexport appends ``_fieldNN.txt`` suffixes."""
     field_nr: Optional[int] = None
-    """If set, export only this treatment field (1-based index).
-    None means export all fields."""
+    """If set, export only the field with this DICOM ``BeamNumber`` (dicomexport ``-f``; not
+    the field's position in the plan, since dicomexport 2.0).  None means export all fields,
+    which is all PregDos ever asks for."""
     nstat: Optional[int] = None
     """Number of primary proton histories per spot weight.
     Passed through as the ``-N`` flag to dicomexport; None uses the default."""
+    single_batch: bool = False
+    """Run each field as a single batch: quicker, but with no statistical uncertainty.
+    Only matters in sources mode, where a field otherwise runs as ``config.BATCHES``."""
+    material_overrides: List[Tuple[str, str]] = field(default_factory=list)
+    """``(structure, material)`` pairs, passed as ``--material-override`` in this order: where
+    structures overlap, TOPAS uses the first (#126).  See :mod:`pregdos.overrides`."""
+    materials_file: Optional[str] = None
+    """The site's ``materials.txt``, pasted with ``-S`` after the CT table when overrides are
+    given.  None when there are none, or the config dir has no such file."""
 
 
 @dataclass(slots=True)

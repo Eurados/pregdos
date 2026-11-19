@@ -276,6 +276,28 @@ def test_zero_stays_meaningful(write_config, body):
     config.load()      # raises if zero was caught up in the negativity check
 
 
+def test_an_unknown_spot_mode_is_an_error_with_a_suggestion(write_config):
+    write_config('[conversion]\nspot_mode = "source"\n')
+    with pytest.raises(config.ConfigError, match="spot_mode: 'source' is not one of.*did you mean 'sources'"):
+        config.load()
+
+
+def test_sources_mode_is_the_default():
+    assert config.load().conversion.spot_mode == "sources"
+
+
+def test_a_relative_dicomexport_config_dir_is_an_error(write_config):
+    """dicomexport runs in the run directory, so a relative path would differ for every run."""
+    write_config('[paths]\ndicomexport_config_dir = "dicomexport"\n')
+    with pytest.raises(config.ConfigError, match="dicomexport_config_dir: 'dicomexport' is not an absolute path"):
+        config.load()
+
+
+def test_an_absolute_dicomexport_config_dir_is_accepted(write_config):
+    write_config('[paths]\ndicomexport_config_dir = "/etc/dicomexport"\n')
+    assert config.load().paths.dicomexport_config_dir == "/etc/dicomexport"
+
+
 @pytest.mark.parametrize("port", [0, -1, 65536])
 def test_port_outside_the_valid_range_is_an_error(write_config, port):
     write_config(f"[server]\nport = {port}\n")
@@ -482,3 +504,20 @@ def test_a_share_merely_containing_ipc_is_still_allowed(write_config):
     write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "smb"\nsmb_share = "ipcs"\n')
 
     assert config.load().auth.smb_share == "ipcs"
+
+
+def test_eclipse_materials_map_eclipse_names_to_topas_materials(write_config):
+    write_config('[overrides.eclipse_materials]\nS45C_Steel = "ImplantSteel"\n"Titanium Alloy" = "G4_Ti"\n')
+    assert config.load().overrides.eclipse_materials == {
+        "S45C_Steel": "ImplantSteel", "Titanium Alloy": "G4_Ti"}
+
+
+def test_no_eclipse_materials_by_default():
+    assert config.load().overrides.eclipse_materials == {}
+
+
+@pytest.mark.parametrize("value", ['""', "3"])
+def test_an_eclipse_material_must_map_to_a_name(write_config, value):
+    write_config(f"[overrides.eclipse_materials]\nS45C_Steel = {value}\n")
+    with pytest.raises(config.ConfigError, match="S45C_Steel: expected the name of a TOPAS material"):
+        config.load()

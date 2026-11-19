@@ -182,16 +182,31 @@ def test_sessions_survive_worker_replacement(running_server):
         finally:
             connection.close()
 
+    def workers():
+        listed = subprocess.run(["pgrep", "-P", str(master.pid)], capture_output=True, text=True)
+        return {int(pid) for pid in listed.stdout.split()}
+
+    def two_workers(excluding=frozenset()):
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            current = workers()
+            if len(current) == 2 and not current & excluding:
+                return current
+            time.sleep(0.05)
+        pytest.fail(f"Gunicorn did not run two workers (excluding {sorted(excluding)}): {sorted(workers())}")
+
     first_pid = visit(1)
-    os.kill(first_pid, signal.SIGKILL)
-    pids = set()
-    for count in range(2, 32):
-        pids.add(visit(count))
-        if len(pids) == 2:
-            break
-        time.sleep(0.05)
-    assert len(pids) == 2, "both replacement and surviving worker should serve the same session"
-    assert first_pid not in pids
+    originals = two_workers()
+    assert first_pid in originals
+    # Kill every worker that ever saw the session, so whichever answers next is a replacement.
+    # Killing only the first and hoping the kernel hands a request to its replacement before
+    # the survivor takes them all was flaky on loaded CI runners: Linux does not spread
+    # connections round-robin across workers.
+    for pid in originals:
+        os.kill(pid, signal.SIGKILL)
+    replacements = two_workers(excluding=originals)
+    for count in (2, 3, 4):
+        assert visit(count) in replacements
     assert master.poll() is None
 
 

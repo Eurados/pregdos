@@ -20,8 +20,9 @@ import csv
 import datetime
 import io
 import math
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from . import executor, results, structure_metrics, studies, versions
+from .provenance import CONVERSION_FIELDS, ConversionRecord
 from .studies import StudyError
 
 
@@ -139,7 +140,7 @@ _VOLUME_NORMALIZED = {
 }
 
 
-def group_rows(rows: list) -> list:
+def group_rows(rows: list, expected_fields: set | None = None) -> list:
     """Group scorer rows by scorer, and total each group over its fields.
 
     A clinician reads one quantity at a time -- "how much neutron dose did the brainstem
@@ -154,6 +155,11 @@ def group_rows(rows: list) -> list:
     group totalled when two rows share a field number -- ``IfOutputFileAlreadyExists =
     "Increment"`` writes a second CSV for a re-run of the *same* field, and adding those
     together would double-count it.
+
+    ``expected_fields`` are the run's field numbers (:func:`results.run_fields`).  Given, a
+    group is totalled only when every one of them has a row: a field with no result at all --
+    still running, or a batch that never wrote -- would otherwise simply be left out of the
+    sum.  Such a group says which fields it lacks, in ``missing_fields``.
     """
     groups: dict = {}
     for row in rows:
@@ -168,9 +174,10 @@ def group_rows(rows: list) -> list:
 
         fields = [r["field"] for r in members]
         distinct_fields = None not in fields and len(set(fields)) == len(fields)
+        missing_fields = sorted(set(expected_fields) - set(fields)) if expected_fields else []
 
         total_sum = total_sd = None
-        if complete and distinct_fields and len(members) > 1:
+        if complete and distinct_fields and not missing_fields and len(members) > 1:
             total_sum = sum(r["sum"] for r in summable)
             sds = [r["sd"] for r in summable if r["sd"] is not None]
             total_sd = math.sqrt(sum(sd * sd for sd in sds)) if len(sds) == len(summable) else None
@@ -184,11 +191,100 @@ def group_rows(rows: list) -> list:
             # CSV report.
             "display_scorer": display_scorer_name(scorer, structure),
             "rows": members, "total_sum": total_sum, "total_sd": total_sd,
-            "n_fields": len(members),
+            "n_fields": len(members), "missing_fields": missing_fields,
         })
 
     out.sort(key=lambda g: (g["scorer"], g["structure"]))
     return out
+
+
+def uncertainty_notes(run_dir: Path) -> list[str]:
+    """How ``dose_uncertainty`` was computed, for each way the run's fields were laid out.
+
+    Sources mode estimates it from the spread of the batch results (batch means), and a single
+    batch has none; time-feature mode, and runs from before dicomexport 2.0, from the spread
+    of the per-history contributions.  See :meth:`results.ScorerResult.relative_uncertainty`.
+    """
+    layouts = set()
+    for topas_input in results.field_inputs(run_dir).values():
+        scaling = results.parse_plan_scaling(topas_input)
+        if scaling is not None:
+            layouts.add((scaling.spot_mode, scaling.runs if scaling.spot_mode == "sources" else 0))
+    notes = []
+    for mode, runs in sorted(layouts):
+        if mode == "sources" and runs >= 2:
+            notes.append(f"dose_uncertainty is the 1-sigma Monte-Carlo statistical error from the spread "
+                         f"of the {runs} batch results (sqrt(B)*SD(batch sums)/Sum, B = {runs}, applied "
+                         f"to the scaled dose).")
+        elif mode == "sources":
+            notes.append("dose_uncertainty is empty: the fields ran as a single batch, which gives no "
+                         "statistical error.")
+        else:
+            notes.append(_PER_HISTORY_NOTE)
+    return notes or [_PER_HISTORY_NOTE]
+
+
+_PER_HISTORY_NOTE = ("dose_uncertainty is the 1-sigma Monte-Carlo statistical error "
+                     "(sqrt(N)*SD/Sum applied to the scaled dose; N = simulated histories).")
+
+
+#: Overlaps smaller than this share of a structure's volume are not warned about.  Neighbouring
+#: contours share voxels along their edge (3 voxels, 0.0013 % of the head phantom's CTV, with
+#: its brain stem), and even steel at 8x tissue density changes the mass by under 1 % here.
+OVERLAP_WARNING_SHARE = 1e-3
+
+
+def _override_overlap_warnings(structure: str, metric: dict | None) -> list[str]:
+    """Why a structure's DoseToMedium is approximate: overrides inside it (#126).
+
+    Its EnergyDeposit is turned into Gy with a mass from the CT numbers, while TOPAS used the
+    override's material wherever one lies inside the structure.
+    """
+    out = []
+    volume = (metric or {}).get("volume_cm3") or 0.0
+    for overlap in (metric or {}).get("override_overlaps") or []:
+        if volume and overlap["volume_cm3"] < OVERLAP_WARNING_SHARE * volume:
+            continue
+        roi, material = overlap["override"], overlap["material"]
+        share = f" ({100 * overlap['volume_cm3'] / volume:.2g} % of it)" if volume else ""
+        if roi == structure and volume and overlap["volume_cm3"] >= 0.999 * volume:
+            where = f"{structure} is itself overridden with {material}"
+        elif roi == structure:
+            # Partly: an override listed before it decides the rest (first one given wins).
+            where = f"{overlap['volume_cm3']:.3g} cm³ of {structure}{share} are overridden with {material}"
+        else:
+            where = f"{overlap['volume_cm3']:.3g} cm³ of {structure}{share} lie in {roi}, overridden with {material}"
+        out.append(f"{where}. TOPAS used {material} there, but {structure}'s mass, which turns its "
+                   f"energy deposit into DoseToMedium, comes from the CT numbers, so that dose is "
+                   f"approximate.")
+    return out
+
+
+def _no_total(group: dict) -> str:
+    """Why a group has no total: the fields with no result."""
+    missing = ", ".join(str(n) for n in group["missing_fields"])
+    return f"no total: no result for field {missing}"
+
+
+def _scaling_warning(scaling: results.PlanScaling) -> str | None:
+    """Why a field's dose or uncertainty is less than it should be, or None."""
+    if scaling.simulated_histories <= 0:
+        return ("its TOPAS input records neither SIMULATED_HISTORIES nor Tf/spotWeight, so the "
+                "dose is scaled without the correction for rounded spot weights, and has no "
+                "statistical uncertainty.")
+    if scaling.spot_mode == "sources" and scaling.runs == 1:
+        return ("the field ran as a single batch, so its dose has no statistical "
+                "uncertainty.")
+    return None
+
+
+def _finished_fields(run_dir: Path) -> set:
+    """The TOPAS inputs of the run's fields that have ended, completed or not."""
+    info = executor.read_run_metadata(run_dir)
+    if info is None:
+        return set()
+    return {f.topas_file for f in info.fields
+            if executor.field_status(run_dir, f.topas_file) not in (executor.RUNNING, executor.QUEUED)}
 
 
 def result_rows(run_dir: Path, study: str, root: str | Path):
@@ -196,7 +292,7 @@ def result_rows(run_dir: Path, study: str, root: str | Path):
 
     ``root`` is the studies root, needed only to find the study's RTPLAN for beam names.
     """
-    parsed, warnings = results.collect_results(run_dir)
+    parsed, warnings = results.collect_results(run_dir, finished=_finished_fields(run_dir))
     metrics, metric_warnings = structure_metrics.ensure_metrics(run_dir)
     warnings.extend(metric_warnings)
 
@@ -213,9 +309,16 @@ def result_rows(run_dir: Path, study: str, root: str | Path):
     fraction_multiplier = plan_fractions or 1
 
     rows = []
+    warned_fields: set[str] = set()
+    warned_overlaps: set[str] = set()
     for r in parsed:
         scaling = results.scaling_for(r, run_dir)
         total, sd = r.scaled(scaling)
+        # Say so once per field rather than fall back silently (#130).
+        if (scaling is not None and r.parameter_file not in warned_fields
+                and (message := _scaling_warning(scaling))):
+            warned_fields.add(r.parameter_file)
+            warnings.append(f"{r.parameter_file}: {message}")
         metric = None
         mass_normalized = False
         volume_normalized = False
@@ -235,6 +338,9 @@ def result_rows(run_dir: Path, study: str, root: str | Path):
                     quantity = "DoseToMedium"
                     unit = "Gy"
                     mass_normalized = True
+                    if r.structure not in warned_overlaps:
+                        warned_overlaps.add(r.structure)
+                        warnings.extend(_override_overlap_warnings(r.structure, metric))
                 elif problem is None:
                     problem = "structure mass metrics are missing; cannot convert EnergyDeposit to Gy"
             elif r.quantity in _VOLUME_NORMALIZED and r.structure:
@@ -312,14 +418,36 @@ def _material_table_field(info: executor.RunInfo | None) -> str:
     return f"{info.material_table} ({info.material_table_sha256[:8]})"
 
 
+def _conversion_fields(record: ConversionRecord | None) -> dict[str, str]:
+    """The conversion record as report strings.  "unavailable" for a run that has none: it
+    was converted by dicomexport < 2.0, or submitted before this was recorded."""
+    if record is None:
+        return {key: "unavailable" for key, _ in CONVERSION_FIELDS}
+    return {
+        "beam_model": PureWindowsPath(record.beam_model).name or "unavailable",
+        # The first included file is the CT-number-to-material table, reported on its own.
+        "other_includes": "; ".join(include.label for include in record.includes[1:]) or "none",
+        # In the order given: where structures overlap, TOPAS used the first.
+        "material_overrides": "; ".join(record.material_overrides) or "none",
+        "spot_mode": record.layout or "unavailable",
+        "config_dir": record.config_dir or "unavailable",
+        "range_shifter_catalog": record.range_shifter_catalog or "unavailable",
+    }
+
+
 def report_provenance(run_dir: Path) -> dict[str, str]:
     repo_root = Path(__file__).resolve().parent.parent
+    info = executor.read_run_metadata(run_dir)
+    record = info.conversion if info else None
     return {
         "pregdos": versions.canonical_package_version("pregdos", repo_root),
-        "dicomexport": versions.dicomexport_version(),
+        # The version that converted the run, when recorded -- the installed one may differ.
+        "dicomexport": (record.dicomexport if record and record.dicomexport
+                        else versions.dicomexport_version()),
         "topas": versions.topas_version(),
         "geant4": versions.geant4_version(),
-        "material_table": _material_table_field(executor.read_run_metadata(run_dir)),
+        "material_table": _material_table_field(info),
+        **_conversion_fields(record),
     }
 
 
@@ -352,6 +480,8 @@ def build_report_csv(run_dir: Path, study: str, run_id: str, root: str | Path) -
     geant4 = provenance.get("geant4", "")
     writer.writerow(["# Geant4", f"v{geant4}" if geant4 else ""])
     writer.writerow(["# Material table", provenance.get("material_table", "")])
+    for key, label in CONVERSION_FIELDS:
+        writer.writerow([f"# {label}", provenance.get(key, "")])
     for warning in warnings:
         writer.writerow(["# Warning", warning])
     writer.writerow(["# Note", "PregDos is under active development and validation is ongoing; "
@@ -366,8 +496,8 @@ def build_report_csv(run_dir: Path, study: str, run_id: str, root: str | Path) -
     writer.writerow(["# Note", "Structure EnergyDeposit rows are mass-normalized; structure DoseToWater and "
                      "fluence rows are volume-normalized from the patient-box scorer volume to the structure volume "
                      "(issue #50)."])
-    writer.writerow(["# Note", "dose_uncertainty is the 1-sigma Monte-Carlo statistical error "
-                     "(sqrt(N)*SD/Sum applied to the scaled dose; N = simulated histories)."])
+    for note in uncertainty_notes(run_dir):
+        writer.writerow(["# Note", note])
     writer.writerow(["# Note", "field=ALL rows total a scorer over its fields; their uncertainties add in quadrature."])
     writer.writerow(["scorer", "structure", "quantity", "field", "field_name", "unit",
                      "dose", "dose_uncertainty", "simulated_histories", "scale_factor",
@@ -375,7 +505,7 @@ def build_report_csv(run_dir: Path, study: str, run_id: str, root: str | Path) -
                      "structure_average_density_g_cm3", "status"])
     writer.writerow(["units", "", "", "", "", "Gy or Sv", "Gy or Sv", "Gy or Sv", "1", "1",
                      "", "", "cm3", "g", "g/cm3", ""])
-    for group in group_rows(rows):
+    for group in group_rows(rows, results.run_fields(run_dir)):
         for r in group["rows"]:
             writer.writerow([
                 r["scorer"], r["structure"], r["display_quantity"],
@@ -402,5 +532,10 @@ def build_report_csv(run_dir: Path, study: str, run_id: str, root: str | Path) -
                 "" if group["total_sd"] is None else repr(group["total_sd"]),
                 "" if total_histories is None else total_histories,
                 "", "", "", "", "", "", f"sum over {group['n_fields']} fields",
+            ])
+        elif group["missing_fields"]:
+            writer.writerow([
+                group["scorer"], group["structure"], group["display_quantity"], "ALL", "", group["unit"],
+                "", "", "", "", "", "", "", "", "", _no_total(group),
             ])
     return buf.getvalue()

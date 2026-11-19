@@ -81,6 +81,18 @@
         <small class="hint">Simulated <strong>per field</strong>, so the total is this value × the number of fields.
           More primaries give better statistics at the cost of longer runtime.</small>
       </div>
+      {% if sources_mode %}
+      <div class="form-row">
+        <label class="scorer-checkbox-label"
+               title="Each field normally runs as {{ batches }} identical batches, and the spread between their results is the statistical uncertainty. One batch is quicker, but leaves nothing to compare, so there are no error bars. Use it to check a setup, not to report a dose.">
+          <input type="checkbox" name="single_batch" value="1" {% if single_batch %}checked{% endif %}>
+          Single batch (no error bars)
+        </label>
+        <small class="hint">Runs each field as one batch instead of {{ batches }}: quicker, but
+          the results have <strong>no statistical uncertainty</strong>. For checking a setup,
+          not for reporting a dose.</small>
+      </div>
+      {% endif %}
     </section>
 
   </div>
@@ -120,7 +132,8 @@
               <td class="col-structure">{{ struct }}</td>
               {% for sc in scorer_defs %}
               <td class="col-scorer">
-                <input type="checkbox" name="score_{{ sc.id }}" value="{{ struct }}">
+                <input type="checkbox" name="score_{{ sc.id }}" value="{{ struct }}"
+                       {% if struct in scored[sc.id] %}checked{% endif %}>
               </td>
               {% endfor %}
             </tr>
@@ -131,10 +144,107 @@
     </div>
   </section>
 
+  {# ── Material overrides (#126) ────────────────────────────────────── #}
+  <section class="card">
+    <div class="form-row">
+      <label>Material overrides</label>
+      <small class="hint">Give a structure a material in place of the CT conversion, e.g. a metal
+        implant or an artefact. Where structures overlap, the <strong>first row wins</strong>, so
+        list implants before the body. An overridden structure need not be scored.</small>
+      <small class="hint">{{ override_scoring_note }}</small>
+      {% if override_rows | selectattr("note") | list %}
+      <small class="hint">The rows marked <em>Eclipse</em> are structures the RTSTRUCT overrides.
+        Eclipse's value is for its own dose engine, not a material, so choose the material TOPAS
+        should use, or leave "No override" to keep the CT conversion.</small>
+      {% endif %}
+      <datalist id="geant4-materials">
+        {% for m in geant4_materials %}<option value="{{ m }}">{% endfor %}
+      </datalist>
+      <div id="override-rows">
+        {% for row in override_rows %}
+        {% set other = row.material and row.material not in in_dropdown %}
+        <div class="override-row" style="margin-top:6px">
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+            <select name="override_roi" class="select-input" aria-label="Structure">
+              <option value="">— structure —</option>
+              {% for struct in structures %}
+              <option value="{{ struct }}"{% if struct == row.roi %} selected{% endif %}>{{ struct }}</option>
+              {% endfor %}
+            </select>
+            <select name="override_material" class="select-input" aria-label="Material"
+                    onchange="showOther(this)">
+              <option value="">No override (CT conversion)</option>
+              {% if site_materials %}
+              <optgroup label="This site (materials.txt)">
+                {% for m in site_materials %}
+                <option value="{{ m }}"{% if m == row.material %} selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+              </optgroup>
+              {% endif %}
+              <optgroup label="Common">
+                {% for m in builtin_materials %}
+                <option value="{{ m }}"{% if m == row.material %} selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+              </optgroup>
+              <option value="{{ other_value }}"{% if other %} selected{% endif %}>Other Geant4 material…</option>
+            </select>
+            <input type="text" name="override_material_other" class="select-input"
+                   list="geant4-materials" placeholder="Type to search, e.g. G4_BONE"
+                   aria-label="Geant4 material" autocomplete="off"
+                   value="{{ row.material if other else '' }}"{% if not other %} hidden{% endif %}>
+            <button type="button" class="btn btn-secondary" onclick="removeOverrideRow(this)"
+                    title="Remove this row" aria-label="Remove this row">×</button>
+          </div>
+          <small class="hint override-note"{% if not row.note %} hidden{% endif %}>{{ row.note }}</small>
+        </div>
+        {% endfor %}
+      </div>
+      <div style="margin-top:6px">
+        <button type="button" class="btn btn-secondary" onclick="addOverrideRow()">Add another</button>
+      </div>
+    </div>
+  </section>
+
   <div class="actions">
     <a class="btn btn-secondary" href="{{ url_for('upload_files') }}">Back</a>
     <button type="submit" class="btn primary">Next</button>
   </div>
 
 </form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// An empty row: no structure, "No override", no Eclipse note.
+function resetOverrideRow(row) {
+  row.querySelectorAll('select').forEach(sel => { sel.value = ''; });
+  const other = row.querySelector('input[name="override_material_other"]');
+  other.value = '';
+  other.hidden = true;
+  const note = row.querySelector('.override-note');
+  note.textContent = '';
+  note.hidden = true;
+}
+function addOverrideRow() {
+  const rows = document.getElementById('override-rows');
+  const row = rows.lastElementChild.cloneNode(true);
+  resetOverrideRow(row);
+  rows.appendChild(row);
+}
+// The last row is emptied rather than removed, so "Add another" always has a row to copy.
+function removeOverrideRow(button) {
+  const row = button.closest('.override-row');
+  if (document.querySelectorAll('#override-rows .override-row').length > 1) {
+    row.remove();
+  } else {
+    resetOverrideRow(row);
+  }
+}
+// "Other Geant4 material…" shows the text field that searches Geant4's materials.
+function showOther(select) {
+  const other = select.closest('.override-row').querySelector('input[name="override_material_other"]');
+  other.hidden = select.value !== '{{ other_value }}';
+  if (!other.hidden) other.focus();
+}
+</script>
 {% endblock %}

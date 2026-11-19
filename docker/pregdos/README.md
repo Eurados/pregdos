@@ -49,6 +49,19 @@ docker run --rm -it --hostname localhost -p 5000:5000 pregdos
 
 Job working directories and SLURM logs are under `/home/slurm/jobs/`.
 
+Without further setup, conversions use the examples shipped with dicomexport (DCPT's beam
+models, other centres' range shifters). To use a site's own data, mount its dicomexport
+configuration directory and name it:
+
+```bash
+docker run --rm -it --hostname localhost -p 5000:5000 \
+    -v /path/to/dicomexport_config:/etc/dicomexport:ro \
+    -e PREGDOS_DICOMEXPORT_CONFIG_DIR=/etc/dicomexport \
+    pregdos
+```
+
+`docs/installation.md` ("The site's dicomexport data") shows how to create that directory.
+
 To debug interactively:
 
 ```bash

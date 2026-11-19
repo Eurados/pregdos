@@ -65,12 +65,43 @@ Open **New simulation**.
 Provide:
 
 - A DICOM study, either as a ZIP or as a folder upload.
-- A beam model CSV. For the head phantom example, use one of the bundled DCPT beam models if
-  offered by the UI, or upload a matching beam model CSV.
+- A beam model CSV, chosen from the site's dicomexport configuration directory or uploaded.
+  The page preselects the directory's default; with several beam models and no default it
+  asks you to choose. For the head phantom example, use one of the DCPT beam models.
 - A CT-number-to-material table in TOPAS Schneider format, indexed by Hounsfield units and
-  prepared for your site's CT calibration. Producing it is an external step. The bundled
-  `HUtoMaterialSchneider.txt` is an example with XiO-specific density corrections; see its
-  [input contract and numerical assumptions](../pregdos/data/ct_to_material/README.md).
+  prepared for your site's CT calibration, chosen the same way. Producing it is an external
+  step. It is pasted into every generated TOPAS file, so it must be UTF-8 text.
+
+The chosen files are copied into the study, so later changes to the site's directory do not
+change a study that was already uploaded.
+
+**The table is checked when you upload**, whether it comes from the site's directory or from
+your computer. TOPAS reads its `DensityCorrection` vector without a bounds check, so a faulty
+table does not stop a run: it runs on with undefined densities. PregDos therefore refuses a
+table, naming the numbers and the fix, when:
+
+- it is not UTF-8 text, or `ImagingToMaterialConverter` is not `"Schneider"`;
+- a vector's declared count differs from its values, or a parameter is defined twice;
+- `DensityCorrection` does not have exactly `sections[-1] - sections[0]` values, where `sections`
+  is `SchneiderHounsfieldUnitSections` (TOPAS aborts otherwise);
+- `MinImagingValue` (-1000 if the table does not set it) differs from `sections[0]`. That is the
+  only setting that keeps TOPAS's lookup inside the vector. A table whose sections start at
+  -1024 needs `i:Ge/Patient/MinImagingValue = -1024`.
+
+What cannot be checked is whether the table expects the quantity your images hold: Hounsfield
+units or stopping-power ratio. DICOM's `RescaleType` can read `HU` even on a derived
+stopping-power map. Choosing the right table stays your responsibility; the `HUtoMaterial*` and
+`SPRtoMaterial*` filename convention helps.
+
+When no site directory is configured, the page offers **the examples shipped with
+dicomexport** and says so in a warning: DCPT's beam models, and the OpenTOPAS example
+`HUtoMaterialSchneider.txt`, whose density corrections are XiO-specific. They are not a
+calibration for your scanner; see dicomexport's notes on
+[the table's input contract and numerical assumptions](https://github.com/nbassler/dicomexport/blob/v2.0.0/dicomexport/defaults/ct_to_material/README.md)
+and [the beam models](https://github.com/nbassler/dicomexport/blob/v2.0.0/dicomexport/defaults/beam_models/README.md).
+To set up the site's own directory, see [the installation guide](installation.md#the-sites-dicomexport-data).
+`patient.mass_g` in the structure metrics sums the whole CT grid, so with the example table
+the air around the patient counts at about 9.4 times its real density.
 
 PregDos flattens nested uploads into a study directory while keeping the original DICOM files
 under that study's `dicom/` subdirectory.
@@ -97,8 +128,38 @@ For a minimal completed run with the head phantom:
 1. Select the target structure, such as `CTV`.
 2. Keep the built-in in-field `DoseToWater` scorer if you want an RTDOSE comparison.
 3. Add the structure scorers you want to report, such as neutron dose equivalent or gamma dose.
-4. Choose the number of histories per field. For a quick smoke test, use a small value; for
-   meaningful results, use a production history count appropriate to the study.
+4. Choose the number of histories per field. For a quick smoke test, use a small value and tick
+   **Single batch (no error bars)**: each field then runs as one batch instead of ten, and its results have no
+   statistical uncertainty. For meaningful results, use a production history count appropriate
+   to the study, and leave Single batch unticked. If a field has too few histories for its ten
+   batches, the conversion page says so and how many it needs.
+
+### Material overrides
+
+For a patient with a metal implant, or a structure drawn over an artefact, give the structure a
+material in place of the CT conversion under **Material overrides**: choose a structure from the
+RTSTRUCT and a material for it, one row each.
+
+- The materials offered are those the site defines in `materials.txt` of its dicomexport
+  configuration directory (see [the installation guide](installation.md#the-sites-dicomexport-data)),
+  then a few TOPAS already knows: `Vacuum`, `Steel` (8.027 g/cm³), `G4_AIR`, `G4_WATER` and `G4_Ti`.
+  dicomexport's shipped `materials.txt` defines `ImplantSteel`, DCPT's steel at 7.8 g/cm³. A site
+  that needs another material adds its TOPAS `Ma/` lines to `materials.txt`.
+- **Order matters.** Where structures overlap, TOPAS uses the first row, so list implants before the
+  body.
+- An overridden structure does not need to be scored.
+- dicomexport refuses a structure TOPAS would build differently from the RTSTRUCT: one with a hole,
+  an open contour, no closed contour, a contour off the CT slices, or a name TOPAS cannot match.
+  The setup page then shows why, with your choices kept.
+- A structure that is both scored and overridden is warned about: TOPAS uses the chosen material,
+  but the structure's mass, which some scorers are normalised by, is still computed from the CT
+  numbers.
+
+Each generated TOPAS file records its overrides (`# MATERIAL_OVERRIDE:` in its header) and carries
+the pasted `materials.txt` with its SHA-256.
+
+After conversion, the page also shows dicomexport's warnings, for example spots that round away at
+low statistics.
 
 A dose-only recalculation is a valid setup: tick no structures at all and keep the in-field
 `DoseToWater` scorer. The run then produces its dose cube and nothing else, and the result page
@@ -154,7 +215,8 @@ The scorer result table shows:
 - quantity
 - field
 - dose
-- statistical uncertainty
+- statistical uncertainty (empty for a single-batch run; see
+  [Spot mode](installation.md#spot-mode) for how it is computed)
 - unit
 
 Displayed values are human-readable. The downloadable CSV keeps raw numeric values and

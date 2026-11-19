@@ -8,6 +8,7 @@ from typing import Any, Sequence
 from fpdf import FPDF
 
 from . import results
+from .provenance import CONVERSION_FIELDS
 
 
 _FONT_DIRS = (
@@ -264,6 +265,10 @@ class ReportPDF(FPDF):
                     "csv_name": "",
                 }
                 self._result_row(widths, total, fill, bold=True, include_status=include_status)
+            elif group.get("missing_fields"):
+                missing = ", ".join(str(n) for n in group["missing_fields"])
+                self._result_row(widths, {"field": "All fields", "no_total": f"no total: no result for field {missing}"},
+                                 fill, bold=True, include_status=include_status)
             self.ln(2)
 
     def _group_heading(self, group: dict[str, Any]):
@@ -297,7 +302,9 @@ class ReportPDF(FPDF):
         self.set_font(self._font_family, "B" if bold else "", 6.6)
         height = 5
         dose = uncertainty = status = ""
-        if row.get("problem"):
+        if row.get("no_total"):
+            dose = row["no_total"]
+        elif row.get("problem"):
             dose = "unusable"
             status = row.get("problem") or ""
         elif row.get("sum") is None:
@@ -360,6 +367,10 @@ def build_report_pdf(
     # the filename is user-chosen and can be arbitrarily long, and it is the hash on the end
     # that says *which* table this was.  Same reasoning as the RTPLAN UID row above.
     pdf.kv_table([("Material table", provenance.get("material_table", "unavailable"))],
+                 cols=1, keep_suffix=True)
+    # What dicomexport converted the run with (#132).  Full width, end kept: paths and the hash
+    # suffixes of included files are the identifying part.
+    pdf.kv_table([(label, provenance.get(key, "unavailable")) for key, label in CONVERSION_FIELDS],
                  cols=1, keep_suffix=True)
 
     if warnings:

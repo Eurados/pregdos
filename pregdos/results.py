@@ -36,17 +36,30 @@ histories.  dicomexport records the plan's particle budget in the TOPAS input's 
 field-specific factor, so it -- not the raw ratio -- is the value to build on.  But TOPAS does
 not simulate ``REQUESTED_HISTORIES``: the per-spot weights are integers, and their sum is what
 actually runs (19990 rather than 20000 in the example above; at low statistics whole spots
-round away and the gap grows).  Hence::
+round away and the gap grows).  dicomexport >= 2.0 records that sum as
+``# SIMULATED_HISTORIES:``; older inputs have only ``uv:Tf/spotWeight/Values`` to add up.
+Hence::
 
-    scale = PARTICLE_SCALING * REQUESTED_HISTORIES / sum(spotWeight)
+    scale = PARTICLE_SCALING * REQUESTED_HISTORIES / SIMULATED_HISTORIES
 
 Uncertainty
 -----------
 TOPAS's ``Standard_Deviation`` column is the sample SD of the *per-history* contributions --
 not a standard error, and √N too small as an error on the reported ``Sum``.  The statistical
-uncertainty we report is the standard error of the estimated dose, ``√N · SD / Sum`` (N =
-simulated histories), which is invariant under the deterministic plan scaling.  See
-:meth:`ScorerResult.relative_uncertainty`.
+uncertainty we report depends on how the field was run (see
+:meth:`ScorerResult.relative_uncertainty`):
+
+* **sources mode** (dicomexport >= 2.0, the default): the field runs as B identical batches, and
+  each scorer writes one result per batch, ``<scorer>_Run_0000.csv`` onwards.  The dose is their
+  sum, and its standard error is ``√B · SD(batch sums)`` -- batch means.  TOPAS's own
+  ``Standard_Deviation`` is not usable here: it is taken over events, and an event holds one
+  proton from every spot still firing, so it measures how unequal the events are, not noise.
+  Measured on the head phantom, it overstated the uncertainty 3-26× (#130).  A single batch
+  (a "single batch" run) has no uncertainty.
+* **time-feature mode**: ``√N · SD / Sum`` with N the protons simulated.  Conservative, since it
+  counts the spread between spots as noise (about 2× batch means in-field, same phantom).
+
+Both are invariant under the deterministic plan scaling.
 
 .. warning::
    The **absolute** dose values are still under validation (issue #50): how TOPAS normalises a
@@ -59,6 +72,7 @@ from __future__ import annotations
 
 import math
 import re
+import statistics
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -76,6 +90,8 @@ _VERSION_RE = re.compile(r"^#\s*TOPAS Version:\s*(?P<version>.+?)\s*$")
 
 # Plan scaling, from the header dicomexport writes into the TOPAS input.
 _HEADER_VALUE_RE = re.compile(r"^#\s*(?P<key>[A-Z_]+):\s*(?P<value>[-\d.eE+]+)\s*$", re.MULTILINE)
+# `# SPOT_MODE: sources` -- a word, so `_HEADER_VALUE_RE` does not cover it.
+_SPOT_MODE_RE = re.compile(r"^#\s*SPOT_MODE:\s*(?P<mode>\w+)\s*$", re.MULTILINE)
 _SPOT_WEIGHT_RE = re.compile(r"uv:Tf/spotWeight/Values\s*=\s*(?P<count>\d+)(?P<values>(?:\s+\d+)+)")
 # dicomexport stamps the RTPLAN's SOPInstanceUID into every field it generates:
 #     # SOP_INSTANCE_UID 1.2.246.352.221.5164...
@@ -89,6 +105,9 @@ _STANDARD_DEVIATION = "Standard_Deviation"
 # Scorer CSVs produced by a run.  `IfOutputFileAlreadyExists = "Increment"` can append an
 # index, so `topas_field01_neutron_Fetus_1.csv` is the same scorer, run again.
 _INCREMENT_RE = re.compile(r"^(?P<stem>.+?)_(?P<index>\d+)$")
+# `topas_field01_neutron_Fetus_Run_0003`: batch 3 of a sources-mode field, written because
+# PregDos sets OutputAfterRun on its scorers there (#130).  TOPAS then writes no total.
+_BATCH_RE = re.compile(r"^(?P<stem>.+)_Run_(?P<batch>\d+)$")
 
 # dicomexport >= 1.5.0 names its output `<base>_field<NN>.txt`, where NN is the DICOM
 # BeamNumber. `beam_names()` is keyed the same way so the number in the filename lines up
@@ -109,9 +128,18 @@ class PlanScaling:
     requested_histories: int
     """``REQUESTED_HISTORIES`` -- what was asked for, not what ran."""
     simulated_histories: int
-    """``sum(uv:Tf/spotWeight/Values)`` -- what TOPAS actually ran."""
+    """Protons TOPAS actually ran: ``SIMULATED_HISTORIES``, or ``sum(uv:Tf/spotWeight/Values)``
+    for an input from dicomexport < 2.0.  0 when neither is there."""
     total_particles: Optional[float] = None
     """``TOTAL_NUMBER_OF_PARTICLES``, kept for display."""
+    spot_mode: str = "timefeature"
+    """``SPOT_MODE``.  Inputs from dicomexport < 2.0 have none, and are time-feature."""
+    runs: int = 0
+    """``RUNS``: batches in sources mode, spots in time-feature mode.  0 if absent."""
+    events_per_run: int = 0
+    """``EVENTS_PER_RUN``, sources mode only: the heaviest spot's protons per run."""
+    spots: int = 0
+    """``SPOTS``: the field's spot count.  0 if absent."""
 
     @property
     def factor(self) -> float:
@@ -154,6 +182,9 @@ class ScorerResult:
     topas_version: str = ""
     run_index: Optional[int] = None
     """Set when `IfOutputFileAlreadyExists = Increment` produced `..._1.csv` etc."""
+    batch_sums: Optional[List[float]] = None
+    """Each batch's ``Sum``, in order, when this result adds up a sources-mode field's
+    ``_Run_NNNN`` files (:func:`combine_batches`).  None for a result TOPAS accumulated."""
 
     @property
     def field_number(self) -> Optional[int]:
@@ -206,7 +237,14 @@ class ScorerResult:
     def relative_uncertainty(self, scaling: Optional[PlanScaling]) -> Optional[float]:
         """Fractional 1σ Monte-Carlo statistical uncertainty on the dose, or None.
 
-        TOPAS reports ``Sum`` (the total over ``N`` simulated histories) and
+        **Batches** (sources mode): the dose is the sum of B independent, identical batches, so
+
+            SE(dose)/dose = √B · SD(batch sums) / Σ batch sums
+
+        with B >= 2.  A sources-mode field that ran as one batch -- "single batch" on the setup page -- has none:
+        TOPAS's per-event ``Standard_Deviation`` overstates it many times (module docstring).
+
+        **Time-feature mode**: TOPAS reports ``Sum`` (the total over ``N`` simulated histories) and
         ``Standard_Deviation`` = ``s``, the sample SD of the *per-history* contributions --
         **not** a standard error, and not the uncertainty on ``Sum``.  The estimate we report
         is the mean dose per proton (``Sum/N``) multiplied by the plan's proton count, so the
@@ -214,13 +252,18 @@ class ScorerResult:
 
             SE(dose)/dose = √N · s / Sum   =   (s / mean) / √N
 
-        ``N`` is the number of histories actually simulated (``Σ spotWeight``), which we
+        ``N`` is the number of histories actually simulated (``SIMULATED_HISTORIES``), which we
         already parse for the plan scaling.  This ratio is dimensionless and **invariant under
         the plan scaling** -- multiplying ``Sum`` by a constant to reach plan dose multiplies
         the absolute error by the same constant -- so it applies unchanged to the scaled dose.
         It depends on how many histories were *simulated*, never on the plan's proton count.
         """
-        if scaling is None:
+        if self.batch_sums is not None:
+            total = sum(self.batch_sums)
+            if len(self.batch_sums) < 2 or total == 0.0 or math.isnan(total):
+                return None
+            return math.sqrt(len(self.batch_sums)) * statistics.stdev(self.batch_sums) / abs(total)
+        if scaling is None or scaling.spot_mode == "sources":
             return None
         sd = self.raw_standard_deviation
         total = self.raw_sum
@@ -262,7 +305,7 @@ def plan_uid(run_dir: str | Path) -> Optional[str]:
     and no single UID describes it, so return None rather than name one of them.
     """
     uids = set()
-    for topas_input in sorted(Path(run_dir).glob("topas_field*.txt")):
+    for topas_input in field_inputs(run_dir).values():
         try:
             text = read_text_lenient(topas_input)
         except OSError:
@@ -270,6 +313,27 @@ def plan_uid(run_dir: str | Path) -> Optional[str]:
         if (m := _PLAN_UID_RE.search(text)):
             uids.add(m.group("uid"))
     return uids.pop() if len(uids) == 1 else None
+
+
+# `# BEAM_NAME: Field 1` -- the TPS's name for the field, dicomexport >= 2.0 (#129).
+_BEAM_NAME_RE = re.compile(r"^#\s*BEAM_NAME:\s*(?P<name>.+?)\s*$")
+_HEADER_LINES = 40
+
+
+def field_beam_name(topas_input: str | Path) -> str:
+    """The field's ``BEAM_NAME`` from the head of its TOPAS input, or "" if absent.
+
+    Reads only the first lines: the run page asks for every field on every poll, and a
+    sources-mode input runs to thousands of lines.
+    """
+    try:
+        with open(topas_input, encoding="utf-8", errors="replace") as handle:
+            for _, line in zip(range(_HEADER_LINES), handle):
+                if (m := _BEAM_NAME_RE.match(line)):
+                    return m.group("name")
+    except OSError:
+        pass
+    return ""
 
 
 def parse_plan_scaling(topas_input: str | Path) -> Optional[PlanScaling]:
@@ -294,17 +358,30 @@ def parse_plan_scaling(topas_input: str | Path) -> Optional[PlanScaling]:
     except ValueError:
         return None
 
-    # TOPAS runs sum(spotWeight) histories, not `requested`: the weights are integers.
+    # TOPAS runs SIMULATED_HISTORIES protons, not `requested`: the spot weights are integers.
+    # Inputs from dicomexport < 2.0 lack the key; there it is sum(spotWeight).
     simulated = 0
-    match = _SPOT_WEIGHT_RE.search(text)
-    if match:
-        simulated = sum(int(v) for v in match.group("values").split())
+    try:
+        if "SIMULATED_HISTORIES" in header:
+            simulated = int(float(header["SIMULATED_HISTORIES"]))
+        elif (match := _SPOT_WEIGHT_RE.search(text)):
+            simulated = sum(int(v) for v in match.group("values").split())
+        runs = int(float(header.get("RUNS", 0)))
+        events_per_run = int(float(header.get("EVENTS_PER_RUN", 0)))
+        spots = int(float(header.get("SPOTS", 0)))
+    except ValueError:
+        return None
+    mode = _SPOT_MODE_RE.search(text)
 
     return PlanScaling(
         particle_scaling=particle_scaling,
         requested_histories=requested,
         simulated_histories=simulated,
         total_particles=total,
+        spot_mode=mode.group("mode") if mode else "timefeature",
+        runs=runs,
+        events_per_run=events_per_run,
+        spots=spots,
     )
 
 
@@ -496,16 +573,50 @@ def planned_fractions(rtplan_path: Optional[str | Path]) -> Optional[int]:
     return None
 
 
-def collect_results(run_dir: str | Path) -> Tuple[List[ScorerResult], List[str]]:
+# `<basename>_field<nn>.txt`: the basename is the setup page's "output basename", `topas` by
+# default.  The scorer outputs are .csv, the logs .log and the pre-pass input names no field, so
+# nothing else in a run directory matches.
+_FIELD_INPUT_RE = re.compile(r"^(?P<base>.+)_field(?P<number>\d+)\.txt$")
+
+
+def field_inputs(run_dir: str | Path) -> Dict[int, Path]:
+    """The generated TOPAS input of each field of a run, by field number.
+
+    Found by pattern, whatever the output basename: a fix that only looked for ``topas_`` was
+    bypassed by a run named otherwise (Codex review of #132).
+    """
+    found: Dict[int, Path] = {}
+    for path in sorted(Path(run_dir).glob("*_field*.txt")):
+        if (m := _FIELD_INPUT_RE.match(path.name)):
+            found.setdefault(int(m.group("number")), path)
+    return found
+
+
+def run_fields(run_dir: str | Path) -> set:
+    """The field numbers a run has: one generated input each (:func:`field_inputs`).
+
+    The inputs, not the results, say which fields there are, so a field with no result at all
+    is still counted -- the same rule as :func:`pregdos.rtdose.missing_field_cubes`.
+    """
+    return set(field_inputs(run_dir))
+
+
+def collect_results(run_dir: str | Path, finished: Optional[set] = None) -> Tuple[List[ScorerResult], List[str]]:
     """Parse every scorer CSV in a run directory.
 
     Returns the results (sorted for a stable table) and a list of warnings for files that
     could not be parsed.  Never raises: a broken CSV must not take the results page down.
+
+    ``finished`` names the TOPAS inputs (``topas_field01.txt``) of the fields that have ended.
+    A scorer of such a field still missing a batch will never be complete: it is left out, as
+    while running, but now with a warning, since leaving it out silently would lose that field
+    from the results without a trace.
     """
     run_dir = Path(run_dir)
     results: List[ScorerResult] = []
     warnings: List[str] = []
 
+    batches: Dict[str, List[Tuple[int, Path]]] = {}
     for csv_path in sorted(run_dir.glob("*.csv")):
         # TOPAS creates each scorer's file when it sets the scorer up and only writes it at
         # the end of the session, so an empty CSV means "this field has not finished yet",
@@ -515,14 +626,71 @@ def collect_results(run_dir: str | Path) -> Tuple[List[ScorerResult], List[str]]
         # `IfOutputFileAlreadyExists = Increment`, whose data lives in `..._1.csv`.
         if csv_path.stat().st_size == 0:
             continue
+        if (m := _BATCH_RE.match(csv_path.stem)):
+            batches.setdefault(m.group("stem"), []).append((int(m.group("batch")), csv_path))
+            continue
         try:
             results.append(parse_scorer_csv(csv_path))
+        except ResultsError as e:
+            warnings.append(str(e))
+
+    for stem, files in sorted(batches.items()):
+        files.sort()
+        try:
+            parts = [parse_scorer_csv(path) for _, path in files]
+        except ResultsError as e:
+            warnings.append(str(e))
+            continue
+        # TOPAS writes each batch's file as that batch ends.  Until all of them are there the
+        # field is still running, and a partial sum would look like a plausible, low dose --
+        # so wait, as for an empty CSV above.
+        layout = scaling_for(parts[0], run_dir)
+        expected = layout.runs if layout is not None else 0
+        present = [n for n, _ in files]
+        if present != list(range(expected or len(files))):
+            source = Path(parts[0].parameter_file or "").name
+            if finished is not None and source in finished:
+                missing = sorted(set(range(expected or len(files))) - set(present))
+                warnings.append(
+                    f"{stem}: {source} has ended, but batch(es) {', '.join(map(str, missing))} of "
+                    f"{expected or '?'} wrote no result, so this scorer is left out for that field.")
+            continue
+        try:
+            results.append(combine_batches(parts, f"{stem}_Run_*.csv"))
         except ResultsError as e:
             warnings.append(str(e))
 
     # Group by field first: a clinician reads the table one field at a time.
     results.sort(key=lambda r: (r.field_number or 0, r.structure, r.quantity, r.scorer, r.run_index or 0))
     return results, warnings
+
+
+def combine_batches(parts: List[ScorerResult], name: str) -> ScorerResult:
+    """One result for a scorer of a field run in batches: the ``Sum`` of every bin added up
+    over the batches, and each batch's ``Sum`` for the uncertainty.
+
+    TOPAS's per-batch ``Standard_Deviation`` is dropped: in sources mode it is taken over
+    events and does not measure the noise (module docstring).
+    """
+    first = parts[0]
+    bins = [index for index, _ in first.rows]
+    for part in parts[1:]:
+        if (part.scorer, part.quantity, part.unit, [index for index, _ in part.rows]) != (
+                first.scorer, first.quantity, first.unit, bins):
+            raise ResultsError(f"{name}: the batches do not describe the same scorer")
+
+    def batch_sum(part: ScorerResult, k: int) -> float:
+        value = part.rows[k][1].get(_SUM)
+        return math.nan if value is None else value
+
+    rows = [(index, {_SUM: sum(batch_sum(part, k) for part in parts)}) for k, index in enumerate(bins)]
+    return ScorerResult(
+        csv_name=name, scorer=first.scorer, quantity=first.quantity, unit=first.unit,
+        columns=[_SUM], rows=rows, structure=first.structure, component=first.component,
+        particle=first.particle, parameter_file=first.parameter_file,
+        topas_version=first.topas_version,
+        batch_sums=[batch_sum(part, 0) for part in parts] if first.is_single_bin else None,
+    )
 
 
 def scaling_for(result: ScorerResult, run_dir: str | Path) -> Optional[PlanScaling]:

@@ -14,7 +14,8 @@ from flask import (
 )
 from markupsafe import Markup, escape
 import importlib.metadata
-import importlib.resources
+import json
+import re
 import pydicom
 
 import argparse
@@ -31,8 +32,8 @@ import subprocess
 import sys
 import shutil
 
-from . import (audit, auth, config, dicom_intake, executor, portable, report_pdf, reporting,
-               results, rtdose, structure_metrics, studies, versions)
+from . import (audit, auth, config, ct_table, dicom_intake, executor, overrides, portable, report_pdf,
+               reporting, results, rtdose, structure_metrics, studies, versions)
 from .models import ConversionParameters, ConversionResult
 from .studies import StudyError
 from .topas_scorer import SCORER_DEFS, append_scorers, scorer_config_from_form
@@ -264,43 +265,85 @@ def ensure_studies_root() -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Bundled beam models and CT-number-to-material tables
+# Beam models and CT-number-to-material tables: the site's dicomexport config dir
 # ---------------------------------------------------------------------------
 
-def _builtin_material_tables() -> list[dict]:
-    """Return metadata for CT-number-to-material tables bundled with the package.
+BEAM_MODELS = "beam_models"
+CT_TO_MATERIAL = "ct_to_material"
+_LIST_CONFIG_TIMEOUT = 60      # seconds; it only lists a directory
 
-    Each entry has ``name`` (filename) and ``label`` (display name for the UI).
-    Files live in ``pregdos/data/ct_to_material/`` and are included as package data.
+
+def dicomexport_listing() -> dict:
+    """``dicomexport --list-config json`` for the directory every conversion is given (#128).
+
+    Asked of the dicomexport that converts, not read in-process, so the choices offered are
+    the ones that conversion will find.  Any failure is a :class:`RuntimeError` with a message
+    to flash -- typically a configured directory that does not exist.
     """
-    material_dir = importlib.resources.files("pregdos") / "data" / "ct_to_material"
-    tables = []
-    for entry in material_dir.iterdir():
-        if entry.name.endswith((".txt", ".csv")):
-            tables.append({"name": entry.name, "label": entry.name})
-    tables.sort(key=lambda t: t["name"])
-    return tables
+    cmd = _dicomexport_cmd_prefix() + ["--list-config", "json", "--config-dir", dicomexport_config_dir()]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_LIST_CONFIG_TIMEOUT)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"dicomexport --list-config did not answer within {_LIST_CONFIG_TIMEOUT} s.") from e
+    except (OSError, subprocess.SubprocessError) as e:
+        raise RuntimeError(f"Cannot run dicomexport ({cmd[0]}): {e}") from e
+    if proc.returncode != 0:
+        message = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(message or f"dicomexport --list-config failed with exit code {proc.returncode}.")
+    try:
+        listing = json.loads(proc.stdout)
+    except ValueError as e:
+        raise RuntimeError("dicomexport --list-config json did not return JSON.") from e
+    if not isinstance(listing, dict):
+        raise RuntimeError("dicomexport --list-config json did not return an object.")
+    return listing
 
 
-def _builtin_beam_models() -> list[dict]:
-    """Return metadata for beam model CSVs bundled with the package."""
-    bm_dir = importlib.resources.files("pregdos") / "data" / "beam_models"
-    models = []
-    for entry in bm_dir.iterdir():
-        if entry.name.endswith(".csv"):
-            models.append({"name": entry.name, "label": entry.name})
-    models.sort(key=lambda m: m["name"], reverse=True)
-    return models
+def _config_choices(listing: dict, kind: str) -> list[dict]:
+    """``{name, path, default}`` for each file of ``kind`` the config dir offers."""
+    entries = listing.get(kind)
+    if not isinstance(entries, list):
+        return []
+    return [
+        {"name": e["name"], "path": e["path"], "default": e.get("default") is True}
+        for e in entries
+        if isinstance(e, dict) and isinstance(e.get("name"), str) and isinstance(e.get("path"), str)
+    ]
 
 
-def _copy_builtin(kind: str, filename: str, dest_dir: Path) -> str:
-    """Copy a bundled beam model / CT-number-to-material table into a study dir.  Return its basename."""
-    safe = secure_filename(filename)
-    src = importlib.resources.files("pregdos") / "data" / kind / safe
-    if not src.is_file():
-        raise FileNotFoundError(f"Unknown built-in {kind} file: {filename}")
-    (dest_dir / safe).write_bytes(src.read_bytes())
-    return safe
+def _config_file(listing: dict, kind: str, name: str) -> Path:
+    """The path of the file called ``name`` in the listing.
+
+    Looked up by name in a listing taken now, never taken from the form: a path from the
+    browser would let a request copy any readable file into a study.
+    """
+    for choice in _config_choices(listing, kind):
+        if choice["name"] == name:
+            return Path(choice["path"])
+    raise ValueError(f"{name!r} is not in the dicomexport configuration directory.")
+
+
+def _copy_into_study(source: Path, dest_dir: Path) -> str:
+    """Copy a beam model / table into the study dir, so the study holds what it was converted
+    with even after the site's directory changes.  Return its basename."""
+    name = secure_filename(source.name)
+    (dest_dir / name).write_bytes(source.read_bytes())
+    return name
+
+
+def _upload_context() -> dict:
+    """What upload.html needs: the choices, and whether they are only dicomexport's examples."""
+    try:
+        listing = dicomexport_listing()
+    except RuntimeError as e:
+        flash(f"Cannot list the dicomexport configuration directory: {e} "
+              "Only uploaded beam models and tables can be used until this is fixed.")
+        listing = {}
+    return {
+        "beam_models": _config_choices(listing, BEAM_MODELS),
+        "material_tables": _config_choices(listing, CT_TO_MATERIAL),
+        "shipped_defaults": listing.get("is_shipped_defaults") is True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -370,13 +413,29 @@ def _upload_study_name(study_zip, study_dir_files) -> str:
     raise ValueError("No study upload provided")
 
 
-def get_structures(root, study_name):
-    """ROI names in the study's RTSTRUCT, or [] if there is none."""
+def _read_rtstruct(root, study_name):
+    """The study's RTSTRUCT without its contours, or None if there is none.
+
+    Only the names and the declared overrides are read: the contours are nearly all of the
+    file (16 MB of an Eclipse RTSTRUCT) and nothing here needs them.
+    """
     rs_path = studies.find_rtstruct(root, study_name)
     if rs_path is None:
-        return []
-    ds = pydicom.dcmread(str(rs_path))
-    return [roi.ROIName for roi in ds.StructureSetROISequence]
+        return None
+    return pydicom.dcmread(str(rs_path),
+                           specific_tags=["StructureSetROISequence", "RTROIObservationsSequence"])
+
+
+def get_structures(root, study_name):
+    """ROI names in the study's RTSTRUCT, or [] if there is none."""
+    ds = _read_rtstruct(root, study_name)
+    return [] if ds is None else [roi.ROIName for roi in ds.StructureSetROISequence]
+
+
+def get_declared_overrides(root, study_name):
+    """Eclipse's overrides in the study's RTSTRUCT, by structure name (#126)."""
+    ds = _read_rtstruct(root, study_name)
+    return {} if ds is None else overrides.declared_overrides(ds)
 
 
 def _dicomexport_cmd_prefix() -> list[str]:
@@ -396,6 +455,28 @@ def _dicomexport_cmd_prefix() -> list[str]:
         return [console]
     # fallback
     return [sys.executable, "-m", "dicomexport.main"]
+
+
+def dicomexport_config_dir() -> str:
+    """The configuration directory every dicomexport call is given with ``--config-dir``.
+
+    ``PREGDOS_DICOMEXPORT_CONFIG_DIR``, else ``[paths] dicomexport_config_dir``, else the
+    examples shipped with the installed dicomexport.  Never empty: without ``--config-dir``
+    dicomexport would search ``$DICOMEXPORT_CONFIG_DIR``, ``~/.config/dicomexport`` and
+    ``/etc/dicomexport``, which belong to the service account or to another installation on
+    the host, and a run could silently use another site's range shifters (#128).
+
+    The shipped examples are those of the dicomexport *imported here*.  A ``[paths]
+    dicomexport`` naming a different installation should come with its own config dir.
+    """
+    configured = config.env_or("PREGDOS_DICOMEXPORT_CONFIG_DIR", config.load().paths.dicomexport_config_dir)
+    if not configured:
+        from dicomexport.config import DEFAULTS_DIR
+        return str(DEFAULTS_DIR)
+    # The config file is validated at startup; the environment variable only here.
+    if not Path(configured).is_absolute():
+        raise RuntimeError(f"The dicomexport configuration directory {configured!r} is not an absolute path.")
+    return configured
 
 
 @app.context_processor
@@ -690,10 +771,63 @@ def _setup_page(root, study_name, beam_model_name, material_table_name, form=Non
         output_basename=form.get("output_basename") or "topas",
         nstat=form.get("nstat") or "1000000",
         nstat_custom=form.get("nstat_custom") or "",
+        single_batch=bool(form.get("single_batch")),
+        sources_mode=config.load().conversion.spot_mode == "sources",
+        batches=config.BATCHES,
         # Checked by default on a fresh setup page; on a refusal, whatever was submitted -- the
         # form has to show the state the message is complaining about.
         keep_infield=bool(form.get("keep_infield")) if form else True,
+        # The ticked structures per scorer.  Losing them on a refusal -- e.g. of an override --
+        # turned the corrected resubmission into a run without out-of-field scoring.
+        scored={sc["id"]: set(getattr(form, "getlist", lambda _: [])(f"score_{sc['id']}"))
+                for sc in SCORER_DEFS},
+        **_override_context(form, get_declared_overrides(root, study_name)),
     )
+
+
+#: Shown at conversion when a run both scores structures and overrides materials, and as a hint
+#: on the setup page.  Only a structure an override lies inside is affected; the report names
+#: those once the structure masks exist (structure_metrics ``override_overlaps``).
+OVERRIDE_SCORING_NOTE = (
+    "With material overrides, a scored structure's dose (DoseToMedium) is approximate where an "
+    "override lies inside it: its mass is computed from the CT numbers, not from the override's "
+    "material. Affected structures are named with the results.")
+
+
+def _offered_materials() -> tuple[str | None, list[str], list[str]]:
+    """``(materials_file, site, offered)``: the site's materials.txt, the names it defines, and
+    every material an override may use."""
+    try:
+        materials_file = overrides.materials_file_of(dicomexport_listing())
+    except RuntimeError:
+        materials_file = None
+    site = overrides.site_materials(materials_file)
+    return materials_file, site, [*site, *overrides.BUILTIN_MATERIALS, *overrides.GEANT4_MATERIALS]
+
+
+def _override_context(form, declared) -> dict:
+    """The material-override card: the materials on offer, and the rows to show.
+
+    Without a readable config dir only TOPAS's built-in and Geant4's materials are offered; the
+    upload page has already said why.  A fresh page starts with a row for each structure
+    Eclipse overrides (#126); on a refusal the submitted rows come back.  Either way one spare
+    row follows, and each row of an Eclipse structure says what Eclipse declared.
+    """
+    _, site, offered = _offered_materials()
+    if "override_roi" in form:
+        rows = [overrides.Row(roi, material, f"Eclipse: {declared[roi]}" if roi in declared else "")
+                for roi, material in overrides.submitted_rows(form) if roi or material]
+    else:
+        rows = overrides.initial_rows(declared, config.load().overrides.eclipse_materials, offered)
+    return {
+        "site_materials": site,
+        "builtin_materials": overrides.BUILTIN_MATERIALS,
+        "geant4_materials": overrides.GEANT4_MATERIALS,
+        "in_dropdown": set(site) | set(overrides.BUILTIN_MATERIALS),
+        "other_value": overrides.OTHER,
+        "override_scoring_note": OVERRIDE_SCORING_NOTE,
+        "override_rows": rows + [overrides.Row()],
+    }
 
 
 @app.route("/upload", methods=["GET", "POST"])
@@ -701,21 +835,37 @@ def upload_files():
     folder_err = ensure_studies_root()
     if folder_err:
         flash(folder_err)
-        return render_template("upload.html",
-                               builtin_beam_models=_builtin_beam_models(),
-                               builtin_material_tables=_builtin_material_tables()), 500
+        return render_template("upload.html", **_upload_context()), 500
 
     if request.method == "POST":
         study_zip = request.files.get("study_zip")
         study_dir_files = [f for f in (request.files.getlist("study_dir") or []) if f and f.filename]
 
-        # Beam model / CT-number-to-material table: either a bundled file or an upload
+        # Beam model / CT-number-to-material table: a file of the site's dicomexport config
+        # dir, named, or an upload.  "" is the "choose one" placeholder.
         bm_source = request.form.get("beam_model_source", "upload")
         beam_model = request.files.get("beam_model")
         material_table_source = request.form.get("material_table_source", "upload")
         material_table = request.files.get("material_table")
 
         # Validate input before creating anything on disk
+        if not bm_source:
+            flash("Choose a beam model.")
+            return redirect(request.url)
+        if not material_table_source:
+            flash("Choose a CT-number-to-material table.")
+            return redirect(request.url)
+        bm_file = table_file = None
+        if bm_source != "upload" or material_table_source != "upload":
+            try:
+                listing = dicomexport_listing()
+                if bm_source != "upload":
+                    bm_file = _config_file(listing, BEAM_MODELS, bm_source)
+                if material_table_source != "upload":
+                    table_file = _config_file(listing, CT_TO_MATERIAL, material_table_source)
+            except (RuntimeError, ValueError) as e:
+                flash(str(e))
+                return redirect(request.url)
         if bm_source == "upload" and not (beam_model and beam_model.filename):
             flash("Beam model required — choose a built-in model or upload one.")
             return redirect(request.url)
@@ -727,6 +877,20 @@ def upload_files():
             return redirect(request.url)
         if (study_zip and study_zip.filename) and study_dir_files:
             flash("Please choose either ZIP or Folder, not both.")
+            return redirect(request.url)
+        # The CT-number-to-material table decides every density.  One that TOPAS would read
+        # out of bounds runs without an error and gives undefined densities, so check it now,
+        # as it is chosen, not when the run is submitted (#131).
+        if table_file is not None:
+            table_name, table_bytes = table_file.name, table_file.read_bytes()
+        elif material_table is not None:           # an upload, required above
+            table_name, table_bytes = material_table.filename, material_table.read()
+            material_table.stream.seek(0)          # saved into the study below
+        else:
+            table_name, table_bytes = "", b""
+        if table_problems := ct_table.problems_in_bytes(table_bytes):
+            for problem in table_problems:
+                flash(f"CT-number-to-material table {table_name} cannot be used: {problem}.")
             return redirect(request.url)
 
         root = studies_root()
@@ -758,14 +922,14 @@ def upload_files():
             # Copy beam model and CT-number-to-material table into the study so it is self-contained:
             # deleting the study removes every input it depends on, and the generated
             # TOPAS file can reference the CT-number-to-material table by a relative path.
-            if bm_source == "upload":
+            if bm_file is None:
                 beam_model_name = save_single_file(beam_model, study_path)
             else:
-                beam_model_name = _copy_builtin("beam_models", bm_source, study_path)
-            if material_table_source == "upload":
+                beam_model_name = _copy_into_study(bm_file, study_path)
+            if table_file is None:
                 material_table_name = save_single_file(material_table, study_path)
             else:
-                material_table_name = _copy_builtin("ct_to_material", material_table_source, study_path)
+                material_table_name = _copy_into_study(table_file, study_path)
 
             structures = get_structures(root, study_name)
             if not structures:
@@ -800,26 +964,43 @@ def upload_files():
         # Render the combined setup page (structure inclusion + scorer selection)
         return _setup_page(root, study_name, beam_model_name, material_table_name,
                            structures=structures)
-    return render_template(
-        "upload.html",
-        builtin_beam_models=_builtin_beam_models(),
-        builtin_material_tables=_builtin_material_tables(),
-    )
+    return render_template("upload.html", **_upload_context())
 
 
 def run_conversion(params: ConversionParameters, selected_structures: list) -> ConversionResult:
     """Run dicomexport inside the run directory and collect the TOPAS files it wrote.
 
     dicomexport is invoked with ``cwd=params.run_dir`` and relative arguments, so the
-    ``DicomDirectory`` and ``includeFile`` paths it bakes into the generated TOPAS input
-    are relative and already correct for a TOPAS run started from that same directory.
-    Nothing needs to be rewritten afterwards, and the study directory stays movable.
+    ``DicomDirectory`` path it bakes into the generated TOPAS input is relative and already
+    correct for a TOPAS run started from that same directory.  The material table is pasted
+    into each field (``-S``), so TOPAS never reads it from disk.  Nothing needs to be
+    rewritten afterwards, and the study directory stays movable.
 
     Because the run directory was created empty moments ago, its ``*_field*.txt`` files
     are exactly this conversion's output -- no cross-directory search, no deduplication,
     and no way for a previous run's files to leak in (issue #41).
     """
-    cmd = _dicomexport_cmd_prefix() + ["-b", params.beam_model_rel, "-s", params.material_table_rel]
+    # -S pastes the table into each field, with its SHA-256, so the run's provenance and the
+    # structure masses read what TOPAS reads (pregdos.topas_include).  It must be the first
+    # -S: that is how the readers find it.  Once any -s/-S is given, dicomexport adds no
+    # table of its own, so the table is always named.
+    cmd = _dicomexport_cmd_prefix() + ["-b", params.beam_model_rel, "-S", params.material_table_rel]
+    # Material overrides (#126): the site's materials pasted after the table -- never before
+    # it, the readers take the first pasted file as the table -- then one option per
+    # structure, in the order given, since TOPAS uses the first where structures overlap.
+    if params.material_overrides and params.materials_file:
+        cmd += ["-S", params.materials_file]
+    for roi, material in params.material_overrides:
+        cmd += ["--material-override", f"{roi}={material}"]
+    # [conversion] spot_mode (#130) and the batch count, always passed explicitly so a change
+    # of dicomexport's defaults can never change what PregDos computes.  Sources mode runs
+    # BATCHES batches, whose spread is the uncertainty, or 1 when asked for a single batch.  dicomexport
+    # refuses more than one in time-feature mode.  Progress, plan scaling and the uncertainty
+    # read the resulting layout from the field's header.
+    spot_mode = config.load().conversion.spot_mode
+    batches = 1 if (spot_mode != "sources" or params.single_batch) else config.BATCHES
+    cmd += ["--spot-mode", spot_mode, "--batches", str(batches)]
+    cmd += ["--config-dir", dicomexport_config_dir()]
     if params.field_nr is not None:
         cmd += ["-f", str(params.field_nr)]
     if params.nstat is not None:
@@ -837,7 +1018,7 @@ def run_conversion(params: ConversionParameters, selected_structures: list) -> C
         )
     except subprocess.CalledProcessError as e:
         out = (e.stdout or "").strip()
-        err = (e.stderr or str(e)).strip()
+        err = _without_shipped_defaults_note(e.stderr or str(e)).strip()
         msg = "".join([part for part in (err, out) if part])
         raise RuntimeError(f"Error running dicomexport: {msg}") from e
     except subprocess.TimeoutExpired as e:
@@ -894,6 +1075,12 @@ def convert():
     if not output_basename or output_basename != raw_basename or "." in output_basename:
         flash("Invalid output basename — use letters, digits, underscores, and hyphens only.")
         return redirect(url_for("upload_files"))
+    if output_basename.lower() == rtdose.FIELD_DOSE_PREFIX.removesuffix("_field").lower():
+        # The RTDOSE export writes rtdose_field<nn>.dcm, which is what TOPAS would name the
+        # dose cube of field <nn> under this basename: the export would overwrite the cubes.
+        # Case-insensitively, since "RTDOSE" is the same file on a case-insensitive file system.
+        flash(f'The output basename "{output_basename}" is reserved for the RTDOSE export; choose another.')
+        return _setup_page(root, study_name, beam_model_name, material_table_name, request.form)
 
     # The scorer config is built here, before anything exists on disk, because one combination
     # of it and the structure matrix produces nothing at all: no structures ticked strips every
@@ -907,6 +1094,19 @@ def convert():
               "Tick the in-field dose scorer to get a dose cube, or at least one quantity "
               "for one structure to get scorer results.")
         return _setup_page(root, study_name, beam_model_name, material_table_name, request.form)
+
+    # Material overrides (#126), checked against what the setup page offered, before anything
+    # exists on disk.  The config dir is listed only when a row has a material.
+    material_overrides: list = []
+    materials_file = None
+    if any(material for _, material in overrides.submitted_rows(request.form)):
+        materials_file, _, offered = _offered_materials()
+        try:
+            material_overrides = overrides.from_form(
+                request.form, get_structures(root, study_name), offered)
+        except (ValueError, StudyError) as e:
+            flash(str(e))
+            return _setup_page(root, study_name, beam_model_name, material_table_name, request.form)
 
     try:
         study_path = studies.study_path(root, study_name)
@@ -924,15 +1124,20 @@ def convert():
         output_basename=output_basename,
         field_nr=None,
         nstat=nstat,
+        single_batch=bool(request.form.get("single_batch")),
+        material_overrides=material_overrides,
+        materials_file=materials_file if material_overrides else None,
     )
 
     try:
         result = run_conversion(params, selected_structures)
     except RuntimeError as err:
-        # A failed conversion leaves nothing behind: the run dir is empty or partial.
+        # A failed conversion leaves nothing behind: the run dir is empty or partial.  Back to
+        # the setup page with the choices kept: most refusals name one of them -- a structure
+        # an override cannot use, say (#126) -- and the study itself is fine.
         shutil.rmtree(run_dir, ignore_errors=True)
         flash(str(err))
-        return redirect(url_for("upload_files"))
+        return _setup_page(root, study_name, beam_model_name, material_table_name, request.form)
 
     # Inject the requested out-of-field scorer blocks, and optionally drop the in-field
     # DoseToWater scorer that dicomexport always writes.  Validated above, before the run dir.
@@ -955,11 +1160,23 @@ def convert():
     prepass = None
     if selected_structures:
         try:
-            prepass = structure_metrics.write_mask_prepass(run_dir / result.out_files[0], selected_structures)
+            prepass = structure_metrics.write_mask_prepass(
+                run_dir / result.out_files[0], selected_structures,
+                overridden=[roi for roi, _ in material_overrides])
         except Exception as err:
             shutil.rmtree(run_dir, ignore_errors=True)
             flash(f"Structure mask pre-pass setup failed: {err}")
             return redirect(url_for("upload_files"))
+
+    for warning in _batch_statistics_warnings(run_dir, result.out_files):
+        flash(warning)
+    # dicomexport's warnings: spots rounded away, an RTSTRUCT's own overrides that no option
+    # covers (#126).  They were discarded on success before.
+    for line in _without_shipped_defaults_note(result.stderr or "").splitlines():
+        if line.strip():
+            flash(f"dicomexport: {_in_pregdos_terms(line.strip())}")
+    if material_overrides and selected_structures:
+        flash(OVERRIDE_SCORING_NOTE)
 
     # Only now is there a run directory that survived conversion, scorer injection and the
     # mask pre-pass.  Every failure above deletes it again.
@@ -974,6 +1191,58 @@ def convert():
         run_id=result.run_id,
         selected_structures=result.selected_structures,
     )
+
+
+# dicomexport prints this whenever it uses its shipped examples.  The upload page already
+# says so, prominently, so it is not repeated with every conversion.
+_SHIPPED_DEFAULTS_NOTE = "Using the defaults shipped with dicomexport"
+
+
+# dicomexport's warnings speak its command line; the user here has a form.  "-N" is the number
+# of primaries asked for, and "lower --batches" is the Single batch checkbox: the only batch
+# counts PregDos runs are 10 and 1.
+_CLI_TO_FORM = (
+    (re.compile(r"\blower --batches\b"), "tick Single batch (no error bars)"),
+    (re.compile(r"\bIncrease -N\b"), "Request more primaries"),
+    (re.compile(r"\bat -N (\d+)"), r"at \1 primaries"),
+    (re.compile(r"\bfor -N (\d+)"), r"for \1 requested"),
+)
+
+
+def _in_pregdos_terms(line: str) -> str:
+    """A dicomexport warning, in the terms of the setup page rather than of its options."""
+    for pattern, replacement in _CLI_TO_FORM:
+        line = pattern.sub(replacement, line)
+    return line
+
+
+def _without_shipped_defaults_note(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith(_SHIPPED_DEFAULTS_NOTE))
+
+
+#: Protons per spot per batch below which a batched field is warned about.  The lowest
+#: tested: 20 000 primaries over 659 spots in 10 batches still matched time-feature mode
+#: within its uncertainty (#130).  Spot weights are rounded per batch, so fewer can distort
+#: the field.
+MIN_PROTONS_PER_SPOT_PER_BATCH = 3
+
+
+def _batch_statistics_warnings(run_dir: Path, out_files: list) -> list[str]:
+    """One message per batched field with fewer primaries than its batches were tested with."""
+    messages = []
+    for name in out_files:
+        layout = results.parse_plan_scaling(run_dir / name)
+        if layout is None or layout.spot_mode != "sources" or layout.runs < 2 or layout.spots < 1:
+            continue
+        needed = MIN_PROTONS_PER_SPOT_PER_BATCH * layout.spots * layout.runs
+        if layout.requested_histories < needed:
+            messages.append(
+                f"{name}: {layout.requested_histories:,} primaries over {layout.spots:,} spots in "
+                f"{layout.runs} batches is fewer than {MIN_PROTONS_PER_SPOT_PER_BATCH} protons per "
+                f"spot per batch. Spot weights are rounded per batch, so the field may be "
+                f"distorted. Use at least {needed:,} primaries, or tick Single batch (no error bars)."
+            )
+    return messages
 
 
 @app.route("/download/<study>/<run_id>/<filename>")
@@ -996,9 +1265,10 @@ def download_file(study, run_id, filename):
 def submit_job():
     """Execute each generated TOPAS file, in place, in the run directory.
 
-    The files are *not* copied anywhere.  Their ``DicomDirectory`` and ``includeFile``
-    entries are relative to the run directory they were generated in, so TOPAS must run
-    with that directory as its working directory (see :mod:`pregdos.executor`).
+    The files are *not* copied anywhere.  Their ``DicomDirectory`` entry (and the
+    ``includeFile`` of a field converted by dicomexport 1.x) is relative to the run directory
+    they were generated in, so TOPAS must run with that directory as its working directory
+    (see :mod:`pregdos.executor`).
     """
     root = studies_root()
     study_name = request.form["study_name"]
@@ -1239,6 +1509,8 @@ def _live_state(run_dir: Path):
     progress = [
         {
             "field": p.topas_file,
+            # The TPS's name for the field, so it can be recognised (#129).
+            "beam_name": results.field_beam_name(run_dir / p.topas_file),
             "status": p.status,
             "percent": round(100 * p.fraction),
             "histories_done": p.histories_done,
@@ -1246,6 +1518,9 @@ def _live_state(run_dir: Path):
             "runs_started": p.runs_started,
             "total_runs": p.total_runs,
             "failure": p.failure,
+            "unit": p.unit,
+            "initialising": p.initialising,
+            "started": p.started,
         }
         for p in field_progress
     ]
@@ -1264,7 +1539,7 @@ def _render_results(run_dir: Path, study: str, run_id: str, status: str):
     page the user opened.
     """
     rows, warnings, plan_fractions = reporting.result_rows(run_dir, study, studies_root())
-    groups = reporting.group_rows(rows)
+    groups = reporting.group_rows(rows, results.run_fields(run_dir))
     # Only a finished run has every field's cube, and only a run that scored the in-field grid
     # has any cube at all.  This is independent of `groups`: a dose-only run -- no structures
     # ticked -- has a cube and no scorer rows, and used to be reported as having produced
@@ -1289,11 +1564,11 @@ def _render_results(run_dir: Path, study: str, run_id: str, status: str):
         # A completed run can still be short a cube; the export would then sum what is there and
         # call it the whole course.  Say so next to the button, not only at download time.
         missing_cubes=rtdose.missing_field_cubes(run_dir) if can_export_dose else [],
-        dose_bundle_name=rtdose.PLAN_IMPORT_BUNDLE_NAME,
+        dose_bundle_name=rtdose.IMPORT_BUNDLE_NAME,
         # The UIDs are minted when the export is built, which happens on first download and
         # not here -- rewriting six 11M-voxel grids on a page render would stall it.  So they
         # are shown once they exist, and the page says so in the meantime.
-        dose_identity=rtdose.plan_dose_identity(run_dir) if can_export_dose else None,
+        dose_identity=rtdose.import_identity(run_dir) if can_export_dose else None,
     )
     return html, warnings
 
@@ -1341,7 +1616,9 @@ def run_detail(study, run_id):
         return redirect(url_for("list_studies"))
     executor.start_next_local_run(studies_root())
 
-    files = [{"name": p.name, "size": p.stat().st_size} for p in sorted(run_dir.iterdir()) if p.is_file()]
+    # Dot-files are PregDos's own bookkeeping (the RTDOSE export lock), not results.
+    files = [{"name": p.name, "size": p.stat().st_size} for p in sorted(run_dir.iterdir())
+             if p.is_file() and not p.name.startswith(".")]
     info, status, etr, progress = _live_state(run_dir)
     results_html, warnings = _render_results(run_dir, study, run_id, status)
     for w in warnings:
@@ -1402,7 +1679,7 @@ def download_pdf_report(study, run_id):
     pdf = report_pdf.build_report_pdf(
         study=study,
         run_id=run_id,
-        groups=reporting.group_rows(rows),
+        groups=reporting.group_rows(rows, results.run_fields(run_dir)),
         warnings=warnings,
         plan_fractions=plan_fractions,
         plan_uid=results.plan_uid(run_dir),
@@ -1736,7 +2013,7 @@ def download_full_run(study, run_id):
 
 @app.route("/studies/<study>/<run_id>/rtdose")
 def download_rtdose_bundle(study, run_id):
-    """Build (once) and serve the TPS import bundle: the PLAN dose plus the RTPLAN it needs.
+    """Build (once) and serve the Eclipse import bundle: an RTPLAN copy and every dose (#125).
 
     The cubes are built on demand rather than at render time.  Rewriting six 11M-voxel grids
     would stall the results page, and it is only worth doing for someone who actually wants to
@@ -1759,14 +2036,14 @@ def download_rtdose_bundle(study, run_id):
     for warning in warnings:
         flash(f"Could not build the RTDOSE export: {warning}")
 
-    if not (run_dir / rtdose.PLAN_IMPORT_BUNDLE_NAME).is_file():
+    if not (run_dir / rtdose.IMPORT_BUNDLE_NAME).is_file():
         if not warnings:
             flash("This run has no in-field dose cube to export. Re-convert with the in-field "
                   "dose scorer enabled.")
         return redirect(url_for("run_detail", study=study, run_id=run_id))
 
     audit.event("download.rtdose", study=study, run=run_id)
-    return send_from_directory(str(run_dir), rtdose.PLAN_IMPORT_BUNDLE_NAME, as_attachment=True)
+    return send_from_directory(str(run_dir), rtdose.IMPORT_BUNDLE_NAME, as_attachment=True)
 
 
 def main(argv: list[str] | None = None):

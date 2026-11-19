@@ -5,6 +5,12 @@ normalisation is not useful for absolute structure dose.  PregDos therefore runs
 cheap TOPAS pre-pass that writes a native-CT-grid mask for each scored RT structure,
 then combines that mask with the CT Hounsfield units and the HU-to-material table
 from the generated TOPAS input.
+
+The mass comes from the CT numbers alone.  Where a material override (#126) lies inside a
+scored structure, TOPAS uses the override's material there and the mass does not know it.
+The pre-pass therefore also masks each overridden structure, and the metrics record how much
+of every scored structure each override covers (``override_overlaps``), so the report can say
+which masses are approximate.
 """
 
 from __future__ import annotations
@@ -19,7 +25,7 @@ from typing import Iterable
 import numpy as np
 import pydicom
 
-from . import portable
+from . import ct_table, portable, provenance, results, topas_include
 from .textio import read_text_lenient
 
 
@@ -83,19 +89,51 @@ def _copy_parameters(source: str, names: Iterable[str]) -> list[str]:
     return out
 
 
-def write_prepass_input(run_dir: str | Path, reference_topas: str | Path, structures: Iterable[str]) -> str | None:
+def _unique_safe_names(names: Iterable[str]) -> dict[str, str]:
+    """A file- and parameter-safe name for each structure, distinct across all of them.
+
+    Sanitising alone maps "Femoral Head" and "Femoral-Head" to the same name, and TOPAS stops
+    on the scorer then defined twice (Codex review of #132).  A clash gets a counter; the
+    pre-pass file records which mask belongs to which structure (:func:`_prepass_structures`).
+    """
+    out: dict[str, str] = {}
+    taken: set[str] = set()
+    for name in names:
+        safe = base = _sanitize_name(name)
+        counter = 2
+        while safe.lower() in taken:          # case-insensitive file systems, too
+            safe = f"{base}_{counter}"
+            counter += 1
+        taken.add(safe.lower())
+        out[name] = safe
+    return out
+
+
+def write_prepass_input(run_dir: str | Path, reference_topas: str | Path, structures: Iterable[str],
+                        overridden: Iterable[str] = ()) -> str | None:
     """Write the TOPAS structure mask pre-pass input.
 
     Returns the pre-pass filename when at least one structure was requested, otherwise None.
+    ``overridden`` structures are masked too, but only alongside scored ones: their masks
+    serve only to find where an override lies inside a scored structure.
     """
-    names = sorted({s for s in structures if s})
-    if not names:
+    scored = {s for s in structures if s}
+    if not scored:
         return None
+    names = sorted(scored | {s for s in overridden if s})
 
     run_dir = Path(run_dir)
     source = read_text_lenient(reference_topas)
+    # The material table, pasted by dicomexport >= 2.0, is copied as a whole and exactly
+    # once: TOPAS stops on a parameter defined twice in one file.  Parameters are then read
+    # from the rest of the file only, so a line inside the table -- an `includeFile` of its
+    # own, say -- is never copied a second time.  The other pasted files (materials for
+    # overrides, free TOPAS code) are left out: the masks need the geometry and the table,
+    # and free code could add sources or scorers to a pass that must stay cheap.
+    table = topas_include.material_table(source)
+    own = topas_include.without_inline_includes(source)
     parameters = [
-        "includeFile",
+        "includeFile",          # dicomexport 1.x named the table instead of pasting it
         "Rt/Plan/IsoCenterX",
         "Rt/Plan/IsoCenterY",
         "Rt/Plan/IsoCenterZ",
@@ -127,7 +165,8 @@ def write_prepass_input(run_dir: str | Path, reference_topas: str | Path, struct
         "# PregDos RTSTRUCT mask pre-pass",
         f"# Generated from {Path(reference_topas).name}",
         "",
-        *_copy_parameters(source, parameters),
+        *([table.block.rstrip("\n"), ""] if table else []),
+        *_copy_parameters(own, parameters),
         "",
         'i:Ts/NumberOfThreads = 1',
         'b:Ts/DumpParameters = "False"',
@@ -150,8 +189,7 @@ def write_prepass_input(run_dir: str | Path, reference_topas: str | Path, struct
         "i:So/PregDosMaskDummy/NumberOfHistoriesInRun = 1",
         "",
     ]
-    for structure in names:
-        safe = _sanitize_name(structure)
+    for structure, safe in _unique_safe_names(names).items():
         scorer = f"PregDosMask_{safe}"
         lines += [
             f's:Sc/{scorer}/Quantity = "StepCount"',
@@ -169,14 +207,28 @@ def write_prepass_input(run_dir: str | Path, reference_topas: str | Path, struct
     return PREPASS_FILE
 
 
-def write_mask_prepass(reference_topas: str | Path, structures: Iterable[str]) -> str | None:
+def write_mask_prepass(reference_topas: str | Path, structures: Iterable[str],
+                       overridden: Iterable[str] = ()) -> str | None:
     """Compatibility wrapper used by the web route.
 
     ``reference_topas`` is one generated field input inside the run directory.  The pre-pass
     lands next to it and reuses its DICOM and HU-table paths.
     """
     reference = Path(reference_topas)
-    return write_prepass_input(reference.parent, reference, structures)
+    return write_prepass_input(reference.parent, reference, structures, overridden)
+
+
+def _run_overrides(run_dir: Path) -> list[tuple[str, str]]:
+    """``(structure, material)`` of the run's overrides, from a generated field input's header.
+
+    Every field of a run has the same overrides; dicomexport records each as
+    ``# MATERIAL_OVERRIDE: ROI=MATERIAL``.
+    """
+    for path in results.field_inputs(run_dir).values():
+        if (record := provenance.of_field(path)) is not None:
+            pairs = (o.rsplit("=", 1) for o in record.material_overrides if "=" in o)
+            return [(roi.strip(), material.strip()) for roi, material in pairs]
+    return []
 
 
 @dataclass(slots=True)
@@ -221,54 +273,24 @@ def _load_ct(dicom_dir: Path) -> CTData:
     return CTData(hu=hu, voxel_volume_cm3=voxel_volume_cm3, dicom_directory=dicom_dir)
 
 
-_PARAM_LINE_RE = re.compile(r"^\s*\w+:[^=\n]+=", re.MULTILINE)
-_FLOAT_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
+def _density_from_hu(hu: np.ndarray, material_table: topas_include.InlineInclude | Path) -> np.ndarray:
+    """Mass density per voxel, from the table pasted into the pre-pass or, for a run
+    converted by dicomexport 1.x, the file its ``includeFile`` names.
 
-
-def _array_values(text: str, parameter: str) -> list[float]:
-    match = re.search(rf"^\s*\w+:{re.escape(parameter)}\s*=\s*", text, re.MULTILINE)
-    if not match:
-        raise StructureMetricsError(f"{parameter} missing from HU table")
-    next_param = _PARAM_LINE_RE.search(text, match.end())
-    raw = text[match.end() : next_param.start() if next_param else len(text)]
-    raw = "\n".join(line.split("#", 1)[0] for line in raw.splitlines())
-    values = [float(x) for x in _FLOAT_RE.findall(raw)]
-    if not values:
-        raise StructureMetricsError(f"{parameter} has no numeric values")
-    count = int(values[0])
-    payload = values[1:]
-    if len(payload) < count:
-        raise StructureMetricsError(f"{parameter} expected {count} values, found {len(payload)}")
-    return payload[:count]
-
-
-def _density_from_hu(hu: np.ndarray, material_table: Path) -> np.ndarray:
-    text = read_text_lenient(material_table)
-    if '"Schneider"' not in text:
-        raise StructureMetricsError(f"unsupported HU material converter in {material_table}")
-
-    boundaries = np.asarray(_array_values(text, "Ge/Patient/SchneiderHounsfieldUnitSections"), dtype=float)
-    offsets = np.asarray(_array_values(text, "Ge/Patient/SchneiderDensityOffset"), dtype=float)
-    factors = np.asarray(_array_values(text, "Ge/Patient/SchneiderDensityFactor"), dtype=float)
-    factor_offsets = np.asarray(_array_values(text, "Ge/Patient/SchneiderDensityFactorOffset"), dtype=float)
-    corrections = np.asarray(_array_values(text, "Ge/Patient/DensityCorrection"), dtype=float)
-    if not (len(boundaries) == len(offsets) + 1 == len(factors) + 1 == len(factor_offsets) + 1):
-        raise StructureMetricsError(f"inconsistent Schneider density sections in {material_table}")
-
-    hu_min = boundaries[0]
-    hu_max = boundaries[-1] - 1
-    hu_clipped = np.clip(hu, hu_min, hu_max)
-    section = np.searchsorted(boundaries[1:], hu_clipped, side="right")
-    section = np.clip(section, 0, len(offsets) - 1)
-
-    density = offsets[section] + factors[section] * (factor_offsets[section] + hu_clipped)
-
-    correction_origin = hu_min if int(round(boundaries[-1] - boundaries[0])) == len(corrections) else -1000.0
-    correction_max = correction_origin + len(corrections) - 1
-    corr_index = np.rint(
-        np.clip(hu_clipped, correction_origin, correction_max) - correction_origin
-    ).astype(int)
-    return density * corrections[corr_index]
+    The table is checked as TOPAS would read it (:mod:`pregdos.ct_table`, #131): the correction
+    vector starts at the table's own ``MinImagingValue``, not at a guess.  A table TOPAS would
+    read out of bounds gives no mass at all rather than one that disagrees with the run.
+    """
+    if isinstance(material_table, topas_include.InlineInclude):
+        text = material_table.content
+        name = material_table.path
+    else:
+        text = read_text_lenient(material_table)
+        name = str(material_table)
+    try:
+        return ct_table.parse(text).density(hu)
+    except ct_table.TableError as e:
+        raise StructureMetricsError(f"CT-number-to-material table {name}: {e}") from e
 
 
 def _resolve_topas_path(run_dir: Path, value: str | None) -> Path:
@@ -323,7 +345,8 @@ def compute_metrics(run_dir: str | Path) -> dict:
         raise StructureMetricsError(f"{PREPASS_FILE} not found")
     text = read_text_lenient(prepass)
     dicom_dir = _resolve_topas_path(run_dir, parameter_value(text, "Ge/Patient/DicomDirectory"))
-    material_table = _resolve_topas_path(run_dir, parameter_value(text, "includeFile"))
+    pasted = topas_include.material_table(text)
+    material_table = pasted or _resolve_topas_path(run_dir, parameter_value(text, "includeFile"))
     ct = _load_ct(dicom_dir)
     densities = _density_from_hu(ct.hu, material_table)
 
@@ -335,7 +358,8 @@ def compute_metrics(run_dir: str | Path) -> dict:
         "source": "TOPAS SetBinToMinusOneIfNotInRTStructure pre-pass",
         "prepass_file": PREPASS_FILE,
         "dicom_directory": str(dicom_dir),
-        "material_table": str(material_table),
+        "material_table": pasted.path if pasted else str(material_table),
+        "material_table_sha256": pasted.sha256 if pasted else "",
         "ct_shape_zyx": list(ct.hu.shape),
         "voxel_volume_cm3": ct.voxel_volume_cm3,
         "patient": {
@@ -347,29 +371,59 @@ def compute_metrics(run_dir: str | Path) -> dict:
         "structures": {},
     }
 
-    for structure, safe in _prepass_structures(run_dir):
+    def read_mask(safe: str) -> np.ndarray | None:
         mask_path = run_dir / f"structure_mask_{safe}.bin"
         if not mask_path.is_file() or mask_path.stat().st_size == 0:
-            continue
+            return None
         mask_raw = np.fromfile(mask_path, dtype="<f8")
         if mask_raw.size != ct.hu.size:
             raise StructureMetricsError(f"{mask_path.name} has {mask_raw.size} bins, expected {ct.hu.size}")
-        mask = mask_raw.reshape(ct.hu.shape) >= 0
+        return mask_raw.reshape(ct.hu.shape) >= 0
+
+    # Where overrides overlap, TOPAS uses the first one given, which is the header's order.  So
+    # each override's mask is reduced to the voxels it actually decides: an enclosing water
+    # override listed after a steel implant does not claim the implant's voxels (Codex review
+    # of #132).  The masks are kept for the whole loop, as booleans (one byte a voxel).
+    masked = dict(_prepass_structures(run_dir))
+    override_masks = []
+    claimed = None
+    for roi, material in _run_overrides(run_dir):
+        if roi not in masked or (mask := read_mask(masked[roi])) is None:
+            continue
+        override_masks.append((roi, material, mask if claimed is None else mask & ~claimed))
+        claimed = mask.copy() if claimed is None else claimed | mask
+
+    for structure, safe in _prepass_structures(run_dir):
+        mask = read_mask(safe)
+        if mask is None:
+            continue
         voxels = int(mask.sum())
         volume = voxels * ct.voxel_volume_cm3
         mass = float(densities[mask].sum() * ct.voxel_volume_cm3) if voxels else 0.0
         payload["structures"][structure] = {
-            "mask_file": mask_path.name,
+            "mask_file": f"structure_mask_{safe}.bin",
             "voxel_count": voxels,
             "volume_cm3": volume,
             "mass_g": mass,
             "average_density_g_cm3": mass / volume if volume else math.nan,
             "patient_to_structure_mass_ratio": patient_mass / mass if mass else math.nan,
             "patient_to_structure_volume_ratio": patient_volume / volume if volume else math.nan,
+            "override_overlaps": _override_overlaps(mask, override_masks, ct.voxel_volume_cm3),
         }
 
     _write_metrics(run_dir, payload)
     return payload
+
+
+def _override_overlaps(mask: np.ndarray, override_masks, voxel_volume_cm3: float) -> list[dict]:
+    """How much of a structure each override covers, for those that cover any of it."""
+    overlaps = []
+    for roi, material, override in override_masks:
+        voxels = int(np.count_nonzero(mask & override))
+        if voxels:
+            overlaps.append({"override": roi, "material": material, "voxel_count": voxels,
+                             "volume_cm3": voxels * voxel_volume_cm3})
+    return overlaps
 
 
 def _write_metrics(run_dir: Path, payload: dict) -> None:

@@ -48,6 +48,16 @@
 ## wedge a web worker.
 # dicomexport_timeout = 900
 
+## The site's dicomexport configuration directory: beam_models/, ct_to_material/,
+## range_shifters.csv and materials.txt.  Create it once with
+##     dicomexport --init-config /etc/dicomexport
+## which never overwrites a file, then replace the examples with this site's calibration.
+## Must be an absolute path.  PregDos always passes it as --config-dir, so dicomexport never
+## searches ~/.config/dicomexport or /etc/dicomexport on its own.  Empty means the examples
+## shipped with dicomexport -- DCPT's data, not this site's.  The PREGDOS_DICOMEXPORT_CONFIG_DIR
+## environment variable overrides this.
+# dicomexport_config_dir = ""
+
 [scheduler]
 
 ## SLURM submission.  Every string below is EMPTY BY DEFAULT, and empty means the flag is
@@ -213,3 +223,27 @@
 ## airgapped site: the request can never succeed and costs a timeout on the first page load
 ## of each worker process.
 # update_check = true
+
+[conversion]
+
+## How dicomexport lays out each treatment field for TOPAS.
+##   "sources"      one TOPAS source per spot.  Each field runs as 10 identical batches, each
+##                  with 1/10 of every spot's protons, and the spread of the 10 batch results
+##                  gives the statistical uncertainty (batch means).  "Single batch" on the
+##                  setup page runs one batch and reports no uncertainty.
+##   "timefeature"  one Geant4 run per spot, stepping one source through the spots, as
+##                  PregDos did before dicomexport 2.0; kept to cross-check sources mode.  Its
+##                  uncertainty is per proton, which counts the spread between spots as noise
+##                  and so comes out larger than batch means.
+# spot_mode = "sources"
+
+[overrides]
+
+## Material overrides (#126).  Eclipse names the material of an overridden structure in the
+## RTSTRUCT (MaterialID).  Map such a name to a TOPAS material here, and the setup page
+## preselects it for that structure; the user can still pick another one, or none.  The
+## material must be one the page offers: from this site's materials.txt, built into TOPAS, or a
+## Geant4 NIST material (G4_...).  Structures Eclipse overrides with a value alone, such as a
+## relative electron density, are listed on the setup page but never preselected.  E.g.
+##   eclipse_materials = { S45C_Steel = "ImplantSteel", "Titanium Alloy" = "G4_Ti" }
+# eclipse_materials = {}

@@ -1,6 +1,7 @@
 import contextlib
 import csv
 import io
+import hashlib
 import json
 import os
 import zipfile
@@ -9,7 +10,7 @@ from unittest.mock import MagicMock
 import pydicom
 import pytest
 
-from pregdos import (dicom_intake, executor, reporting, results, structure_metrics,
+from pregdos import (dicom_intake, executor, overrides, reporting, results, structure_metrics,
                      studies, webserver)
 from tests import dicom_factory
 from pregdos.webserver import app
@@ -37,6 +38,18 @@ def _allow_submit(monkeypatch):
     monkeypatch.setattr("pregdos.webserver.versions.submit_blocker", lambda: None)
 
 
+# The smallest table the upload accepts (#131): Schneider, two sections, a correction vector as
+# long as they span, and MinImagingValue left at TOPAS's -1000, where the sections start.
+VALID_TABLE = b"""\
+s:Ge/Patient/ImagingToMaterialConverter = "Schneider"
+iv:Ge/Patient/SchneiderHounsfieldUnitSections = 2 -1000 -998
+uv:Ge/Patient/SchneiderDensityOffset = 1 1.0
+uv:Ge/Patient/SchneiderDensityFactor = 1 0.0
+uv:Ge/Patient/SchneiderDensityFactorOffset = 1 0.0
+uv:Ge/Patient/DensityCorrection = 2 1.0 1.0
+"""
+
+
 def _make_study(tmp_path, name="mystudy"):
     """Create a study on disk as /upload would leave it."""
     _, path = studies.create_study(tmp_path, name)
@@ -54,25 +67,131 @@ def test_upload_page_loads(client):
     assert b'href="/favicon.ico"' in response.data
 
 
-def test_every_bundled_table_is_ct_number_indexed():
-    """No bundled conversion table may expect a quantity other than CT number (#106).
+# --- beam models and tables from the dicomexport config dir (#128) ---
 
-    `_builtin_material_tables` globs the data directory, so restoring a deleted
-    `SPRtoMaterial__*.txt` puts it straight back into the upload dropdown with nothing
-    objecting.  The filename prefix is the only thing that distinguishes the two --
-    TOPAS's Schneider converter maps an integer to a material and is indifferent to what
-    the integer means, and DICOM reports `RescaleType` "HU" either way -- so the prefix
-    is what this guards.
+def _site_config(root, beam_models=("A.csv", "B.csv"), tables=("HUtoMaterialSite.txt",)):
+    """A site's dicomexport configuration directory, as --init-config and an admin leave it."""
+    for sub, names in (("beam_models", beam_models), ("ct_to_material", tables)):
+        (root / sub).mkdir(parents=True)
+        for name in names:
+            if sub == "ct_to_material":
+                (root / sub / name).write_bytes(VALID_TABLE)        # checked at upload (#131)
+            else:
+                (root / sub / name).write_text(f"contents of {name}")
+    return root
 
-    Deliberately a prefix rule rather than an exact inventory: bundling a second
-    HU-indexed table is a legitimate change, bundling an SPR-indexed one is not.
-    """
-    names = [t["name"] for t in webserver._builtin_material_tables()]
-    assert names, "no bundled conversion table found at all"
-    offenders = [n for n in names if not n.startswith("HUtoMaterial")]
-    assert not offenders, (
-        f"bundled tables must be CT-number indexed and named HUtoMaterial*: {offenders}"
-    )
+
+def _select(body: str, name: str) -> str:
+    start = body.index(f'name="{name}"')
+    return body[start:body.index("</select>", start)]
+
+
+def test_upload_page_offers_dicomexport_s_examples_and_says_so(client):
+    """No site directory: the shipped examples, the default preselected, and a warning."""
+    body = client.get("/upload").data.decode()
+
+    beam_models = _select(body, "beam_model_source")
+    assert '<option value="DCPT_beam_model__v5.csv" selected>' in beam_models
+    assert '<option value="DCPT_beam_model__v2.csv">' in beam_models
+    assert '<option value="HUtoMaterialSchneider.txt" selected>' in _select(body, "material_table_source")
+    assert "examples shipped with dicomexport" in body
+
+
+def test_a_site_directory_without_a_default_makes_the_user_choose(client, tmp_path, monkeypatch):
+    """Two beam models and no default: PregDos never picks a calibration on the site's behalf."""
+    monkeypatch.setenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", str(_site_config(tmp_path / "site")))
+
+    body = client.get("/upload").data.decode()
+
+    beam_models = _select(body, "beam_model_source")
+    assert '<option value="" selected>Choose' in beam_models
+    assert '<option value="A.csv">' in beam_models and '<option value="B.csv">' in beam_models
+    # A single table is dicomexport's default, so it is preselected.
+    assert '<option value="HUtoMaterialSite.txt" selected>' in _select(body, "material_table_source")
+    assert "examples shipped with dicomexport" not in body
+
+
+def test_a_missing_site_directory_leaves_upload_as_the_only_choice(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", str(tmp_path / "absent"))
+
+    body = client.get("/upload").data.decode()
+
+    assert "does not exist" in body
+    assert '<option value="upload" selected>' in _select(body, "beam_model_source")
+
+
+def test_upload_copies_the_chosen_files_from_the_site_directory(client, tmp_path, monkeypatch):
+    """The study holds what it was converted with, even after the site's directory changes."""
+    site = _site_config(tmp_path / "site")
+    monkeypatch.setenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", str(site))
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+
+    resp = client.post("/upload", data={
+        "beam_model_source": "B.csv", "material_table_source": "HUtoMaterialSite.txt",
+        "study_dir": _dir_upload(source),
+    }, content_type="multipart/form-data", follow_redirects=True)
+
+    assert b"CTV" in resp.data                              # the setup page rendered
+    study = studies.study_path(tmp_path, "study")
+    assert (study / "B.csv").read_text() == "contents of B.csv"
+    assert (study / "HUtoMaterialSite.txt").read_bytes() == VALID_TABLE
+
+
+@pytest.mark.parametrize("name", ["C.csv", "../../etc/passwd", "/etc/passwd"])
+def test_upload_refuses_a_file_the_site_directory_does_not_list(client, tmp_path, monkeypatch, name):
+    """The form names a file; the path always comes from dicomexport's listing."""
+    monkeypatch.setenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", str(_site_config(tmp_path / "site")))
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+
+    resp = client.post("/upload", data={
+        "beam_model_source": name, "material_table_source": "HUtoMaterialSite.txt",
+        "study_dir": _dir_upload(source),
+    }, content_type="multipart/form-data", follow_redirects=True)
+
+    assert b"is not in the dicomexport configuration directory" in resp.data
+    assert studies.list_studies(tmp_path) == []
+
+
+BAD_TABLE = VALID_TABLE.replace(b"Sections = 2 -1000 -998", b"Sections = 2 -1024 -1022")
+
+
+def test_an_uploaded_table_topas_would_read_out_of_bounds_is_refused(client, tmp_path):
+    """#131: checked as it is uploaded, before anything is created, with the fix named."""
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+    data = _upload_data(source)
+    data["material_table"] = (io.BytesIO(BAD_TABLE), "SPRtoMaterial.txt")
+
+    body = client.post("/upload", data=data, content_type="multipart/form-data",
+                       follow_redirects=True).data.decode()
+
+    assert "CT-number-to-material table SPRtoMaterial.txt cannot be used" in body
+    assert "set i:Ge/Patient/MinImagingValue = -1024" in body
+    assert studies.list_studies(tmp_path) == []
+
+
+def test_a_site_table_topas_would_read_out_of_bounds_is_refused(client, tmp_path, monkeypatch):
+    """The site's directory is no exception: a table there is checked when it is chosen."""
+    site = _site_config(tmp_path / "site")
+    (site / "ct_to_material" / "HUtoMaterialSite.txt").write_bytes(BAD_TABLE)
+    monkeypatch.setenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", str(site))
+    source = tmp_path / "src"
+    dicom_factory.flat_study(source)
+
+    body = client.post("/upload", data={
+        "beam_model_source": "A.csv", "material_table_source": "HUtoMaterialSite.txt",
+        "study_dir": _dir_upload(source),
+    }, content_type="multipart/form-data", follow_redirects=True).data.decode()
+
+    assert "HUtoMaterialSite.txt cannot be used" in body
+    assert studies.list_studies(tmp_path) == []
+
+
+def test_upload_without_a_chosen_beam_model_says_so(client):
+    resp = client.post("/upload", data={"beam_model_source": ""}, follow_redirects=True)
+    assert b"Choose a beam model." in resp.data
 
 
 def test_favicon_loads(client):
@@ -93,7 +212,7 @@ def test_upload_missing_beam_model(client):
 def test_upload_missing_study(client):
     data = {
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
-        "material_table": (io.BytesIO(b"data"), "material.txt"),
+        "material_table": (io.BytesIO(VALID_TABLE), "material.txt"),
     }
     response = client.post("/upload", data=data, content_type="multipart/form-data", follow_redirects=True)
     assert response.status_code == 200
@@ -103,7 +222,7 @@ def test_upload_missing_study(client):
 def test_upload_both_zip_and_folder_rejected(client):
     data = {
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
-        "material_table": (io.BytesIO(b"data"), "material.txt"),
+        "material_table": (io.BytesIO(VALID_TABLE), "material.txt"),
         "study_zip": (io.BytesIO(b"PK\x03\x04"), "study.zip"),
         "study_dir": (io.BytesIO(b"data"), "study/file.dcm"),
     }
@@ -116,7 +235,7 @@ def test_upload_of_non_dicom_leaves_no_study_behind(client, tmp_path):
     """A failed upload must not leave a half-populated study directory."""
     data = {
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
-        "material_table": (io.BytesIO(b"data"), "material.txt"),
+        "material_table": (io.BytesIO(VALID_TABLE), "material.txt"),
         "study_dir": (io.BytesIO(b"data"), "study/CT.1.dcm"),
     }
     response = client.post("/upload", data=data, content_type="multipart/form-data", follow_redirects=True)
@@ -140,7 +259,7 @@ def _dir_upload(source_root, prefix="study"):
 def _upload_data(source_root, prefix="study"):
     return {
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
-        "material_table": (io.BytesIO(b"data"), "material.txt"),
+        "material_table": (io.BytesIO(VALID_TABLE), "material.txt"),
         "study_dir": _dir_upload(source_root, prefix),
     }
 
@@ -335,8 +454,8 @@ def test_submit_missing_file_flashes_error(client, tmp_path):
 
 
 def test_submit_runs_topas_in_the_run_dir_without_copying(client, tmp_path, mocker, monkeypatch):
-    """sbatch must --chdir into the run dir: the .txt's relative DicomDirectory and
-    includeFile only resolve from there, and the file is never moved (#41)."""
+    """sbatch must --chdir into the run dir: the .txt's relative DicomDirectory only
+    resolves from there, and the file is never moved (#41)."""
     monkeypatch.setenv("PREGDOS_EXECUTOR", "slurm")
     _make_study(tmp_path)
     run_id, run_dir = studies.create_run(tmp_path, "mystudy")
@@ -885,11 +1004,11 @@ def test_convert_accepts_the_in_field_scorer_alone(client, tmp_path, mocker):
 
 # Minimal stand-in for a dicomexport-generated TOPAS file: a SCORER SET UP block holding
 # only the in-field DoseToWater scorer, followed by a TIME FEATURES banner.  The two
-# banners are what append_scorers() keys off.  The DicomDirectory / includeFile lines
-# mimic dicomexport echoing its arguments verbatim.
+# banners are what append_scorers() keys off.  The DicomDirectory line and the pasted
+# table's path mimic dicomexport echoing its arguments verbatim.
 _FAKE_TOPAS_TEMPLATE = (
     '# fake dicomexport output\n'
-    'includeFile                          = {material}\n'
+    '{table_block}'
     's:Ge/World/Type                      = "TsBox"\n'
     's:Ge/World/Material                  = "Air"\n'
     'd:Ge/World/HLX                       = 100 mm\n'
@@ -915,18 +1034,31 @@ _FAKE_TOPAS_TEMPLATE = (
 )
 
 
+def _pasted(cwd: Path, path: str) -> str:
+    """The block dicomexport >= 2.0 writes for ``-S path``: the file's bytes, one LF."""
+    data = (cwd / path).read_bytes()
+    return (f"# BEGIN INCLUDE_INLINE: {path} sha256={hashlib.sha256(data).hexdigest()}\n"
+            f"{data.decode()}\n# END INCLUDE_INLINE: {path}\n")
+
+
 def _fake_dicomexport(cmd, *args, **kwargs):
     """subprocess.run side_effect mimicking dicomexport.
 
     Crucially it honours ``cwd`` and echoes its path arguments into the generated file
     verbatim -- exactly as the real tool does (it performs no path resolution).
     """
+    if "--list-config" in cmd:
+        # The upload page lists the config dir; a failed /convert redirects there.
+        listing = MagicMock(returncode=0, stderr="")
+        listing.stdout = json.dumps({"config_dir": "/cfg", "is_shipped_defaults": False,
+                                     "beam_models": [], "ct_to_material": []})
+        return listing
     cwd = Path(kwargs["cwd"])
     output_base = cmd[-1]
     dicom_arg = cmd[-2]
-    material_arg = cmd[cmd.index("-s") + 1]
+    material_arg = cmd[cmd.index("-S") + 1]
     (cwd / f"{output_base}_field01.txt").write_text(
-        _FAKE_TOPAS_TEMPLATE.format(material=material_arg, dicom=dicom_arg)
+        _FAKE_TOPAS_TEMPLATE.format(table_block=_pasted(cwd, material_arg), dicom=dicom_arg)
     )
     result = MagicMock()
     result.returncode = 0
@@ -957,7 +1089,8 @@ def test_convert_invokes_dicomexport_in_run_dir_with_relative_paths(client, tmp_
     cmd = mock_run.call_args[0][0]
     assert mock_run.call_args.kwargs["cwd"] == str(run_dir)
     assert cmd[-2] == "../dicom"
-    assert cmd[cmd.index("-s") + 1] == "../material.txt"
+    assert cmd[cmd.index("-S") + 1] == "../material.txt"
+    assert "-s" not in cmd          # the table is pasted, never named by includeFile
     assert cmd[cmd.index("-b") + 1] == "../beam.csv"
 
 
@@ -971,7 +1104,7 @@ def test_generated_topas_file_contains_no_absolute_paths(client, tmp_path, mocke
 
     assert str(tmp_path) not in text
     assert 's:Ge/Patient/DicomDirectory          = "../dicom"' in text
-    assert "includeFile                          = ../material.txt" in text
+    assert "# BEGIN INCLUDE_INLINE: ../material.txt sha256=" in text
 
 
 def test_convert_appends_selected_scorers_and_survives_rerun(client, tmp_path, mocker):
@@ -999,7 +1132,8 @@ def test_convert_creates_structure_mask_prepass_from_generated_topas(client, tmp
     run_dir = studies.run_path(tmp_path, "mystudy", run_id)
     text = (run_dir / "structure_mask_prepass.txt").read_text()
 
-    assert 'includeFile                          = ../material.txt' in text
+    assert "includeFile" not in text
+    assert text.count("# BEGIN INCLUDE_INLINE: ../material.txt sha256=") == 1
     assert 's:Ge/Patient/DicomDirectory          = "../dicom"' in text
     assert 'b:Sc/PregDosMask_CTV/SetBinToMinusOneIfNotInRTStructure = "True"' in text
     assert 'sv:Sc/PregDosMask_CTV/OnlyIncludeIfInRTStructure = 1 "CTV"' in text
@@ -1379,6 +1513,33 @@ def test_report_csv_download(client, tmp_path):
     assert "# PregDos" in body and "# TOPAS" in body
     assert "# Material table,unavailable" in body
     assert "issue #50" in body
+
+
+def test_reports_show_what_the_run_was_converted_with(client, tmp_path):
+    from pregdos import provenance
+    from tests.test_provenance import FIELD
+
+    run_id, run_dir = _completed_run(tmp_path)
+    info = executor.read_run_metadata(run_dir)
+    info.conversion = provenance.parse(FIELD)
+    executor._write_run_metadata(run_dir, info)
+
+    rows = list(csv.reader(io.StringIO(client.get(f"/studies/alpha/{run_id}/report.csv").data.decode())))
+
+    assert ["# dicomexport", "2.0.0"] in rows                        # the one that converted
+    assert ["# Beam model", "DCPT_beam_model__v5.csv"] in rows
+    assert ["# Also included", "materials.txt (e49e842b)"] in rows
+    assert ["# Material overrides", "Hip implant=ImplantSteel; BODY=G4_WATER"] in rows
+    assert ["# Spot mode", "sources, 10 batches"] in rows
+    assert ["# dicomexport dir", "/etc/dicomexport (--config-dir)"] in rows
+    pdf = client.get(f"/studies/alpha/{run_id}/report.pdf")
+    assert pdf.status_code == 200 and pdf.data.startswith(b"%PDF")
+
+
+def test_reports_say_unavailable_for_a_run_without_a_record(client, tmp_path):
+    run_id, _ = _completed_run(tmp_path)
+    rows = list(csv.reader(io.StringIO(client.get(f"/studies/alpha/{run_id}/report.csv").data.decode())))
+    assert ["# Material overrides", "unavailable"] in rows
 
 
 def test_reports_show_saved_material_filename_and_short_hash(client, tmp_path):
@@ -1792,21 +1953,21 @@ def test_rtdose_bundle_is_refused_while_the_run_is_unfinished(client, tmp_path):
         "backend": "local", "submitted": "now",
         "fields": [{"topas_file": "topas_field01.txt", "ident": "1"}],
     }))
-    (run_dir / "topas_field1.dcm").write_bytes(b"cube")     # a cube exists, but the run does not
+    (run_dir / "topas_field01.dcm").write_bytes(b"cube")     # a cube exists, but the run does not
 
     resp = client.get(f"/studies/alpha/{run_id}/rtdose", follow_redirects=True)
 
     assert b"must finish" in resp.data
-    assert not (run_dir / "rtdose_plan_eclipse_import.zip").exists()
+    assert not (run_dir / "rtdose_eclipse_import.zip").exists()
 
 
 def test_rtdose_bundle_is_built_on_demand_and_served(client, tmp_path, mocker):
     run_id, run_dir = _completed_run(tmp_path)
-    (run_dir / "topas_field1.dcm").write_bytes(b"cube")
+    (run_dir / "topas_field01.dcm").write_bytes(b"cube")
 
     def fake_export(target):
-        (Path(target) / "rtdose_plan_eclipse_import.zip").write_bytes(b"PK\x03\x04bundle")
-        return [Path(target) / "rtdose_plan_eclipse_import.zip"], []
+        (Path(target) / "rtdose_eclipse_import.zip").write_bytes(b"PK\x03\x04bundle")
+        return [Path(target) / "rtdose_eclipse_import.zip"], []
 
     export = mocker.patch("pregdos.webserver.rtdose.ensure_dose_export", side_effect=fake_export)
 
@@ -1820,7 +1981,7 @@ def test_rtdose_bundle_is_built_on_demand_and_served(client, tmp_path, mocker):
 def test_rtdose_bundle_reports_why_it_could_not_be_built(client, tmp_path, mocker):
     """A study with no clinical RTDOSE to clone must flash, not 500."""
     run_id, run_dir = _completed_run(tmp_path)
-    (run_dir / "topas_field1.dcm").write_bytes(b"cube")
+    (run_dir / "topas_field01.dcm").write_bytes(b"cube")
     mocker.patch("pregdos.webserver.rtdose.ensure_dose_export",
                  return_value=([], ["study needs both an RTPLAN and a clinical RTDOSE"]))
 
@@ -1836,7 +1997,7 @@ def test_run_page_offers_the_export_only_when_a_cube_exists(client, tmp_path):
     assert f"/studies/alpha/{run_id}/rtdose".encode() not in body
     assert b"Download dose for TPS" not in body
 
-    (run_dir / "topas_field1.dcm").write_bytes(b"cube")
+    (run_dir / "topas_field01.dcm").write_bytes(b"cube")
     body = client.get(f"/studies/alpha/{run_id}").data
     assert f"/studies/alpha/{run_id}/rtdose".encode() in body
     assert b"RTDOSE" in body
@@ -1854,7 +2015,7 @@ def _dose_only_run(tmp_path, study="alpha"):
     _make_study(tmp_path, study)
     run_id, run_dir = studies.create_run(tmp_path, study)
     (run_dir / _REAL_TOPAS.name).write_bytes(_REAL_TOPAS.read_bytes())
-    (run_dir / "topas_field1.dcm").write_bytes(b"cube")
+    (run_dir / "topas_field01.dcm").write_bytes(b"cube")
     (run_dir / "topas_field01.exit_code").write_text("0\n")
     (run_dir / "run.json").write_text(json.dumps({
         "backend": "local", "submitted": "2026-09-15T10:00:00",
@@ -1874,7 +2035,7 @@ def test_a_dose_only_run_offers_its_dose_instead_of_reporting_as_empty(client, t
     assert "No scorer output found in this run" not in body
     assert "No structure scorers were selected" in body
     assert f"/studies/alpha/{run_id}/rtdose" in body
-    assert "rtdose_plan_eclipse_import.zip" in body       # named, since the import needs it
+    assert "rtdose_eclipse_import.zip" in body       # named, since the import needs it
     # The CSV and PDF summarise structure scorers, so with none they would be empty reports.
     assert f"/studies/alpha/{run_id}/report.csv" not in body
     assert f"/studies/alpha/{run_id}/report.pdf" not in body
@@ -1883,7 +2044,7 @@ def test_a_dose_only_run_offers_its_dose_instead_of_reporting_as_empty(client, t
 def test_a_run_with_neither_scorers_nor_a_cube_still_reports_as_empty(client, tmp_path):
     """The other half: "nothing came out of this run" must still be sayable."""
     run_id, run_dir = _dose_only_run(tmp_path)
-    (run_dir / "topas_field1.dcm").unlink()
+    (run_dir / "topas_field01.dcm").unlink()
 
     body = client.get(f"/studies/alpha/{run_id}").data.decode()
 
@@ -1899,12 +2060,19 @@ def test_a_dose_only_run_names_the_export_uids_once_it_has_been_built(client, tm
     body = client.get(f"/studies/alpha/{run_id}").data.decode()
     assert "built the first time it is downloaded" in body
 
-    plan = dicom_factory.write(run_dir / "rtdose_plan.dcm", "RTDOSE")
-    ds = pydicom.dcmread(plan)
+    dose = pydicom.dcmread(dicom_factory.write(run_dir / "rtdose_plan.dcm", "RTDOSE"))
+    plan_path = dicom_factory.write(tmp_path / "rtplan_pregdos.dcm", "RTPLAN")
+    plan = pydicom.dcmread(plan_path)
+    plan.RTPlanLabel = "Brain_fin2_MC"
+    plan.save_as(plan_path)
+    with zipfile.ZipFile(run_dir / "rtdose_eclipse_import.zip", "w") as zf:
+        zf.write(plan_path, "rtplan_pregdos.dcm")
+        zf.write(run_dir / "rtdose_plan.dcm", "rtdose_plan.dcm")
 
     body = client.get(f"/studies/alpha/{run_id}").data.decode()
-    assert str(ds.SeriesInstanceUID) in body
-    assert str(ds.SOPInstanceUID) in body
+    assert "Brain_fin2_MC" in body
+    assert str(plan.SOPInstanceUID) in body
+    assert str(dose.SeriesInstanceUID) in body
 
 
 def test_a_dose_only_run_that_is_still_going_says_so(client, tmp_path):
@@ -1965,7 +2133,7 @@ def test_downloading_an_incomplete_export_is_refused(client, tmp_path):
     assert resp.status_code == 200
     assert b"produced no dose cube" in resp.data
     assert b"describing itself as the whole course" in resp.data
-    assert not (run_dir / "rtdose_plan_eclipse_import.zip").exists()
+    assert not (run_dir / "rtdose_eclipse_import.zip").exists()
 
 
 # --- studies-root resolution (issue #71) ---
@@ -2015,6 +2183,30 @@ def test_full_run_archive_missing_run_redirects(client, tmp_path):
 
 # --- issue #79: the task page refreshes a fragment, not the whole document ---
 
+def test_a_field_with_nothing_done_yet_says_initialising(client, tmp_path):
+    """Not "spot 0/659 · 0/19,990 histories" under a bar stuck at 0 while TOPAS sets up (#144)."""
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field01.exit_code").unlink()          # running ...
+    (run_dir / "topas_field01.log").write_text("TOPAS is loading the CT\n")   # ... started, nothing done
+
+    html = client.get(f"/studies/alpha/{run_id}/progress").get_json()["html"]
+
+    assert "initialising…" in html
+    assert "0/19,990 histories" not in html
+
+
+def test_a_field_topas_has_not_started_says_waiting(client, tmp_path):
+    """Behind the fields before it, or in the SLURM queue: not initialising."""
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field01.exit_code").unlink()
+    for log in run_dir.glob("topas_field01*.log"):
+        log.unlink()
+
+    html = client.get(f"/studies/alpha/{run_id}/progress").get_json()["html"]
+
+    assert "waiting…" in html and "initialising…" not in html
+
+
 def test_progress_fragment_returns_the_live_block(client, tmp_path):
     run_id, _ = _completed_run(tmp_path)
 
@@ -2027,6 +2219,17 @@ def test_progress_fragment_returns_the_live_block(client, tmp_path):
     assert "progress-meter" in body["html"]      # the bars are in the fragment
     assert "<html" not in body["html"]           # ...and only the fragment
 
+
+
+def test_progress_shows_each_field_by_its_tps_name(client, tmp_path):
+    """BEAM_NAME from the field's header, next to the file name, so a field can be recognised."""
+    run_id, run_dir = _completed_run(tmp_path)
+    field = run_dir / "topas_field01.txt"
+    field.write_text("# BEAM_NAME: LAO 30 hip\n" + field.read_text())
+
+    html = client.get(f"/studies/alpha/{run_id}/progress").get_json()["html"]
+
+    assert "<code>topas_field01.txt</code> <span>LAO 30 hip</span>" in html
 
 
 def test_progress_fragment_carries_results_finished_so_far(client, tmp_path):
@@ -2227,6 +2430,254 @@ def _conversion_params(run_dir):
     )
 
 
+def _spot_flags(mocker, tmp_path):
+    from pregdos import webserver
+
+    run = mocker.patch("pregdos.webserver.subprocess.run",
+                       return_value=mocker.Mock(stdout="", stderr=""))
+    (tmp_path / "topas_field01.txt").write_text("# topas")
+    webserver.run_conversion(_conversion_params(tmp_path), [])
+    cmd = run.call_args[0][0]
+    return cmd[cmd.index("--spot-mode") + 1], cmd[cmd.index("--batches") + 1]
+
+
+def test_dicomexport_is_asked_for_ten_batches_of_sources_by_default(mocker, tmp_path):
+    """Both flags always explicit, so dicomexport's own defaults never apply."""
+    assert _spot_flags(mocker, tmp_path) == ("sources", "10")
+
+
+def test_single_batch_runs_one_batch(mocker, tmp_path):
+    from pregdos import webserver
+
+    run = mocker.patch("pregdos.webserver.subprocess.run",
+                       return_value=mocker.Mock(stdout="", stderr=""))
+    (tmp_path / "topas_field01.txt").write_text("# topas")
+    params = _conversion_params(tmp_path)
+    params.single_batch = True
+    webserver.run_conversion(params, [])
+    cmd = run.call_args[0][0]
+    assert cmd[cmd.index("--batches") + 1] == "1"
+
+
+def test_time_feature_mode_always_runs_one_batch(write_config, mocker, tmp_path):
+    """dicomexport refuses more than one batch in time-feature mode."""
+    write_config('[conversion]\nspot_mode = "timefeature"\n')
+    assert _spot_flags(mocker, tmp_path) == ("timefeature", "1")
+
+
+@pytest.mark.parametrize("requested, runs, warned", [
+    (20000, 10, False),     # 3.03 per spot per batch: the lowest tested
+    (19000, 10, True),
+    (1000, 1, False),       # a single batch is not split, so nothing is rounded per batch
+])
+def test_too_few_primaries_for_the_batches_are_warned_about(tmp_path, requested, runs, warned):
+    from pregdos import webserver
+
+    (tmp_path / "topas_field01.txt").write_text(
+        f"# REQUESTED_HISTORIES: {requested}\n# PARTICLE_SCALING: 1.0\n# SIMULATED_HISTORIES: {requested}\n"
+        f"# SPOT_MODE: sources\n# SPOTS: 659\n# RUNS: {runs}\n# EVENTS_PER_RUN: 15\n")
+    messages = webserver._batch_statistics_warnings(tmp_path, ["topas_field01.txt"])
+    assert bool(messages) == warned
+    if warned:
+        assert "19,770" in messages[0] and "Single batch" in messages[0]
+
+
+def test_overrides_follow_the_table_in_the_order_given(mocker, tmp_path):
+    """materials.txt is pasted after the table -- the readers take the first pasted file as the
+    table -- and the overrides keep their order, since TOPAS uses the first where they overlap."""
+    from pregdos import webserver
+
+    run = mocker.patch("pregdos.webserver.subprocess.run",
+                       return_value=mocker.Mock(stdout="", stderr=""))
+    (tmp_path / "topas_field01.txt").write_text("# topas")
+    params = _conversion_params(tmp_path)
+    params.material_overrides = [("Hip implant", "ImplantSteel"), ("BODY", "G4_WATER")]
+    params.materials_file = "/cfg/materials.txt"
+    webserver.run_conversion(params, [])
+
+    cmd = run.call_args[0][0]
+    includes = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-S"]
+    assert includes == ["../material.txt", "/cfg/materials.txt"]
+    assert [cmd[i + 1] for i, a in enumerate(cmd) if a == "--material-override"] == [
+        "Hip implant=ImplantSteel", "BODY=G4_WATER"]
+
+
+def test_without_overrides_no_materials_are_pasted(mocker, tmp_path):
+    from pregdos import webserver
+
+    run = mocker.patch("pregdos.webserver.subprocess.run",
+                       return_value=mocker.Mock(stdout="", stderr=""))
+    (tmp_path / "topas_field01.txt").write_text("# topas")
+    params = _conversion_params(tmp_path)
+    params.materials_file = "/cfg/materials.txt"
+    webserver.run_conversion(params, [])
+    cmd = run.call_args[0][0]
+    assert cmd.count("-S") == 1 and "--material-override" not in cmd
+
+
+def _study_with_structures(tmp_path) -> dict[str, object]:
+    """A /convert form for a study whose RTSTRUCT has CTV and "Hip implant".  Typed loosely:
+    the override rows are lists."""
+    form: dict[str, object] = dict(_convert_form(tmp_path))
+    dicom_factory.flat_study(studies.dicom_path(tmp_path, "mystudy"), rois=("CTV", "Hip implant"))
+    return form
+
+
+def test_convert_passes_the_chosen_overrides(client, tmp_path, mocker):
+    run = mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    form = _study_with_structures(tmp_path)
+    form.update({"override_roi": ["Hip implant", ""], "override_material": ["Steel", ""]})
+
+    client.post("/convert", data=form, follow_redirects=True)
+
+    conversion = [c.args[0] for c in run.call_args_list if "--list-config" not in c.args[0]][-1]
+    assert conversion[conversion.index("--material-override") + 1] == "Hip implant=Steel"
+
+
+def test_an_unoffered_override_returns_to_the_setup_page_with_nothing_on_disk(client, tmp_path, mocker):
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    form = _study_with_structures(tmp_path)
+    form.update({"override_roi": ["Femur"], "override_material": ["Steel"]})
+
+    body = client.post("/convert", data=form, follow_redirects=True).data.decode()
+
+    assert "&#39;Femur&#39; is not a structure of this study" in body
+    assert 'name="override_roi"' in body                 # back on the setup page
+    assert studies.list_runs(tmp_path, "mystudy") == []
+
+
+def test_a_refused_override_keeps_the_choices_on_the_setup_page(client, tmp_path, mocker):
+    """dicomexport refuses, e.g., a structure with a hole.  The user fixes one row, so the
+    page comes back with the rows as submitted, not the upload page."""
+    import subprocess
+
+    def refuse(cmd, *args, **kwargs):
+        if "--list-config" in cmd:
+            return _fake_dicomexport(cmd, *args, **kwargs)
+        raise subprocess.CalledProcessError(2, cmd, stderr=(
+            "Using the defaults shipped with dicomexport (/x): ...\n"
+            "--material-override 'Hip implant=Steel': 'Hip implant' has a hole\n"))
+
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=refuse)
+    form = _study_with_structures(tmp_path)
+    form.update({"override_roi": ["Hip implant"], "override_material": ["Steel"]})
+
+    body = client.post("/convert", data=form, follow_redirects=True).data.decode()
+
+    assert "has a hole" in body
+    assert "Using the defaults shipped" not in body
+    assert '<option value="Hip implant" selected>' in body
+    assert studies.list_runs(tmp_path, "mystudy") == []
+
+
+def test_dicomexport_warnings_are_shown_after_a_successful_conversion(client, tmp_path, mocker):
+    def warn(cmd, *args, **kwargs):
+        result = _fake_dicomexport(cmd, *args, **kwargs)
+        if "--list-config" not in cmd:
+            result.stderr = ("Using the defaults shipped with dicomexport (/x): ...\n"
+                             "Field 1: 35 of 659 spots round to 0 histories\n")
+        return result
+
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=warn)
+    body = client.post("/convert", data=_convert_form(tmp_path), follow_redirects=True).data.decode()
+
+    assert "dicomexport: Field 1: 35 of 659 spots round to 0 histories" in body
+    assert "Using the defaults shipped" not in body
+
+
+@pytest.mark.parametrize("line, shown", [
+    # dicomexport 2.0's three statistics warnings, verbatim apart from the numbers.
+    ("Field 1: rounding spot weights to whole histories per batch changes them by 1.6% of all primaries; "
+     "99890 primaries are simulated for -N 100000. Increase -N or lower --batches.",
+     "Field 1: rounding spot weights to whole histories per batch changes them by 1.6% of all primaries; "
+     "99890 primaries are simulated for 100000 requested. Request more primaries or tick Single batch (no error bars)."),
+    ("Field 1: 35 of 659 spots round to 0 histories at -N 1000 and are left out (14.9 of 1e+03 primaries). "
+     "Increase -N to keep them.",
+     "Field 1: 35 of 659 spots round to 0 histories at 1000 primaries and are left out (14.9 of 1e+03 primaries). "
+     "Request more primaries to keep them."),
+    ("Field 2: no spot gets a single history per batch at -N 10. Increase -N.",
+     "Field 2: no spot gets a single history per batch at 10 primaries. Request more primaries."),
+    # Anything else passes unchanged.
+    ("Multiple DICOM RTDOSE files found, using the first one: RD.x.dcm",
+     "Multiple DICOM RTDOSE files found, using the first one: RD.x.dcm"),
+])
+def test_dicomexport_warnings_speak_the_setup_page_s_terms(line, shown):
+    """The user has a form, not dicomexport's -N and --batches."""
+    from pregdos import webserver
+    assert webserver._in_pregdos_terms(line) == shown
+
+
+def test_scoring_with_overrides_says_up_front_what_is_approximate(client, tmp_path, mocker):
+    """Not every structure is affected: only one an override lies inside.  The note says so
+    before the run; the report names the structures once the masks exist (#153)."""
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    form = _study_with_structures(tmp_path)
+    form.update({"score_neutron": "CTV",
+                 "override_roi": ["Hip implant"], "override_material": ["Steel"]})
+
+    body = client.post("/convert", data=form, follow_redirects=True).data.decode()
+
+    assert "approximate where an override lies inside it" in body
+
+
+def test_scoring_without_overrides_gets_no_note(client, tmp_path, mocker):
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    form = _study_with_structures(tmp_path)
+    form.update({"score_neutron": "CTV"})
+
+    body = client.post("/convert", data=form, follow_redirects=True).data.decode()
+
+    assert "approximate where an override lies inside it" not in body
+
+
+def _config_dir_passed(mocker, tmp_path):
+    from pregdos import webserver
+
+    run = mocker.patch("pregdos.webserver.subprocess.run",
+                       return_value=mocker.Mock(stdout="", stderr=""))
+    (tmp_path / "topas_field01.txt").write_text("# topas")
+    webserver.run_conversion(_conversion_params(tmp_path), [])
+    cmd = run.call_args[0][0]
+    return cmd[cmd.index("--config-dir") + 1]
+
+
+def test_dicomexport_is_given_the_configured_config_dir(write_config, mocker, tmp_path, monkeypatch):
+    monkeypatch.delenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", raising=False)
+    write_config('[paths]\ndicomexport_config_dir = "/srv/site/dicomexport"\n')
+    assert _config_dir_passed(mocker, tmp_path) == "/srv/site/dicomexport"
+
+
+def test_the_environment_overrides_the_config_dir(write_config, mocker, tmp_path, monkeypatch):
+    """How the container names a mounted directory: it ships no config file."""
+    write_config('[paths]\ndicomexport_config_dir = "/srv/site/dicomexport"\n')
+    monkeypatch.setenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", "/etc/dicomexport")
+    assert _config_dir_passed(mocker, tmp_path) == "/etc/dicomexport"
+
+
+def test_without_a_site_config_dir_dicomexport_is_given_its_shipped_examples(
+        write_config, mocker, tmp_path, monkeypatch):
+    """Never nothing: dicomexport would then search ~/.config/dicomexport and /etc/dicomexport,
+    which may belong to another installation on the host (#128)."""
+    from dicomexport.config import DEFAULTS_DIR
+
+    monkeypatch.delenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", raising=False)
+    write_config("")
+    assert _config_dir_passed(mocker, tmp_path) == str(DEFAULTS_DIR)
+
+
+def test_a_relative_config_dir_from_the_environment_is_a_flashable_error(
+        write_config, mocker, tmp_path, monkeypatch):
+    """The config file is validated at startup; the environment variable is not."""
+    from pregdos import webserver
+
+    write_config("")
+    monkeypatch.setenv("PREGDOS_DICOMEXPORT_CONFIG_DIR", "dicomexport")
+    run = mocker.patch("pregdos.webserver.subprocess.run")
+    with pytest.raises(RuntimeError, match="not an absolute path"):
+        webserver.run_conversion(_conversion_params(tmp_path), [])
+    run.assert_not_called()
+
+
 def test_dicomexport_timeout_reaches_subprocess(write_config, mocker, tmp_path):
     from pregdos import webserver
 
@@ -2323,7 +2774,7 @@ def test_a_rejected_upload_is_not_recorded_as_an_upload(client, tmp_path, caplog
 
     data = {
         "beam_model": (io.BytesIO(b"col1,col2"), "beam.csv"),
-        "material_table": (io.BytesIO(b"data"), "material.txt"),
+        "material_table": (io.BytesIO(VALID_TABLE), "material.txt"),
         "study_dir": (io.BytesIO(b"data"), "study/CT.1.dcm"),
     }
     with caplog.at_level(logging.INFO, logger="pregdos.audit"):
@@ -2649,3 +3100,114 @@ def test_a_rejection_does_not_copy_dicom_identifiers_into_the_journal(client, tm
     audit_lines = [r.getMessage() for r in caplog.records if r.name == "pregdos.audit"]
     assert audit_lines, "the attempt should still be recorded"
     assert not any("SECRET-PATIENT-2" in line for line in audit_lines)
+
+
+# --- Eclipse's overrides prefill the setup page (#126) -------------------------------------------
+
+_ECLIPSE = {"beekley": [("REL_ELEC_DENSITY", "0.001")], "HU_Steel": "S45C_Steel"}
+
+
+def _fresh_setup_page(tmp_path, mocker) -> str:
+    """The setup page as an upload renders it, for a study whose RTSTRUCT Eclipse overrode."""
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    _make_study(tmp_path)
+    dicom_factory.flat_study(studies.dicom_path(tmp_path, "mystudy"),
+                             rois=("BODY", "beekley", "CTV", "HU_Steel"), declared=_ECLIPSE)
+    with app.test_request_context():
+        return webserver._setup_page(tmp_path, "mystudy", "beam.csv", "material.txt")
+
+
+def test_the_setup_page_starts_with_a_row_per_eclipse_override(tmp_path, mocker):
+    body = _fresh_setup_page(tmp_path, mocker)
+
+    assert '<option value="beekley" selected>' in body
+    assert '<option value="HU_Steel" selected>' in body
+    assert '<option value="CTV" selected>' not in body
+    assert "Eclipse: REL_ELEC_DENSITY=0.001" in body
+    assert "Eclipse: MaterialID=S45C_Steel" in body
+    # Nothing preselected without a site mapping: each row starts at "No override".
+    assert " selected>ImplantSteel<" not in body and " selected>Steel<" not in body
+    assert body.count("No override (CT conversion)") == 3          # two Eclipse rows + a spare
+
+
+def test_the_site_mapping_preselects_eclipse_materials(tmp_path, mocker, write_config):
+    write_config('[overrides]\neclipse_materials = { S45C_Steel = "G4_STAINLESS-STEEL" }\n')
+
+    body = _fresh_setup_page(tmp_path, mocker)
+
+    # A Geant4 material is not in the dropdown, so it comes as "Other" with its name typed in.
+    assert 'value="G4_STAINLESS-STEEL"' in body
+    assert f'<option value="{overrides.OTHER}" selected>' in body
+    assert "MaterialID=S45C_Steel, preselected by the site" in body
+
+
+def test_no_override_rows_are_skipped_and_other_passes_the_typed_material(client, tmp_path, mocker):
+    run = mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    form = _study_with_structures(tmp_path)
+    form.update({"override_roi": ["Hip implant", "CTV", ""],
+                 "override_material": [overrides.OTHER, "", ""],
+                 "override_material_other": ["G4_BONE_COMPACT_ICRU", "", ""]})
+
+    client.post("/convert", data=form, follow_redirects=True)
+
+    conversion = [c.args[0] for c in run.call_args_list if "--list-config" not in c.args[0]][-1]
+    assert [conversion[i + 1] for i, a in enumerate(conversion) if a == "--material-override"] == [
+        "Hip implant=G4_BONE_COMPACT_ICRU"]
+
+
+def test_a_refusal_brings_a_typed_geant4_material_back_in_its_field(client, tmp_path, mocker):
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    form = _study_with_structures(tmp_path)
+    form.update({"override_roi": ["Hip implant", "Femur"],
+                 "override_material": [overrides.OTHER, "Steel"],
+                 "override_material_other": ["G4_BONE_COMPACT_ICRU", ""]})
+
+    body = client.post("/convert", data=form, follow_redirects=True).data.decode()
+
+    assert "&#39;Femur&#39; is not a structure of this study" in body
+    assert 'value="G4_BONE_COMPACT_ICRU"' in body
+    assert studies.list_runs(tmp_path, "mystudy") == []
+
+
+def test_the_results_page_shows_no_total_for_a_field_without_results(client, tmp_path):
+    """Codex review of #132: a total over the fields that happen to have results looks
+    complete.  The page says which field has none instead."""
+    from tests.test_reporting import _finished_sources_run
+    _make_study(tmp_path, "alpha")
+    run_id, run_dir = studies.create_run(tmp_path, "alpha")
+    _finished_sources_run(run_dir, short=3)
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    assert "No total: no result for field 3" in body
+    assert "All 2 fields" not in body
+
+
+def test_a_refusal_keeps_the_ticked_scorers(client, tmp_path, mocker):
+    """Codex review of #132: the page came back with every scorer box cleared, so fixing the
+    override and resubmitting gave a run without out-of-field scoring."""
+    import re
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    form = _study_with_structures(tmp_path)
+    form.update({"score_neutron": ["CTV"], "score_gamma": ["Hip implant"],
+                 "override_roi": ["Femur"], "override_material": ["Steel"]})
+
+    body = client.post("/convert", data=form, follow_redirects=True).data.decode()
+
+    assert "&#39;Femur&#39; is not a structure of this study" in body
+    ticked = set(re.findall(r'name="score_(\w+)" value="([^"]+)"\s*checked', body))
+    assert ticked == {("neutron", "CTV"), ("gamma", "Hip implant")}
+
+
+@pytest.mark.parametrize("basename", ["rtdose", "RTDOSE", "RtDose"])
+def test_the_basename_rtdose_is_reserved_for_the_export(client, tmp_path, mocker, basename):
+    """Its field cubes would be rtdose_field<nn>.dcm, which the RTDOSE export writes over --
+    in any case, on a case-insensitive file system."""
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    form = _study_with_structures(tmp_path)
+    form.update({"output_basename": basename})
+
+    body = client.post("/convert", data=form, follow_redirects=True).data.decode()
+
+    assert "reserved for the RTDOSE export" in body
+    assert studies.list_runs(tmp_path, "mystudy") == []

@@ -292,13 +292,13 @@ def test_g4_data_dir_missing_is_flagged(monkeypatch, tmp_path):
 
 def test_submit_blocker_none_for_supported_topas(monkeypatch):
     _with_version(monkeypatch, "4.2.p3")
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "2.0.0")
     assert versions.submit_blocker() is None
 
 
 def test_submit_blocker_blocks_unsupported_topas(monkeypatch):
     _with_version(monkeypatch, "4.1.p0")
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "2.0.0")
     assert "#49" in versions.submit_blocker()
 
 
@@ -306,7 +306,7 @@ def test_submit_blocker_does_not_block_unknown_topas(monkeypatch):
     """SLURM runs TOPAS on a compute node, so the webserver not finding it is not a reason
     to refuse -- the version is simply unknown here."""
     _with_version(monkeypatch, versions.UNKNOWN)
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "2.0.0")
     assert versions.submit_blocker() is None
 
 
@@ -322,7 +322,7 @@ def test_about_page_reports_versions(monkeypatch):
     from pregdos.webserver import app
     _with_version(monkeypatch, "4.2.p3")
     monkeypatch.setattr(versions, "geant4_version", lambda: "11.3.2")
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "2.0.0")
     monkeypatch.setattr(versions, "latest_pregdos_release", lambda: "v0.5.0")
     app.config["TESTING"] = True
     with app.test_client() as c:
@@ -487,18 +487,25 @@ def test_about_page_warns_about_missing_g4_data(monkeypatch, tmp_path):
     assert "missing" in body and "restart it" in body
 
 
-# --- dicomexport minimum (#75: BeamNumber field output; #92: corrected RS thicknesses) ---
+# --- dicomexport minimum (#132: the dicomexport 2 command line) ---
 
 def test_dicomexport_at_the_minimum_is_accepted(monkeypatch):
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "2.0.0")
     assert versions.dicomexport_warning() is None
 
 
-def test_dicomexport_below_the_minimum_is_rejected(monkeypatch):
-    """1.4.4 uses the old field-numbering contract."""
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.4.4")
+def test_a_canonical_dicomexport_version_is_accepted(monkeypatch):
+    """dicomexport_version() appends the git commit, as the About page shows it."""
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "2.0.0+g312b0c3a")
+    assert versions.dicomexport_warning() is None
+
+
+@pytest.mark.parametrize("old", ["1.4.4", "1.5.1"])
+def test_dicomexport_below_the_minimum_is_rejected(monkeypatch, old):
+    """1.5.1 was the previous floor; it does not know --spot-mode and fails on it."""
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: old)
     warning = versions.dicomexport_warning()
-    assert warning is not None and "1.4.4" in warning and "BeamNumber" in warning
+    assert warning is not None and old in warning and "2.0.0" in warning
 
 
 
@@ -519,7 +526,7 @@ def test_an_old_dicomexport_blocks_submission(monkeypatch):
 def test_a_current_dicomexport_does_not_block_submission(monkeypatch):
     _with_version(monkeypatch, "4.2.p3")
     monkeypatch.delenv("TOPAS_G4_DATA_DIR", raising=False)
-    monkeypatch.setattr(versions, "dicomexport_version", lambda: "1.5.1")
+    monkeypatch.setattr(versions, "dicomexport_version", lambda: "2.0.0")
     assert versions.submit_blocker() is None
 
 

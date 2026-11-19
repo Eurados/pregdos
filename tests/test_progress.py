@@ -87,6 +87,115 @@ def test_missing_spot_weights_degrades_gracefully(tmp_path):
     assert p.fraction == 0.0                    # no total -> no false progress
 
 
+def _sources_field(run_dir, runs=10, simulated=19940, runs_seen=(), name="topas_field01.txt"):
+    """A sources-mode input (dicomexport >= 2.0): no spot weights, the layout in the header."""
+    (run_dir / name).write_text(
+        f"# SIMULATED_HISTORIES: {simulated}\n# SPOT_MODE: sources\n# SPOTS: 659\n"
+        f"# RUNS: {runs}\n# EVENTS_PER_RUN: 15\n# REQUESTED_HISTORIES: 20000\n# PARTICLE_SCALING: 1.0\n"
+    )
+    # One line per event, as TOPAS logs it with ShowHistoryCountAtInterval = 1.
+    (run_dir / f"{name[:-4]}.log").write_text("".join(
+        f"G4WT{h % 4} > Begin processing for Run: {k}, History: {h}\n" for k in runs_seen for h in range(15)
+    ))
+
+
+def test_sources_mode_progress_counts_batches(tmp_path):
+    """Identical batches, each an equal share: 3 of 10 started is 30 %."""
+    _sources_field(tmp_path, runs_seen=[0, 1, 2])
+    p = executor.field_progress(tmp_path, "topas_field01.txt")
+    assert p.unit == "batch"
+    assert (p.runs_started, p.total_runs) == (3, 10)
+    assert p.histories_total == 19940
+    assert p.histories_done == 3 * 1994
+    assert round(100 * p.fraction) == 30
+
+
+def test_time_feature_progress_is_still_in_spots(tmp_path):
+    _field(tmp_path, weights=[10, 20], runs_seen=[0])
+    assert executor.field_progress(tmp_path, "topas_field01.txt").unit == "spot"
+
+
+def test_batch_shares_add_up_when_runs_do_not_divide_the_histories(tmp_path):
+    _sources_field(tmp_path, runs=3, simulated=10, runs_seen=[0, 1, 2])
+    p = executor.field_progress(tmp_path, "topas_field01.txt")
+    assert p.histories_total == 10 and p.histories_done == 10
+
+
+def _sources_spots(run_dir, spot_weights, runs, events, threads=1, name="topas_field01.txt"):
+    """A real-shaped sources-mode input -- one source per spot, the thread count pinned as at
+    submission -- and a log in which each ``(batch, event)`` of ``events`` has started."""
+    simulated = sum(spot_weights) * runs
+    (run_dir / name).write_text(
+        f"# SIMULATED_HISTORIES: {simulated}\n# SPOT_MODE: sources\n# SPOTS: {len(spot_weights)}\n"
+        f"# RUNS: {runs}\n# EVENTS_PER_RUN: {max(spot_weights)}\n"
+        "# REQUESTED_HISTORIES: 1\n# PARTICLE_SCALING: 1.0\n"
+        f"i:Ts/NumberOfThreads                    = {threads}\n"
+        + "".join(f"i:So/Spot{k:04d}/NumberOfHistoriesInRun         = {w}\n" for k, w in enumerate(spot_weights, 1))
+    )
+    (run_dir / f"{name[:-4]}.log").write_text("".join(
+        f"G4WT{e % 4} > Begin processing for Run: {b}, History: {e}\n" for b, e in events))
+
+
+def test_progress_within_a_batch_follows_the_protons_not_the_events(tmp_path):
+    """#95: an event fires one proton from every spot with any left, so the first events carry
+    most of a batch.  Spots of 5, 3 and 1, one thread: with event 4 started, events 0-3 have
+    finished, and 4 + 3 + 1 = 8 of 9 protons are done."""
+    _sources_spots(tmp_path, [5, 3, 1], runs=2, events=[(0, e) for e in range(5)] + [(1, e) for e in range(5)])
+    p = executor.field_progress(tmp_path, "topas_field01.txt")
+    assert (p.runs_started, p.total_runs) == (2, 2)
+    assert p.histories_total == 18
+    assert p.histories_done == 9 + 8                # batch 0 done, batch 1 at 8 of 9
+
+
+def test_a_round_of_geant4_blocks_still_running_counts_nothing(tmp_path):
+    """The real case behind this (head phantom, 100 000 primaries, one batch): 12 threads each
+    claim a block of int(sqrt(734 // 12)) = 7 events, and the log shows only each block's
+    start, 0, 7, ... 77.  All 84 events, the heaviest half of the protons, are in flight.
+    Assuming one per thread in flight put this at 42 %."""
+    _sources_spots(tmp_path, [734, 700, 500], runs=1, events=[(0, e) for e in range(0, 78, 7)], threads=12)
+    assert executor.field_progress(tmp_path, "topas_field01.txt").histories_done == 0
+
+
+def test_once_a_thread_moves_on_its_block_counts(tmp_path):
+    """A thread starting block 12 (event 84) has finished one of the first 12 blocks; at most 12
+    are in flight, so block 0 -- 7 events of 3 protons -- is certainly done."""
+    _sources_spots(tmp_path, [734, 700, 500], runs=1, events=[(0, e) for e in range(0, 85, 7)], threads=12)
+    assert executor.field_progress(tmp_path, "topas_field01.txt").histories_done == 21
+
+
+def test_starts_logged_within_a_block_count_the_events_before_them(tmp_path):
+    """With the interval below the block size, a thread's progress through its block shows:
+    event 10 started in block 7-13, so events 7-9 have finished, 3 x 3 protons."""
+    _sources_spots(tmp_path, [734, 700, 500], runs=1,
+                   events=[(0, e) for e in range(0, 78, 7)] + [(0, 10)], threads=12)
+    assert executor.field_progress(tmp_path, "topas_field01.txt").histories_done == 9
+
+
+def test_events_still_in_flight_are_not_counted(tmp_path):
+    """The threads start the first events together, and those are the heaviest."""
+    _sources_spots(tmp_path, [5, 3, 1], runs=1, events=[(0, e) for e in range(4)], threads=4)
+    assert executor.field_progress(tmp_path, "topas_field01.txt").histories_done == 0
+
+
+def test_a_single_batch_no_longer_jumps_from_nothing_to_done(tmp_path):
+    """Three events of five finished are already 7 of 9 protons: the bar moves within the batch."""
+    _sources_spots(tmp_path, [5, 3, 1], runs=1, events=[(0, e) for e in range(4)])
+    p = executor.field_progress(tmp_path, "topas_field01.txt")
+    assert p.histories_done == 7 and round(100 * p.fraction) == 78
+
+
+def test_events_logged_out_of_order_count_by_the_highest(tmp_path):
+    _sources_spots(tmp_path, [5, 3, 1], runs=1, events=[(0, 3), (0, 1), (0, 2)])
+    p = executor.field_progress(tmp_path, "topas_field01.txt")
+    assert p.histories_done == 3 + 3 + 1             # event 3 started: events 0-2 finished
+
+
+def test_a_stray_batch_index_cannot_overshoot(tmp_path):
+    _sources_spots(tmp_path, [5, 3, 1], runs=2, events=[(0, 0), (0, 1), (7, 4)])
+    p = executor.field_progress(tmp_path, "topas_field01.txt")
+    assert p.runs_started == 1 and p.histories_done == 3   # event 1 started: event 0 finished
+
+
 def test_run_progress_covers_all_fields_in_order(tmp_path):
     _field(tmp_path, weights=[10, 10], runs_seen=[0, 1], name="topas_field01.txt", exit_code=0)
     _field(tmp_path, weights=[10, 10], runs_seen=[0], name="topas_field02.txt")
@@ -181,3 +290,60 @@ def test_completion_clock_day_is_not_zero_padded():
     from pregdos.webserver import _completion_clock
     finish = datetime.datetime(2026, 7, 5, 14, 30, 0)
     assert _completion_clock(finish) == {"time": "14:30", "date": "5 Jul"}
+
+
+# --- the log interval, set at submission (#95) ---
+
+@pytest.mark.parametrize("events, threads, interval", [
+    (734, 12, 1),            # 100 000 primaries, one batch: block 7, every event
+    (7_340, 12, 7),          # 10^6: block 24, a quarter of it
+    (73_400, 12, 73),        # 10^7: the cap, about 1000 lines per batch
+    (734_000, 12, 734),
+    (15, 12, 1),
+])
+def test_the_interval_is_a_quarter_block_capped_at_1000_lines(events, threads, interval):
+    assert executor.history_interval(events, threads) == interval
+
+
+def test_submission_sets_the_interval_for_a_sources_field_only(tmp_path):
+    sources = tmp_path / "topas_field01.txt"
+    sources.write_text("# REQUESTED_HISTORIES: 1\n# PARTICLE_SCALING: 1\n# SPOT_MODE: sources\n# RUNS: 1\n"
+                       "# EVENTS_PER_RUN: 73400\ni:Ts/ShowHistoryCountAtInterval         = 734\n")
+    timefeature = tmp_path / "topas_field02.txt"
+    timefeature.write_text("# SPOT_MODE: timefeature\ni:Ts/ShowHistoryCountAtInterval = 100000\n")
+
+    executor.set_history_interval(sources, 12)
+    executor.set_history_interval(timefeature, 12)
+
+    assert "i:Ts/ShowHistoryCountAtInterval         = 73\n" in sources.read_text()
+    assert sources.read_text().count("ShowHistoryCountAtInterval") == 1      # replaced, not added
+    assert "ShowHistoryCountAtInterval = 100000" in timefeature.read_text()
+
+
+# --- initialising (#144) ---
+
+def test_a_running_field_with_nothing_done_is_initialising(tmp_path):
+    """The real case: every thread in its first event, minutes of one-off setup.  Not a bar
+    stuck at 0 %."""
+    _sources_spots(tmp_path, [734, 700, 500], runs=1, events=[(0, e) for e in range(0, 78, 7)], threads=12)
+    p = executor.field_progress(tmp_path, "topas_field01.txt")
+    assert p.status == executor.RUNNING and p.initialising
+
+
+def test_a_field_is_no_longer_initialising_once_an_event_has_finished(tmp_path):
+    _sources_spots(tmp_path, [734, 700, 500], runs=1,
+                   events=[(0, e) for e in range(0, 78, 7)] + [(0, 1)], threads=12)
+    assert not executor.field_progress(tmp_path, "topas_field01.txt").initialising
+
+
+def test_queued_and_finished_fields_are_not_initialising(tmp_path):
+    _field(tmp_path, weights=[10, 20], runs_seen=[], exit_code=0)
+    assert not executor.field_progress(tmp_path, "topas_field01.txt").initialising
+
+
+def test_a_field_topas_has_not_started_is_waiting_not_initialising(tmp_path):
+    """Local fields run one after another: field 2 waits for field 1, with no log yet."""
+    _sources_spots(tmp_path, [5, 3, 1], runs=1, events=[])
+    (tmp_path / "topas_field01.log").unlink()
+    p = executor.field_progress(tmp_path, "topas_field01.txt")
+    assert p.status == executor.RUNNING and not p.started and not p.initialising
