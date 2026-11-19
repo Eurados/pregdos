@@ -68,7 +68,15 @@ PLAN_COPY_NAME = "rtplan_pregdos.dcm"
 #: Appended to the copy's Plan ID (``RTPlanLabel``, at most 16 characters), so Eclipse does not
 #: take it for the clinical plan.
 PLAN_LABEL_SUFFIX = "_MC"
-_DOSE_COMMENT = "PregDos/TOPAS: Gy(RBE)=physical x1.1, whole course"  # LO: max 64 chars
+#: The SeriesDescription of every dose PregDos makes.  One series holds the field doses and
+#: the plan dose, and a TPS shows the series by one description, so it names none of them;
+#: each dose says which it is in its DoseComment (:func:`_dose_comment`).
+DOSE_SERIES_DESCRIPTION = "PregDos TOPAS doses"
+
+
+def _dose_comment(what: str) -> str:
+    """``PregDos/TOPAS field 1: Gy(RBE)=physical x1.1, whole course``, within LO's 64 characters."""
+    return f"PregDos/TOPAS {what}: Gy(RBE)=physical x1.1, whole course"[:64]
 
 #: Constant proton RBE.  Applied *only* on the way out to a TPS, so the cube overlays the
 #: clinical plan (which is Gy(RBE)).  PregDos itself never reports RBE-weighted dose.
@@ -266,7 +274,7 @@ def _encode(ds: Dataset, dose_gy: np.ndarray) -> None:
     ds["PixelData"].VR = "OW" if int(ds.BitsAllocated) > 8 else "OB"
 
 
-def _derive(template: Dataset, series_uid: str, summation: str, description: Optional[str],
+def _derive(template: Dataset, series_uid: str, summation: str, what: str,
             plan: Dataset, beam_number: Optional[int] = None, preserve_identity: bool = False) -> Dataset:
     """Copy the clinical RTDOSE and re-identify it as *our* dose, keeping its plan reference.
 
@@ -274,6 +282,9 @@ def _derive(template: Dataset, series_uid: str, summation: str, description: Opt
     TPS already associates with the clinical dose.  Only its beam reference is ours: a BEAM
     dose names its own beam, whichever dose it was built from, and any other dose names none.
     A PLAN dose built from Eclipse's field-1 dose would otherwise still claim to be beam 1.
+
+    ``what`` ("field 1", "plan") goes into the DoseComment.  A dose that keeps Eclipse's
+    identity keeps its description and comment too.
     """
     ds = copy.deepcopy(template)
     ds.DoseUnits = "GY"
@@ -306,10 +317,9 @@ def _derive(template: Dataset, series_uid: str, summation: str, description: Opt
     transfer_syntax = ds.file_meta.get("TransferSyntaxUID", ExplicitVRLittleEndian)
     ds.is_little_endian = True
     ds.is_implicit_VR = transfer_syntax == ImplicitVRLittleEndian
-    if description is not None:
-        ds.SeriesDescription = description
     if not preserve_identity:
-        ds.DoseComment = _DOSE_COMMENT
+        ds.SeriesDescription = DOSE_SERIES_DESCRIPTION
+        ds.DoseComment = _dose_comment(what)
     return ds
 
 
@@ -340,7 +350,7 @@ def plan_copy(plan: Dataset) -> Dataset:
     return ds
 
 
-def _for_plan_copy(ds: Dataset, copy_of_plan: Dataset, series_uid: str) -> Dataset:
+def _for_plan_copy(ds: Dataset, copy_of_plan: Dataset, series_uid: str, what: str) -> Dataset:
     """Turn an exported dose into the bundle's: a new object referencing the plan copy.
 
     Mutates ``ds`` -- it has been written as a loose file already -- rather than copying a
@@ -350,7 +360,8 @@ def _for_plan_copy(ds: Dataset, copy_of_plan: Dataset, series_uid: str) -> Datas
     ds.SOPInstanceUID = generate_uid()
     ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
     ds.SeriesInstanceUID = series_uid
-    ds.DoseComment = _DOSE_COMMENT
+    ds.SeriesDescription = DOSE_SERIES_DESCRIPTION
+    ds.DoseComment = _dose_comment(what)
     return ds
 
 
@@ -516,22 +527,22 @@ def _write_doses(run_dir: Path, cubes: List[Tuple[int, Path]], templates: List[D
 
         total = dose.copy() if total is None else total + dose
         beam_number = field_number if field_number in beam_numbers else None
-        ds = _derive(template, series_uid, "BEAM", f"PregDos TOPAS field {field_number}",
-                     plan, beam_number=beam_number)
+        ds = _derive(template, series_uid, "BEAM", f"field {field_number}", plan,
+                     beam_number=beam_number)
         _encode(ds, dose)
         out = run_dir / f"{FIELD_DOSE_PREFIX}{field_number:02d}.dcm"
         ds.save_as(out, enforce_file_format=True)
         written.append(out)
-        _add_to_bundle(bundle, out.name, _for_plan_copy(ds, copy_of_plan, bundle_series_uid))
+        _add_to_bundle(bundle, out.name,
+                       _for_plan_copy(ds, copy_of_plan, bundle_series_uid, f"field {field_number}"))
 
     # The summed cube: what clinical staff actually review, rather than field-by-field.
     assert total is not None and cube is not None
     template, is_plan_dose = _plan_template(templates, cube)
-    ds = _derive(template, series_uid, "PLAN", None if is_plan_dose else "PregDos TOPAS plan",
-                 plan, preserve_identity=is_plan_dose)
+    ds = _derive(template, series_uid, "PLAN", "plan", plan, preserve_identity=is_plan_dose)
     _encode(ds, total)
     plan_out = run_dir / PLAN_DOSE_NAME
     ds.save_as(plan_out, enforce_file_format=True)
     written.append(plan_out)
-    _add_to_bundle(bundle, plan_out.name, _for_plan_copy(ds, copy_of_plan, bundle_series_uid))
+    _add_to_bundle(bundle, plan_out.name, _for_plan_copy(ds, copy_of_plan, bundle_series_uid, "plan"))
     return written
