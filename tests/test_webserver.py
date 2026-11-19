@@ -3155,3 +3155,17 @@ def test_a_refusal_brings_a_typed_geant4_material_back_in_its_field(client, tmp_
     assert "&#39;Femur&#39; is not a structure of this study" in body
     assert 'value="G4_BONE_COMPACT_ICRU"' in body
     assert studies.list_runs(tmp_path, "mystudy") == []
+
+
+def test_the_results_page_shows_no_total_for_a_field_without_results(client, tmp_path):
+    """Codex review of #132: a total over the fields that happen to have results looks
+    complete.  The page says which field has none instead."""
+    from tests.test_reporting import _finished_sources_run
+    _make_study(tmp_path, "alpha")
+    run_id, run_dir = studies.create_run(tmp_path, "alpha")
+    _finished_sources_run(run_dir, short=3)
+
+    body = client.get(f"/studies/alpha/{run_id}").data.decode()
+
+    assert "No total: no result for field 3" in body
+    assert "All 2 fields" not in body

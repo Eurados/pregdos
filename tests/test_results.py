@@ -628,3 +628,26 @@ def test_only_the_head_of_the_input_is_searched(tmp_path):
     p = tmp_path / "topas_field01.txt"
     p.write_text("# header\n" + "s:X = 1\n" * 100 + "# BEAM_NAME: too late\n")
     assert results.field_beam_name(p) == ""
+
+
+def test_a_finished_field_still_missing_a_batch_is_named(tmp_path):
+    """Once the field has ended, the missing batches will never come: say so, or the field
+    silently drops out of the results (and out of every total over fields)."""
+    _batched_run(tmp_path, runs=10, written=7)
+
+    found, warnings = results.collect_results(tmp_path, finished={"topas_field01.txt"})
+
+    assert found == []
+    assert len(warnings) == 1
+    assert "topas_field01.txt has ended" in warnings[0] and "batch(es) 7, 8, 9 of 10" in warnings[0]
+
+
+def test_a_field_still_running_is_not_named(tmp_path):
+    _batched_run(tmp_path, runs=10, written=7)
+    assert results.collect_results(tmp_path, finished={"topas_field02.txt"}) == ([], [])
+
+
+def test_run_fields_are_the_generated_inputs(tmp_path):
+    for name in ("topas_field01.txt", "topas_field03.txt", "topas_field10.txt", "structure_mask_prepass.txt"):
+        (tmp_path / name).write_text("x")
+    assert results.run_fields(tmp_path) == {1, 3, 10}

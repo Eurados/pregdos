@@ -573,11 +573,29 @@ def planned_fractions(rtplan_path: Optional[str | Path]) -> Optional[int]:
     return None
 
 
-def collect_results(run_dir: str | Path) -> Tuple[List[ScorerResult], List[str]]:
+_FIELD_INPUT_RE = re.compile(r"^topas_field(\d+)\.txt$")
+
+
+def run_fields(run_dir: str | Path) -> set:
+    """The field numbers a run has: one generated input ``topas_field<nn>.txt`` each.
+
+    The inputs, not the results, say which fields there are, so a field with no result at all
+    is still counted -- the same rule as :func:`pregdos.rtdose.missing_field_cubes`.
+    """
+    return {int(m.group(1)) for path in Path(run_dir).glob("topas_field*.txt")
+            if (m := _FIELD_INPUT_RE.match(path.name))}
+
+
+def collect_results(run_dir: str | Path, finished: Optional[set] = None) -> Tuple[List[ScorerResult], List[str]]:
     """Parse every scorer CSV in a run directory.
 
     Returns the results (sorted for a stable table) and a list of warnings for files that
     could not be parsed.  Never raises: a broken CSV must not take the results page down.
+
+    ``finished`` names the TOPAS inputs (``topas_field01.txt``) of the fields that have ended.
+    A scorer of such a field still missing a batch will never be complete: it is left out, as
+    while running, but now with a warning, since leaving it out silently would lose that field
+    from the results without a trace.
     """
     run_dir = Path(run_dir)
     results: List[ScorerResult] = []
@@ -613,7 +631,14 @@ def collect_results(run_dir: str | Path) -> Tuple[List[ScorerResult], List[str]]
         # so wait, as for an empty CSV above.
         layout = scaling_for(parts[0], run_dir)
         expected = layout.runs if layout is not None else 0
-        if [n for n, _ in files] != list(range(expected or len(files))):
+        present = [n for n, _ in files]
+        if present != list(range(expected or len(files))):
+            source = Path(parts[0].parameter_file or "").name
+            if finished is not None and source in finished:
+                missing = sorted(set(range(expected or len(files))) - set(present))
+                warnings.append(
+                    f"{stem}: {source} has ended, but batch(es) {', '.join(map(str, missing))} of "
+                    f"{expected or '?'} wrote no result, so this scorer is left out for that field.")
             continue
         try:
             results.append(combine_batches(parts, f"{stem}_Run_*.csv"))

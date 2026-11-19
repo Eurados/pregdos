@@ -203,3 +203,79 @@ def test_a_complete_header_is_not_warned_about():
     scaling = results.PlanScaling(particle_scaling=1.0, requested_histories=100, simulated_histories=99,
                                   spot_mode="sources", runs=10, events_per_run=15)
     assert reporting._scaling_warning(scaling) is None
+
+
+# --- A total over fields needs every field (Codex review of #132) ------------------------------
+
+def _row(field, value=1.0):
+    return {"scorer": "DoseWater_CTV", "structure": "CTV", "quantity": "DoseToWater", "unit": "Gy",
+            "field": field, "sum": value, "sd": 0.1, "problem": None}
+
+
+def test_a_group_lacking_a_field_of_the_run_gets_no_total():
+    """Field 3 wrote nothing: a sum over fields 1 and 2 would look like the whole plan."""
+    (group,) = reporting.group_rows([_row(1), _row(2)], expected_fields={1, 2, 3})
+    assert group["total_sum"] is None
+    assert group["missing_fields"] == [3]
+
+
+def test_a_group_with_every_field_is_totalled():
+    (group,) = reporting.group_rows([_row(1), _row(2), _row(3)], expected_fields={1, 2, 3})
+    assert group["total_sum"] == pytest.approx(3.0)
+    assert group["missing_fields"] == []
+
+
+def _finished_sources_run(run_dir, fields=(1, 2, 3), runs=3, short=None):
+    """A finished sources-mode run; field ``short`` wrote only some of its batches."""
+    import json
+    (run_dir / "run.json").write_text(json.dumps({
+        "backend": "local", "submitted": "now",
+        "fields": [{"topas_file": f"topas_field{n:02d}.txt", "ident": str(n)} for n in fields]}))
+    for n in fields:
+        (run_dir / f"topas_field{n:02d}.txt").write_text(
+            "# REQUESTED_HISTORIES: 20000\n# SIMULATED_HISTORIES: 20000\n# PARTICLE_SCALING: 1.0\n"
+            f"# SPOT_MODE: sources\n# SPOTS: 10\n# RUNS: {runs}\n# EVENTS_PER_RUN: 15\n")
+        (run_dir / f"topas_field{n:02d}.exit_code").write_text("0\n")
+        for k in range(runs - 1 if n == short else runs):
+            (run_dir / f"topas_field{n:02d}_dose_to_water_CTV_Run_{k:04d}.csv").write_text(
+                f"# Parameter File: topas_field{n:02d}.txt\n# Results for scorer: DoseWater_CTV\n"
+                f"# DoseToWater ( Gy ) : Sum   Standard_Deviation\n{1.0 + k}, 5\n")
+
+
+def test_a_missing_batch_suppresses_the_total_and_is_reported(tmp_path):
+    """The reproduction: one missing batch CSV of field 3 silently removed field 3, and the
+    report still gave an ALL row over fields 1 and 2."""
+    _finished_sources_run(tmp_path, short=3)
+
+    csv_text = reporting.build_report_csv(tmp_path, "study", "run", tmp_path)
+
+    assert ",ALL," in csv_text
+    all_row = next(line for line in csv_text.splitlines() if ",ALL," in line)
+    assert "no total: no result for field 3" in all_row
+    assert "sum over" not in csv_text
+    assert "topas_field03.txt has ended, but batch(es) 2 of 3 wrote no result" in csv_text
+
+
+def test_a_complete_run_is_totalled(tmp_path):
+    _finished_sources_run(tmp_path)
+    csv_text = reporting.build_report_csv(tmp_path, "study", "run", tmp_path)
+    assert "sum over 3 fields" in csv_text and "no total" not in csv_text
+
+
+@pytest.mark.parametrize("runs, expected", [
+    (10, "spread of the 10 batch results"),
+    (1, "ran as a single batch"),
+])
+def test_the_uncertainty_note_follows_the_spot_mode(tmp_path, runs, expected):
+    _finished_sources_run(tmp_path, runs=runs)
+    (note,) = reporting.uncertainty_notes(tmp_path)
+    assert expected in note
+    assert "simulated histories" not in note
+
+
+def test_the_uncertainty_note_for_time_feature_is_per_history(tmp_path):
+    (tmp_path / "topas_field01.txt").write_text(
+        "# REQUESTED_HISTORIES: 20000\n# SIMULATED_HISTORIES: 19990\n# PARTICLE_SCALING: 1.0\n"
+        "# SPOT_MODE: timefeature\n# SPOTS: 10\n# RUNS: 10\n")
+    (note,) = reporting.uncertainty_notes(tmp_path)
+    assert "N = simulated histories" in note

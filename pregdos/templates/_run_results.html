@@ -59,6 +59,13 @@
                 </td>
                 <td>{{ dt.unit }}</td>
               </tr>
+            {% elif g.missing_fields %}
+              {# A total over the fields that happen to have results would look complete. #}
+              <tr class="scorer-total">
+                <td colspan="3"></td>
+                <td><strong>All fields</strong></td>
+                <td colspan="3" class="hint">No total: no result for field {{ g.missing_fields | join(", ") }}</td>
+              </tr>
             {% endif %}
           </tbody>
         {% endfor %}
