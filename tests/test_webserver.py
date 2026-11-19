@@ -2176,6 +2176,30 @@ def test_full_run_archive_missing_run_redirects(client, tmp_path):
 
 # --- issue #79: the task page refreshes a fragment, not the whole document ---
 
+def test_a_field_with_nothing_done_yet_says_initialising(client, tmp_path):
+    """Not "spot 0/659 · 0/19,990 histories" under a bar stuck at 0 while TOPAS sets up (#144)."""
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field01.exit_code").unlink()          # running ...
+    (run_dir / "topas_field01.log").write_text("TOPAS is loading the CT\n")   # ... started, nothing done
+
+    html = client.get(f"/studies/alpha/{run_id}/progress").get_json()["html"]
+
+    assert "initialising…" in html
+    assert "0/19,990 histories" not in html
+
+
+def test_a_field_topas_has_not_started_says_waiting(client, tmp_path):
+    """Behind the fields before it, or in the SLURM queue: not initialising."""
+    run_id, run_dir = _completed_run(tmp_path)
+    (run_dir / "topas_field01.exit_code").unlink()
+    for log in run_dir.glob("topas_field01*.log"):
+        log.unlink()
+
+    html = client.get(f"/studies/alpha/{run_id}/progress").get_json()["html"]
+
+    assert "waiting…" in html and "initialising…" not in html
+
+
 def test_progress_fragment_returns_the_live_block(client, tmp_path):
     run_id, _ = _completed_run(tmp_path)
 

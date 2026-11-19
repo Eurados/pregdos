@@ -1471,6 +1471,8 @@ def _live_state(run_dir: Path):
             "total_runs": p.total_runs,
             "failure": p.failure,
             "unit": p.unit,
+            "initialising": p.initialising,
+            "started": p.started,
         }
         for p in field_progress
     ]
