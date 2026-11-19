@@ -385,3 +385,46 @@ def test_a_table_topas_would_read_out_of_bounds_gives_no_mass(tmp_path):
 
     with pytest.raises(structure_metrics.StructureMetricsError, match="MinImagingValue = -1024"):
         structure_metrics._density_from_hu(np.zeros(3), table)
+
+
+# --- Overrides inside scored structures (Codex review of #132) ---------------------------------
+
+def test_overridden_structures_are_masked_alongside_scored_ones(tmp_path):
+    topas = tmp_path / "topas_field01.txt"
+    topas.write_text('s:Ge/Patient/DicomDirectory = "../dicom"\n')
+
+    structure_metrics.write_mask_prepass(topas, ["CTV"], overridden=["Hip implant", "CTV"])
+
+    text = (tmp_path / "structure_mask_prepass.txt").read_text()
+    assert 'OnlyIncludeIfInRTStructure = 1 "CTV"' in text
+    assert 'OnlyIncludeIfInRTStructure = 1 "Hip implant"' in text
+    assert text.count('OnlyIncludeIfInRTStructure = 1 "CTV"') == 1
+
+
+def test_overrides_alone_make_no_prepass(tmp_path):
+    """The masks only serve to compare with scored structures."""
+    topas = tmp_path / "topas_field01.txt"
+    topas.write_text('s:Ge/Patient/DicomDirectory = "../dicom"\n')
+    assert structure_metrics.write_mask_prepass(topas, [], overridden=["Hip implant"]) is None
+
+
+def test_metrics_record_how_much_of_a_structure_an_override_covers(tmp_path, monkeypatch):
+    import numpy as np
+
+    _prepass_with_masks(tmp_path, structures=("Uterus", "Implant", "Marker"))
+    prepass = tmp_path / "structure_mask_prepass.txt"
+    prepass.write_text('s:Ge/Patient/DicomDirectory = "../dicom"\nincludeFile = ../t.txt\n' + prepass.read_text())
+    (tmp_path / "topas_field01.txt").write_text(
+        "# CONFIG_DIR: /cfg\n# MATERIAL_OVERRIDE: Implant=G4_Ti\n# MATERIAL_OVERRIDE: Marker=G4_AIR\n")
+    masks = {"Uterus": [0, 0, 0, -1], "Implant": [-1, 0, -1, -1], "Marker": [-1, -1, -1, 0]}
+    for name, values in masks.items():
+        (tmp_path / f"structure_mask_{name}.bin").write_bytes(np.array(values, dtype="<f8").tobytes())
+    _patch_ct(monkeypatch, tmp_path)
+
+    payload = structure_metrics.compute_metrics(tmp_path)
+
+    assert payload["structures"]["Uterus"]["override_overlaps"] == [
+        {"override": "Implant", "material": "G4_Ti", "voxel_count": 1, "volume_cm3": 1.0}]
+    # An override covers itself entirely; one outside a structure is not listed.
+    assert [o["override"] for o in payload["structures"]["Implant"]["override_overlaps"]] == ["Implant"]
+    assert [o["override"] for o in payload["structures"]["Marker"]["override_overlaps"]] == ["Marker"]

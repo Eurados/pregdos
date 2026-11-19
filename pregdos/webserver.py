@@ -1144,7 +1144,9 @@ def convert():
     prepass = None
     if selected_structures:
         try:
-            prepass = structure_metrics.write_mask_prepass(run_dir / result.out_files[0], selected_structures)
+            prepass = structure_metrics.write_mask_prepass(
+                run_dir / result.out_files[0], selected_structures,
+                overridden=[roi for roi, _ in material_overrides])
         except Exception as err:
             shutil.rmtree(run_dir, ignore_errors=True)
             flash(f"Structure mask pre-pass setup failed: {err}")
