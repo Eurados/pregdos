@@ -188,11 +188,51 @@ def warnings(intake: Intake) -> List[str]:
             f"Found {n_dose} RTDOSE files. The in-field dose grid will be cloned from one of "
             "them, chosen arbitrarily; this affects only the optional in-field scorer."
         )
+    if mismatch := _structure_set_mismatch(intake):
+        notes.append(mismatch)
     if intake.ignored:
         names = ", ".join(p.name for p in intake.ignored[:3])
         more = f" (and {len(intake.ignored) - 3} more)" if len(intake.ignored) > 3 else ""
         notes.append(f"Discarded {len(intake.ignored)} unusable file(s): {names}{more}.")
     return notes
+
+
+def _structure_set_mismatch(intake: Intake) -> Optional[str]:
+    """Why the RTPLAN was planned on another structure set than the uploaded RTSTRUCT, or None.
+
+    A study can be assembled from two exports: the plan from one, a later structure set from
+    another (#125).  The run then scores structures the plan was not made on, and Eclipse's
+    DICOM Import of the RTDOSE package needs the plan's own structure set, which the upload
+    does not hold.  A warning, not a refusal: the CT and the plan still agree, so the dose is
+    right.
+    """
+    plans, structure_sets = intake.by_modality(RTPLAN), intake.by_modality(RTSTRUCT)
+    if len(plans) != 1 or len(structure_sets) != 1:
+        return None                                   # validate() refuses these anyway
+    try:
+        plan = pydicom.dcmread(str(plans[0].path), stop_before_pixels=True,
+                               specific_tags=["ReferencedStructureSetSequence"])
+        rs = pydicom.dcmread(str(structure_sets[0].path), stop_before_pixels=True,
+                             specific_tags=["SOPInstanceUID", "StructureSetLabel", "StructureSetDate"])
+    except Exception:  # noqa: BLE001 - a header that cannot be read has nothing to compare
+        return None
+    referenced = [str(ref.ReferencedSOPInstanceUID)
+                  for ref in getattr(plan, "ReferencedStructureSetSequence", None) or []
+                  if getattr(ref, "ReferencedSOPInstanceUID", None)]
+    uploaded = str(getattr(rs, "SOPInstanceUID", "") or "")
+    if not referenced or not uploaded or uploaded in referenced:
+        return None
+    label = str(getattr(rs, "StructureSetLabel", "") or "").strip()
+    date = str(getattr(rs, "StructureSetDate", "") or "").strip()
+    if len(date) == 8 and date.isdigit():
+        date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
+    about = ", ".join(part for part in (f'"{label}"' if label else "", date) if part)
+    return (
+        f"The RTPLAN was made on another structure set (UID {referenced[0]}) than the "
+        f"uploaded RTSTRUCT ({about + ', ' if about else ''}UID {uploaded}). Structures are "
+        f"scored on the uploaded one. Eclipse's DICOM Import of the RTDOSE package needs the "
+        f"plan's own structure set and CT in Eclipse."
+    )
 
 
 def flatten(intake: Intake) -> int:

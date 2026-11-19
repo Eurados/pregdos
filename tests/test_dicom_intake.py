@@ -6,7 +6,9 @@ scans that directory non-recursively, and finds no CT.
 """
 
 
+import pydicom
 import pytest
+from pydicom.dataset import Dataset
 
 from pregdos import dicom_intake
 from pregdos.dicom_intake import flatten, scan, validate, warnings
@@ -278,3 +280,46 @@ def test_flatten_leaves_a_subdirectory_that_still_holds_something(tmp_path):
 def test_required_and_singleton_constants_agree_with_dicomexport():
     assert dicom_intake.REQUIRED == ("CT", "RTSTRUCT", "RTPLAN", "RTDOSE")
     assert dicom_intake.SINGLETON == ("RTSTRUCT", "RTPLAN")
+
+
+# --- The plan's structure set against the uploaded one (#125) ---------------------------------
+
+def _plan_on(root, structure_set_uid):
+    """Replace the study's RTPLAN with one made on the given structure set."""
+    path = root / "RN.dcm"
+    plan = pydicom.dcmread(path)
+    ref = Dataset()
+    ref.ReferencedSOPClassUID = "1.2.840.10008.5.1.4.1.1.481.3"
+    ref.ReferencedSOPInstanceUID = structure_set_uid
+    plan.ReferencedStructureSetSequence = [ref]
+    plan.save_as(path)
+
+
+def _structure_set_uid(root):
+    return str(pydicom.dcmread(root / "RS.dcm").SOPInstanceUID)
+
+
+def test_a_plan_made_on_another_structure_set_is_a_warning(tmp_path):
+    """The DCPT head phantom: plan from one export, a later structure set from another."""
+    root = _flat_study(tmp_path / "s")
+    _plan_on(root, "1.2.3.4.5")
+
+    intake = scan(root)
+
+    assert validate(intake) == []
+    [note] = [n for n in warnings(intake) if "structure set" in n]
+    assert "UID 1.2.3.4.5" in note and _structure_set_uid(root) in note
+    assert "Eclipse's DICOM Import" in note
+
+
+def test_a_plan_made_on_the_uploaded_structure_set_is_quiet(tmp_path):
+    root = _flat_study(tmp_path / "s")
+    _plan_on(root, _structure_set_uid(root))
+
+    assert not [n for n in warnings(scan(root)) if "structure set" in n]
+
+
+def test_a_plan_naming_no_structure_set_is_quiet(tmp_path):
+    root = _flat_study(tmp_path / "s")
+
+    assert not [n for n in warnings(scan(root)) if "structure set" in n]

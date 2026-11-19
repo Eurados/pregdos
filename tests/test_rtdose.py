@@ -146,7 +146,7 @@ def test_plan_derive_can_preserve_eclipse_identity():
         template,
         series_uid=generate_uid(),
         summation="PLAN",
-        description=None,
+        what="plan",
         plan=Dataset(),
         preserve_identity=True,
     )
@@ -440,3 +440,20 @@ def test_import_identity_survives_a_bundle_it_cannot_read(tmp_path):
     (tmp_path / rtdose.IMPORT_BUNDLE_NAME).write_bytes(b"not a zip at all")
 
     assert rtdose.import_identity(tmp_path) is None
+
+
+def test_every_dose_shares_one_series_named_for_all_and_says_which_it_is(tmp_path, monkeypatch):
+    """A TPS shows a series by one description; it named the series after field 1 (#125)."""
+    run = _study(tmp_path, monkeypatch, [_clinical(beam=1), _clinical(beam=2)])
+    fields, plan = _exported(run)
+    bundle = _bundle(run)
+
+    for doses in ([fields[1], fields[2], plan],
+                  [bundle["rtdose_field01.dcm"], bundle["rtdose_field02.dcm"], bundle[rtdose.PLAN_DOSE_NAME]]):
+        assert {ds.SeriesDescription for ds in doses} == {rtdose.DOSE_SERIES_DESCRIPTION}
+        assert [ds.DoseComment.split(":")[0] for ds in doses] == [
+            "PregDos/TOPAS field 1", "PregDos/TOPAS field 2", "PregDos/TOPAS plan"]
+
+
+def test_dose_comment_fits_dicom_lo():
+    assert len(rtdose._dose_comment("field 99")) <= 64
