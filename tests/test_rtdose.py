@@ -341,3 +341,158 @@ def test_a_32_bit_cube_is_read_with_its_scaling_and_keeps_its_low_dose(tmp_path)
     dose = out.pixel_array.astype(np.float64) * float(out.DoseGridScaling)
     assert dose.min() > 0
     assert dose.min() / dose.max() == pytest.approx(stored.min() / stored.max(), rel=1e-3)
+
+
+# --- Choosing the clinical template for each exported dose (#125) -----------------------------
+#
+# An Eclipse export holds either a plan dose or one dose per field.  Each output is built from
+# the matching one, and a plan dose built from a field dose must neither reference that beam
+# nor carry that dose's identity, or Eclipse would take it for that field.
+
+PLAN_UID = "1.2.826.0.1.3680043.8.498.1"
+
+
+def _clinical(beam=None, instance=1, plan_uid=PLAN_UID, position=(0.0, 0.0, 0.0)) -> Dataset:
+    """An Eclipse RTDOSE: a field dose for ``beam``, or the plan dose if ``beam`` is None."""
+    ds = _template()
+    ds.SeriesInstanceUID = generate_uid()
+    ds.InstanceNumber = instance
+    ds.ImagePositionPatient = list(position)
+    ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
+    ds.PixelSpacing = [1, 1]
+    ds.GridFrameOffsetVector = [0]
+    ref_plan = Dataset()
+    ref_plan.ReferencedSOPClassUID = "1.2.840.10008.5.1.4.1.1.481.8"
+    ref_plan.ReferencedSOPInstanceUID = plan_uid
+    group = Dataset()
+    group.ReferencedFractionGroupNumber = 1
+    if beam is not None:
+        ds.DoseSummationType = "BEAM"
+        ref_beam = Dataset()
+        ref_beam.ReferencedBeamNumber = beam
+        group.ReferencedBeamSequence = [ref_beam]
+    ref_plan.ReferencedFractionGroupSequence = [group]
+    ds.ReferencedRTPlanSequence = [ref_plan]
+    return ds
+
+
+def _study(tmp_path, monkeypatch, clinical, beams=(1, 2)):
+    """A study with an RTPLAN, the given clinical RTDOSEs, and a finished run of ``beams``."""
+    dicom, run = tmp_path / "dicom", tmp_path / "run"
+    dicom.mkdir()
+    run.mkdir()
+    plan = Dataset()
+    plan.file_meta = FileMetaDataset()
+    plan.file_meta.MediaStorageSOPClassUID = pydicom.uid.RTIonPlanStorage
+    plan.file_meta.MediaStorageSOPInstanceUID = pydicom.uid.UID(PLAN_UID)
+    plan.file_meta.TransferSyntaxUID = ImplicitVRLittleEndian
+    plan.SOPClassUID = plan.file_meta.MediaStorageSOPClassUID
+    plan.SOPInstanceUID = PLAN_UID
+    group = Dataset()
+    group.FractionGroupNumber = 1
+    group.NumberOfFractionsPlanned = 1
+    plan.FractionGroupSequence = [group]
+    beam_items = []
+    for number in beams:
+        beam = Dataset()
+        beam.BeamNumber = number
+        beam.BeamName = f"F{number}"
+        beam_items.append(beam)
+    plan.IonBeamSequence = beam_items
+    plan.save_as(dicom / "RN.plan.dcm", enforce_file_format=True)
+    for i, ds in enumerate(clinical):
+        ds.save_as(dicom / f"RD.{i}.dcm", enforce_file_format=True)
+    for number in beams:
+        (run / f"topas_field{number:02d}.txt").write_text("input")
+        cube = _clinical()
+        cube.PixelData = np.full((1, 2, 2), number, dtype="<u4").tobytes()
+        cube.save_as(run / f"topas_field{number:02d}.dcm", enforce_file_format=True)
+    monkeypatch.setattr(rtdose, "_plan_scale", lambda run_dir, field_number: 1.0)
+    return run
+
+
+def _exported(run):
+    rtdose.postprocess(run)
+    fields = {int(p.stem[-2:]): pydicom.dcmread(p) for p in sorted(run.glob("rtdose_field*.dcm"))}
+    return fields, pydicom.dcmread(run / rtdose.PLAN_DOSE_NAME)
+
+
+def test_field_doses_only_plan_dose_neither_references_a_beam_nor_borrows_an_identity(tmp_path, monkeypatch):
+    """The bug #125 exposed: the plan dose was built from Eclipse's field-1 dose and kept both
+    its beam reference and its SOP Instance UID."""
+    clinical = [_clinical(beam=1, instance=11), _clinical(beam=2, instance=12)]
+    fields, plan = _exported(_study(tmp_path, monkeypatch, clinical))
+
+    assert plan.DoseSummationType == "PLAN"
+    assert rtdose._beam_references(plan) == ()
+    assert plan.ReferencedRTPlanSequence[0].ReferencedSOPInstanceUID == PLAN_UID
+    assert plan.SOPInstanceUID not in {ds.SOPInstanceUID for ds in clinical}
+    assert plan.SeriesInstanceUID not in {ds.SeriesInstanceUID for ds in clinical}
+    assert plan.SeriesInstanceUID == fields[1].SeriesInstanceUID
+    assert "PregDos" in plan.DoseComment
+    # The sum of both fields, to within half the template's dose step.
+    np.testing.assert_allclose(plan.pixel_array * float(plan.DoseGridScaling), 3 * 3e-05 * 1.1, atol=1.5e-05)
+
+
+def test_each_field_dose_is_built_from_eclipses_dose_for_that_beam(tmp_path, monkeypatch):
+    clinical = [_clinical(beam=2, instance=12), _clinical(beam=1, instance=11)]
+    fields, _ = _exported(_study(tmp_path, monkeypatch, clinical))
+
+    for number in (1, 2):
+        assert fields[number].InstanceNumber == 10 + number
+        assert rtdose._beam_references(fields[number]) == (number,)
+        assert fields[number].DoseSummationType == "BEAM"
+
+
+def test_plan_dose_study_keeps_eclipses_plan_dose_identity(tmp_path, monkeypatch):
+    """Unchanged from before #125: built from Eclipse's own plan dose, the plan dose keeps it."""
+    clinical = [_clinical(instance=10)]
+    fields, plan = _exported(_study(tmp_path, monkeypatch, clinical))
+
+    assert plan.SOPInstanceUID == clinical[0].SOPInstanceUID
+    assert plan.SeriesInstanceUID == clinical[0].SeriesInstanceUID
+    assert rtdose._beam_references(plan) == ()
+    for number in (1, 2):
+        assert rtdose._beam_references(fields[number]) == (number,)
+        assert fields[number].SOPInstanceUID != clinical[0].SOPInstanceUID
+
+
+def test_with_both_the_plan_dose_comes_from_the_plan_dose_and_fields_from_field_doses(tmp_path, monkeypatch):
+    clinical = [_clinical(beam=1, instance=11), _clinical(instance=10), _clinical(beam=2, instance=12)]
+    fields, plan = _exported(_study(tmp_path, monkeypatch, clinical))
+
+    assert plan.InstanceNumber == 10 and plan.SOPInstanceUID == clinical[1].SOPInstanceUID
+    assert [fields[n].InstanceNumber for n in (1, 2)] == [11, 12]
+
+
+def test_doses_of_another_plan_are_not_templates(tmp_path, monkeypatch):
+    clinical = [_clinical(beam=1, instance=99, plan_uid="1.2.3.999"), _clinical(beam=1, instance=11)]
+    fields, plan = _exported(_study(tmp_path, monkeypatch, clinical, beams=(1,)))
+
+    assert fields[1].InstanceNumber == 11
+    assert plan.InstanceNumber == 11
+
+
+def test_a_dose_on_another_grid_is_not_a_template(tmp_path, monkeypatch):
+    clinical = [_clinical(beam=1, instance=11, position=(5.0, 0.0, 0.0)), _clinical(beam=2, instance=12)]
+    fields, plan = _exported(_study(tmp_path, monkeypatch, clinical))
+
+    assert fields[1].InstanceNumber == 12            # borrowed, but still beam 1
+    assert rtdose._beam_references(fields[1]) == (1,)
+    assert plan.InstanceNumber == 12
+
+
+def test_no_dose_on_the_cubes_grid_is_refused(tmp_path, monkeypatch):
+    clinical = [_clinical(beam=1, position=(5.0, 0.0, 0.0))]
+    run = _study(tmp_path, monkeypatch, clinical, beams=(1,))
+
+    with pytest.raises(rtdose.RTDoseError, match="dose grid of field 1"):
+        rtdose.postprocess(run)
+
+
+def test_grids_match_despite_topas_shorter_positions():
+    """TOPAS writes -149.707031 where Eclipse wrote -149.7070313: the same grid."""
+    eclipse = _clinical(position=(-149.7070313, -261.7929688, -139.0))
+    topas = _clinical(position=(-149.707031, -261.793, -139.0))
+
+    assert rtdose._same_grid(eclipse, topas)
