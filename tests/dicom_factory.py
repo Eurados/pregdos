@@ -22,8 +22,13 @@ SOP = {
 STUDY_UID = "1.2.826.0.1.1"
 
 
-def write(path: Path, modality, patient="PAT1", study=STUDY_UID, series=None, rois=(), fractions=None):
-    """Write one DICOM file of the given modality."""
+def write(path: Path, modality, patient="PAT1", study=STUDY_UID, series=None, rois=(), fractions=None,
+          declared=None):
+    """Write one DICOM file of the given modality.
+
+    ``declared`` gives an RTSTRUCT's overrides as Eclipse writes them, by ROI name: a
+    ``MaterialID`` string, or a list of ``(ROIPhysicalProperty, value)`` pairs.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     sop = SOP[modality]
@@ -48,6 +53,25 @@ def write(path: Path, modality, patient="PAT1", study=STUDY_UID, series=None, ro
             roi.ROIName = name
             seq.append(roi)
         ds.StructureSetROISequence = seq
+        observations = []
+        for i, name in enumerate(rois, start=1):
+            obs = Dataset()
+            obs.ObservationNumber = i
+            obs.ReferencedROINumber = i
+            obs.RTROIInterpretedType = "CONTROL" if name in (declared or {}) else "ORGAN"
+            what = (declared or {}).get(name)
+            if isinstance(what, str):
+                obs.MaterialID = what
+            elif what:
+                props = []
+                for prop, value in what:
+                    item = Dataset()
+                    item.ROIPhysicalProperty = prop
+                    item.ROIPhysicalPropertyValue = value
+                    props.append(item)
+                obs.ROIPhysicalPropertiesSequence = props
+            observations.append(obs)
+        ds.RTROIObservationsSequence = observations
 
     if modality == "RTPLAN" and fractions is not None:
         group = Dataset()
@@ -59,12 +83,12 @@ def write(path: Path, modality, patient="PAT1", study=STUDY_UID, series=None, ro
     return path
 
 
-def flat_study(root: Path, n_ct=3, rois=("CTV", "Fetus")):
+def flat_study(root: Path, n_ct=3, rois=("CTV", "Fetus"), declared=None):
     """CT, RS, RN, RD all side by side -- the layout TOPAS needs."""
     root = Path(root)
     for i in range(n_ct):
         write(root / f"CT.{i}.dcm", "CT")
-    write(root / "RS.dcm", "RTSTRUCT", rois=rois)
+    write(root / "RS.dcm", "RTSTRUCT", rois=rois, declared=declared)
     write(root / "RN.dcm", "RTPLAN")
     write(root / "RD.dcm", "RTDOSE")
     return root

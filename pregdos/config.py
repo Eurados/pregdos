@@ -183,6 +183,20 @@ class Conversion:
     spot_mode: str = "sources"
 
 
+@dataclass(frozen=True)
+class Overrides:
+    """Material overrides (#126).
+
+    ``eclipse_materials`` maps an Eclipse material name, as an RTSTRUCT's ``MaterialID``
+    carries it, to the TOPAS material the setup page preselects for that structure, e.g.
+    ``S45C_Steel = "ImplantSteel"``.  Only a preselection: the user can pick another material
+    or none.  A structure Eclipse overrides with a value alone, such as a relative electron
+    density, is never mapped, since a value does not tell one material from another.
+    """
+
+    eclipse_materials: Dict[str, str] = field(default_factory=dict)
+
+
 #: Batches per field in sources mode, unless the user asks for a single batch (no
 #: uncertainty).  Not a setting: 10 gives the batch-means uncertainty 9 degrees of freedom.
 BATCHES = 10
@@ -196,13 +210,14 @@ class Config:
     auth: Auth = field(default_factory=Auth)
     network: Network = field(default_factory=Network)
     conversion: Conversion = field(default_factory=Conversion)
+    overrides: Overrides = field(default_factory=Overrides)
 
 
 # The whole schema.  Both the validator and the anti-drift test derive from this, so adding a
 # section is a one-line change here plus a dataclass.
 _SECTIONS: Dict[str, type] = {
     "paths": Paths, "scheduler": Scheduler, "server": Server, "auth": Auth, "network": Network,
-    "conversion": Conversion,
+    "conversion": Conversion, "overrides": Overrides,
 }
 
 # Set by `pregdos-web --config PATH`.  Beats $PREGDOS_CONFIG: the flag is the more explicit,
@@ -340,6 +355,13 @@ def _validate_values(cfg: Config, sources: List[Path]) -> None:
             raise ConfigError(
                 f"{where}: [{section}] {key}: {value} is negative. Use a positive value, "
                 f"or 0 to {meaning_of_zero}."
+            )
+
+    for eclipse_name, material in cfg.overrides.eclipse_materials.items():
+        if not isinstance(material, str) or not material.strip():
+            raise ConfigError(
+                f"{where}: [overrides.eclipse_materials] {eclipse_name}: expected the name of a "
+                f"TOPAS material, got {material!r}"
             )
 
     if cfg.conversion.spot_mode not in SPOT_MODES:
@@ -498,6 +520,7 @@ __all__ = [
     "Config",
     "ConfigError",
     "Network",
+    "Overrides",
     "Paths",
     "SYSTEM_CONFIG_PATH",
     "Scheduler",

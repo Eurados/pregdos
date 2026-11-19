@@ -504,3 +504,20 @@ def test_a_share_merely_containing_ipc_is_still_allowed(write_config):
     write_config('[server]\nhost = "127.0.0.1"\n[auth]\nmethod = "smb"\nsmb_share = "ipcs"\n')
 
     assert config.load().auth.smb_share == "ipcs"
+
+
+def test_eclipse_materials_map_eclipse_names_to_topas_materials(write_config):
+    write_config('[overrides.eclipse_materials]\nS45C_Steel = "ImplantSteel"\n"Titanium Alloy" = "G4_Ti"\n')
+    assert config.load().overrides.eclipse_materials == {
+        "S45C_Steel": "ImplantSteel", "Titanium Alloy": "G4_Ti"}
+
+
+def test_no_eclipse_materials_by_default():
+    assert config.load().overrides.eclipse_materials == {}
+
+
+@pytest.mark.parametrize("value", ['""', "3"])
+def test_an_eclipse_material_must_map_to_a_name(write_config, value):
+    write_config(f"[overrides.eclipse_materials]\nS45C_Steel = {value}\n")
+    with pytest.raises(config.ConfigError, match="S45C_Steel: expected the name of a TOPAS material"):
+        config.load()

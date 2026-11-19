@@ -413,13 +413,29 @@ def _upload_study_name(study_zip, study_dir_files) -> str:
     raise ValueError("No study upload provided")
 
 
-def get_structures(root, study_name):
-    """ROI names in the study's RTSTRUCT, or [] if there is none."""
+def _read_rtstruct(root, study_name):
+    """The study's RTSTRUCT without its contours, or None if there is none.
+
+    Only the names and the declared overrides are read: the contours are nearly all of the
+    file (16 MB of an Eclipse RTSTRUCT) and nothing here needs them.
+    """
     rs_path = studies.find_rtstruct(root, study_name)
     if rs_path is None:
-        return []
-    ds = pydicom.dcmread(str(rs_path))
-    return [roi.ROIName for roi in ds.StructureSetROISequence]
+        return None
+    return pydicom.dcmread(str(rs_path),
+                           specific_tags=["StructureSetROISequence", "RTROIObservationsSequence"])
+
+
+def get_structures(root, study_name):
+    """ROI names in the study's RTSTRUCT, or [] if there is none."""
+    ds = _read_rtstruct(root, study_name)
+    return [] if ds is None else [roi.ROIName for roi in ds.StructureSetROISequence]
+
+
+def get_declared_overrides(root, study_name):
+    """Eclipse's overrides in the study's RTSTRUCT, by structure name (#126)."""
+    ds = _read_rtstruct(root, study_name)
+    return {} if ds is None else overrides.declared_overrides(ds)
 
 
 def _dicomexport_cmd_prefix() -> list[str]:
@@ -761,25 +777,42 @@ def _setup_page(root, study_name, beam_model_name, material_table_name, form=Non
         # Checked by default on a fresh setup page; on a refusal, whatever was submitted -- the
         # form has to show the state the message is complaining about.
         keep_infield=bool(form.get("keep_infield")) if form else True,
-        **_override_context(form),
+        **_override_context(form, get_declared_overrides(root, study_name)),
     )
 
 
-def _override_context(form) -> dict:
-    """The material-override card: the materials on offer, and the rows to show.
-
-    Without a readable config dir only TOPAS's built-in materials are offered; the upload page
-    has already said why.  Submitted rows are carried back on a refusal, plus one spare.
-    """
+def _offered_materials() -> tuple[str | None, list[str], list[str]]:
+    """``(materials_file, site, offered)``: the site's materials.txt, the names it defines, and
+    every material an override may use."""
     try:
         materials_file = overrides.materials_file_of(dicomexport_listing())
     except RuntimeError:
         materials_file = None
-    rows = [row for row in overrides.submitted_rows(form) if any(row)]
+    site = overrides.site_materials(materials_file)
+    return materials_file, site, [*site, *overrides.BUILTIN_MATERIALS, *overrides.GEANT4_MATERIALS]
+
+
+def _override_context(form, declared) -> dict:
+    """The material-override card: the materials on offer, and the rows to show.
+
+    Without a readable config dir only TOPAS's built-in and Geant4's materials are offered; the
+    upload page has already said why.  A fresh page starts with a row for each structure
+    Eclipse overrides (#126); on a refusal the submitted rows come back.  Either way one spare
+    row follows, and each row of an Eclipse structure says what Eclipse declared.
+    """
+    _, site, offered = _offered_materials()
+    if "override_roi" in form:
+        rows = [overrides.Row(roi, material, f"Eclipse: {declared[roi]}" if roi in declared else "")
+                for roi, material in overrides.submitted_rows(form) if roi or material]
+    else:
+        rows = overrides.initial_rows(declared, config.load().overrides.eclipse_materials, offered)
     return {
-        "site_materials": overrides.site_materials(materials_file),
+        "site_materials": site,
         "builtin_materials": overrides.BUILTIN_MATERIALS,
-        "override_rows": rows + [("", "")] * (1 if rows else 2),
+        "geant4_materials": overrides.GEANT4_MATERIALS,
+        "in_dropdown": set(site) | set(overrides.BUILTIN_MATERIALS),
+        "other_value": overrides.OTHER,
+        "override_rows": rows + [overrides.Row()],
     }
 
 
@@ -1043,18 +1076,14 @@ def convert():
         return _setup_page(root, study_name, beam_model_name, material_table_name, request.form)
 
     # Material overrides (#126), checked against what the setup page offered, before anything
-    # exists on disk.  The config dir is listed only when a row is filled in.
+    # exists on disk.  The config dir is listed only when a row has a material.
     material_overrides: list = []
     materials_file = None
-    if any(any(row) for row in overrides.submitted_rows(request.form)):
-        try:
-            materials_file = overrides.materials_file_of(dicomexport_listing())
-        except RuntimeError:
-            materials_file = None
+    if any(material for _, material in overrides.submitted_rows(request.form)):
+        materials_file, _, offered = _offered_materials()
         try:
             material_overrides = overrides.from_form(
-                request.form, get_structures(root, study_name),
-                [*overrides.site_materials(materials_file), *overrides.BUILTIN_MATERIALS])
+                request.form, get_structures(root, study_name), offered)
         except (ValueError, StudyError) as e:
             flash(str(e))
             return _setup_page(root, study_name, beam_model_name, material_table_name, request.form)
