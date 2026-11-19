@@ -488,3 +488,24 @@ def test_two_simultaneous_exports_build_once_and_leave_a_sound_bundle(tmp_path, 
     with zipfile.ZipFile(run / rtdose.IMPORT_BUNDLE_NAME) as zf:
         assert zf.testzip() is None
     assert not list(run.glob("*.partial"))
+
+
+def test_a_custom_basename_is_exported_too(tmp_path, monkeypatch):
+    """Cubes and inputs named by the setup page's output basename, not topas_."""
+    run = _study(tmp_path, monkeypatch, [_clinical(beam=1), _clinical(beam=2)])
+    for path in list(run.glob("topas_field*")):
+        path.rename(path.with_name("check" + path.name.removeprefix("topas")))
+
+    fields, plan = _exported(run)
+
+    assert sorted(fields) == [1, 2]
+    assert [n for n, _ in rtdose.field_cubes(run)] == [1, 2]
+    assert rtdose.missing_field_cubes(run) == []
+
+
+def test_the_exports_own_files_are_never_taken_for_cubes(tmp_path):
+    """`*_field01.dcm` would match rtdose_field01.dcm; cubes are found from the inputs."""
+    (tmp_path / "topas_field01.txt").write_text("input")
+    (tmp_path / "rtdose_field01.dcm").write_bytes(b"export")
+    assert rtdose.field_cubes(tmp_path) == []
+    assert rtdose.missing_field_cubes(tmp_path) == [1]

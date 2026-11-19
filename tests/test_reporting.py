@@ -306,3 +306,38 @@ def test_an_edge_overlap_of_neighbouring_contours_is_not_warned_about():
     metric = {"volume_cm3": 121.4, "override_overlaps": [
         {"override": "BrainStem", "material": "G4_Ti", "voxel_count": 3, "volume_cm3": 0.00154}]}
     assert reporting._override_overlap_warnings("CTV", metric) == []
+
+
+# --- A custom output basename (second Codex review of #132) ------------------------------------
+
+def _rename_run(run_dir, basename):
+    """The run as the setup page's "output basename" would have named it."""
+    import json
+    for path in list(run_dir.iterdir()):
+        if path.name.startswith("topas_field"):
+            new = path.with_name(basename + path.name.removeprefix("topas"))
+            new.write_text(path.read_text().replace("topas_field", f"{basename}_field"))
+            path.unlink()
+    meta = json.loads((run_dir / "run.json").read_text())
+    for field in meta["fields"]:
+        field["topas_file"] = field["topas_file"].replace("topas_field", f"{basename}_field")
+    (run_dir / "run.json").write_text(json.dumps(meta))
+
+
+def test_a_custom_basename_still_gets_no_partial_total(tmp_path):
+    """The reproduction: check_field01.txt ..., one missing batch in field 3."""
+    _finished_sources_run(tmp_path, short=3)
+    _rename_run(tmp_path, "check")
+
+    csv_text = reporting.build_report_csv(tmp_path, "study", "run", tmp_path)
+
+    assert "no total: no result for field 3" in csv_text and "sum over" not in csv_text
+    assert "check_field03.txt has ended" in csv_text
+    assert "spread of the 3 batch results" in csv_text
+
+
+def test_a_partly_self_overridden_structure_is_not_called_wholly_overridden():
+    metric = {"volume_cm3": 10.0, "override_overlaps": [
+        {"override": "Body", "material": "G4_WATER", "voxel_count": 4, "volume_cm3": 6.0}]}
+    (warning,) = reporting._override_overlap_warnings("Body", metric)
+    assert warning.startswith("6 cm³ of Body (60 % of it) are overridden with G4_WATER.")

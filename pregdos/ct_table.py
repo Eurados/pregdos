@@ -25,6 +25,7 @@ stopping-power map.  Choosing the right table stays the user's responsibility.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Dict, List
@@ -90,7 +91,8 @@ def _parameters(text: str) -> tuple[Dict[str, List[str]], List[str]]:
     return params, twice
 
 
-def _vector(params: Dict[str, List[str]], name: str, problems: List[str]) -> np.ndarray | None:
+def _vector(params: Dict[str, List[str]], name: str, problems: List[str],
+            integers: bool = False) -> np.ndarray | None:
     """A TOPAS vector -- a count, that many numbers, at most one unit -- or None, with why."""
     short = name.removeprefix(_P)
     tokens = params.get(name)
@@ -110,6 +112,13 @@ def _vector(params: Dict[str, List[str]], name: str, problems: List[str]) -> np.
     if len(rest) > 1:
         problems.append(f"{short} declares {count} values but has more: {' '.join(rest[:3])} ...")
         return None
+    # float() reads "nan" and "inf", which TOPAS does not, and which later crashed int().
+    if not all(math.isfinite(v) for v in values):
+        problems.append(f"{short} holds a value that is not a finite number")
+        return None
+    if integers and not all(v.is_integer() for v in values):
+        problems.append(f"{short} must hold whole numbers, as TOPAS reads it (an iv: vector)")
+        return None
     return np.asarray(values, dtype=float)
 
 
@@ -128,7 +137,7 @@ def parse(text: str) -> SchneiderTable:
         raise TableError(problems + [
             f"ImagingToMaterialConverter is {' '.join(converter) or 'missing'}, not \"Schneider\""])
 
-    sections = _vector(params, SECTIONS, problems)
+    sections = _vector(params, SECTIONS, problems, integers=True)
     offsets = _vector(params, OFFSET, problems)
     factors = _vector(params, FACTOR, problems)
     factor_offsets = _vector(params, FACTOR_OFFSET, problems)
@@ -155,7 +164,7 @@ def parse(text: str) -> SchneiderTable:
             f"SchneiderHounsfieldUnitSections decrease at {int(sections[down - 1])} -> "
             f"{int(sections[down])}; they must not decrease, or TOPAS aborts")
     if MATERIAL_SECTIONS in params:
-        material_sections = _vector(params, MATERIAL_SECTIONS, problems)
+        material_sections = _vector(params, MATERIAL_SECTIONS, problems, integers=True)
         if material_sections is not None and len(material_sections):
             if (down := _first_decrease(material_sections)) is not None:
                 problems.append(

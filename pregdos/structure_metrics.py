@@ -25,7 +25,7 @@ from typing import Iterable
 import numpy as np
 import pydicom
 
-from . import ct_table, portable, provenance, topas_include
+from . import ct_table, portable, provenance, results, topas_include
 from .textio import read_text_lenient
 
 
@@ -86,6 +86,26 @@ def _copy_parameters(source: str, names: Iterable[str]) -> list[str]:
             if re.match(rf"^(?:\w+:)?{re.escape(name)}\s*=", stripped):
                 out.append(line)
                 break
+    return out
+
+
+def _unique_safe_names(names: Iterable[str]) -> dict[str, str]:
+    """A file- and parameter-safe name for each structure, distinct across all of them.
+
+    Sanitising alone maps "Femoral Head" and "Femoral-Head" to the same name, and TOPAS stops
+    on the scorer then defined twice (Codex review of #132).  A clash gets a counter; the
+    pre-pass file records which mask belongs to which structure (:func:`_prepass_structures`).
+    """
+    out: dict[str, str] = {}
+    taken: set[str] = set()
+    for name in names:
+        safe = base = _sanitize_name(name)
+        counter = 2
+        while safe.lower() in taken:          # case-insensitive file systems, too
+            safe = f"{base}_{counter}"
+            counter += 1
+        taken.add(safe.lower())
+        out[name] = safe
     return out
 
 
@@ -169,8 +189,7 @@ def write_prepass_input(run_dir: str | Path, reference_topas: str | Path, struct
         "i:So/PregDosMaskDummy/NumberOfHistoriesInRun = 1",
         "",
     ]
-    for structure in names:
-        safe = _sanitize_name(structure)
+    for structure, safe in _unique_safe_names(names).items():
         scorer = f"PregDosMask_{safe}"
         lines += [
             f's:Sc/{scorer}/Quantity = "StepCount"',
@@ -205,7 +224,7 @@ def _run_overrides(run_dir: Path) -> list[tuple[str, str]]:
     Every field of a run has the same overrides; dicomexport records each as
     ``# MATERIAL_OVERRIDE: ROI=MATERIAL``.
     """
-    for path in sorted(run_dir.glob("topas_field*.txt")):
+    for path in results.field_inputs(run_dir).values():
         if (record := provenance.of_field(path)) is not None:
             pairs = (o.rsplit("=", 1) for o in record.material_overrides if "=" in o)
             return [(roi.strip(), material.strip()) for roi, material in pairs]
@@ -361,10 +380,18 @@ def compute_metrics(run_dir: str | Path) -> dict:
             raise StructureMetricsError(f"{mask_path.name} has {mask_raw.size} bins, expected {ct.hu.size}")
         return mask_raw.reshape(ct.hu.shape) >= 0
 
-    # The override masks are kept for the whole loop, as booleans (one byte a voxel).
+    # Where overrides overlap, TOPAS uses the first one given, which is the header's order.  So
+    # each override's mask is reduced to the voxels it actually decides: an enclosing water
+    # override listed after a steel implant does not claim the implant's voxels (Codex review
+    # of #132).  The masks are kept for the whole loop, as booleans (one byte a voxel).
     masked = dict(_prepass_structures(run_dir))
-    override_masks = [(roi, material, mask) for roi, material in _run_overrides(run_dir)
-                      if roi in masked and (mask := read_mask(masked[roi])) is not None]
+    override_masks = []
+    claimed = None
+    for roi, material in _run_overrides(run_dir):
+        if roi not in masked or (mask := read_mask(masked[roi])) is None:
+            continue
+        override_masks.append((roi, material, mask if claimed is None else mask & ~claimed))
+        claimed = mask.copy() if claimed is None else claimed | mask
 
     for structure, safe in _prepass_structures(run_dir):
         mask = read_mask(safe)

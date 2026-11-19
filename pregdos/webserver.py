@@ -1075,6 +1075,11 @@ def convert():
     if not output_basename or output_basename != raw_basename or "." in output_basename:
         flash("Invalid output basename — use letters, digits, underscores, and hyphens only.")
         return redirect(url_for("upload_files"))
+    if output_basename == rtdose.FIELD_DOSE_PREFIX.removesuffix("_field"):
+        # The RTDOSE export writes rtdose_field<nn>.dcm, which is what TOPAS would name the
+        # dose cube of field <nn> under this basename: the export would overwrite the cubes.
+        flash(f'The output basename "{output_basename}" is reserved for the RTDOSE export; choose another.')
+        return _setup_page(root, study_name, beam_model_name, material_table_name, request.form)
 
     # The scorer config is built here, before anything exists on disk, because one combination
     # of it and the structure matrix produces nothing at all: no structures ticked strips every

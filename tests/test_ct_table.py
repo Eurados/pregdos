@@ -124,3 +124,16 @@ def test_material_sections_must_share_the_ends(values, end):
     (problem,) = ct_table.problems(_with_material_sections(values))
     assert problem.startswith(f"SchneiderHUToMaterialSections' {end} value is")
     assert "TOPAS aborts unless they match" in problem
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_a_non_finite_boundary_is_refused_not_a_crash(value):
+    """int(nan) raised an uncaught ValueError at upload."""
+    text = _table().replace("= 3 -1000 -998 -997", f"= 3 -1000 {value} -997")
+    assert ct_table.problems(text) == ["SchneiderHounsfieldUnitSections holds a value that is not a finite number"]
+
+
+def test_a_fractional_boundary_is_refused():
+    text = _table().replace("= 3 -1000 -998 -997", "= 3 -1000 -998.5 -997")
+    assert ct_table.problems(text) == [
+        "SchneiderHounsfieldUnitSections must hold whole numbers, as TOPAS reads it (an iv: vector)"]
