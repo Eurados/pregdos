@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 import pydicom
 import pytest
 
-from pregdos import (dicom_intake, executor, reporting, results, structure_metrics,
+from pregdos import (dicom_intake, executor, overrides, reporting, results, structure_metrics,
                      studies, webserver)
 from tests import dicom_factory
 from pregdos.webserver import app
@@ -3088,3 +3088,70 @@ def test_a_rejection_does_not_copy_dicom_identifiers_into_the_journal(client, tm
     audit_lines = [r.getMessage() for r in caplog.records if r.name == "pregdos.audit"]
     assert audit_lines, "the attempt should still be recorded"
     assert not any("SECRET-PATIENT-2" in line for line in audit_lines)
+
+
+# --- Eclipse's overrides prefill the setup page (#126) -------------------------------------------
+
+_ECLIPSE = {"beekley": [("REL_ELEC_DENSITY", "0.001")], "HU_Steel": "S45C_Steel"}
+
+
+def _fresh_setup_page(tmp_path, mocker) -> str:
+    """The setup page as an upload renders it, for a study whose RTSTRUCT Eclipse overrode."""
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    _make_study(tmp_path)
+    dicom_factory.flat_study(studies.dicom_path(tmp_path, "mystudy"),
+                             rois=("BODY", "beekley", "CTV", "HU_Steel"), declared=_ECLIPSE)
+    with app.test_request_context():
+        return webserver._setup_page(tmp_path, "mystudy", "beam.csv", "material.txt")
+
+
+def test_the_setup_page_starts_with_a_row_per_eclipse_override(tmp_path, mocker):
+    body = _fresh_setup_page(tmp_path, mocker)
+
+    assert '<option value="beekley" selected>' in body
+    assert '<option value="HU_Steel" selected>' in body
+    assert '<option value="CTV" selected>' not in body
+    assert "Eclipse: REL_ELEC_DENSITY=0.001" in body
+    assert "Eclipse: MaterialID=S45C_Steel" in body
+    # Nothing preselected without a site mapping: each row starts at "No override".
+    assert " selected>ImplantSteel<" not in body and " selected>Steel<" not in body
+    assert body.count("No override (CT conversion)") == 3          # two Eclipse rows + a spare
+
+
+def test_the_site_mapping_preselects_eclipse_materials(tmp_path, mocker, write_config):
+    write_config('[overrides]\neclipse_materials = { S45C_Steel = "G4_STAINLESS-STEEL" }\n')
+
+    body = _fresh_setup_page(tmp_path, mocker)
+
+    # A Geant4 material is not in the dropdown, so it comes as "Other" with its name typed in.
+    assert 'value="G4_STAINLESS-STEEL"' in body
+    assert f'<option value="{overrides.OTHER}" selected>' in body
+    assert "MaterialID=S45C_Steel, preselected by the site" in body
+
+
+def test_no_override_rows_are_skipped_and_other_passes_the_typed_material(client, tmp_path, mocker):
+    run = mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    form = _study_with_structures(tmp_path)
+    form.update({"override_roi": ["Hip implant", "CTV", ""],
+                 "override_material": [overrides.OTHER, "", ""],
+                 "override_material_other": ["G4_BONE_COMPACT_ICRU", "", ""]})
+
+    client.post("/convert", data=form, follow_redirects=True)
+
+    conversion = [c.args[0] for c in run.call_args_list if "--list-config" not in c.args[0]][-1]
+    assert [conversion[i + 1] for i, a in enumerate(conversion) if a == "--material-override"] == [
+        "Hip implant=G4_BONE_COMPACT_ICRU"]
+
+
+def test_a_refusal_brings_a_typed_geant4_material_back_in_its_field(client, tmp_path, mocker):
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    form = _study_with_structures(tmp_path)
+    form.update({"override_roi": ["Hip implant", "Femur"],
+                 "override_material": [overrides.OTHER, "Steel"],
+                 "override_material_other": ["G4_BONE_COMPACT_ICRU", ""]})
+
+    body = client.post("/convert", data=form, follow_redirects=True).data.decode()
+
+    assert "&#39;Femur&#39; is not a structure of this study" in body
+    assert 'value="G4_BONE_COMPACT_ICRU"' in body
+    assert studies.list_runs(tmp_path, "mystudy") == []

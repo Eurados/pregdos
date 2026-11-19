@@ -58,6 +58,8 @@ pregdos = [
     # Named explicitly: the "data/*.csv" glob above does not match it, and this is the one
     # copy of the annotated site config (packaging/ installs *this* file to /etc/pregdos/).
     "data/config.toml.example",
+    # The Geant4 NIST material names the setup page offers for overrides (#126).
+    "data/geant4_materials.txt",
 ]
 
 [tool.pytest.ini_options]

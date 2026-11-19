@@ -236,3 +236,14 @@
 ##                  uncertainty is per proton, which counts the spread between spots as noise
 ##                  and so comes out larger than batch means.
 # spot_mode = "sources"
+
+[overrides]
+
+## Material overrides (#126).  Eclipse names the material of an overridden structure in the
+## RTSTRUCT (MaterialID).  Map such a name to a TOPAS material here, and the setup page
+## preselects it for that structure; the user can still pick another one, or none.  The
+## material must be one the page offers: from this site's materials.txt, built into TOPAS, or a
+## Geant4 NIST material (G4_...).  Structures Eclipse overrides with a value alone, such as a
+## relative electron density, are listed on the setup page but never preselected.  E.g.
+##   eclipse_materials = { S45C_Steel = "ImplantSteel", "Titanium Alloy" = "G4_Ti" }
+# eclipse_materials = {}
