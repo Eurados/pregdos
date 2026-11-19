@@ -265,6 +265,10 @@ class ReportPDF(FPDF):
                     "csv_name": "",
                 }
                 self._result_row(widths, total, fill, bold=True, include_status=include_status)
+            elif group.get("missing_fields"):
+                missing = ", ".join(str(n) for n in group["missing_fields"])
+                self._result_row(widths, {"field": "All fields", "no_total": f"no total: no result for field {missing}"},
+                                 fill, bold=True, include_status=include_status)
             self.ln(2)
 
     def _group_heading(self, group: dict[str, Any]):
@@ -298,7 +302,9 @@ class ReportPDF(FPDF):
         self.set_font(self._font_family, "B" if bold else "", 6.6)
         height = 5
         dose = uncertainty = status = ""
-        if row.get("problem"):
+        if row.get("no_total"):
+            dose = row["no_total"]
+        elif row.get("problem"):
             dose = "unusable"
             status = row.get("problem") or ""
         elif row.get("sum") is None:

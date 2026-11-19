@@ -1520,7 +1520,7 @@ def _render_results(run_dir: Path, study: str, run_id: str, status: str):
     page the user opened.
     """
     rows, warnings, plan_fractions = reporting.result_rows(run_dir, study, studies_root())
-    groups = reporting.group_rows(rows)
+    groups = reporting.group_rows(rows, results.run_fields(run_dir))
     # Only a finished run has every field's cube, and only a run that scored the in-field grid
     # has any cube at all.  This is independent of `groups`: a dose-only run -- no structures
     # ticked -- has a cube and no scorer rows, and used to be reported as having produced
@@ -1658,7 +1658,7 @@ def download_pdf_report(study, run_id):
     pdf = report_pdf.build_report_pdf(
         study=study,
         run_id=run_id,
-        groups=reporting.group_rows(rows),
+        groups=reporting.group_rows(rows, results.run_fields(run_dir)),
         warnings=warnings,
         plan_fractions=plan_fractions,
         plan_uid=results.plan_uid(run_dir),

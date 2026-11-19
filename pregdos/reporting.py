@@ -140,7 +140,7 @@ _VOLUME_NORMALIZED = {
 }
 
 
-def group_rows(rows: list) -> list:
+def group_rows(rows: list, expected_fields: set | None = None) -> list:
     """Group scorer rows by scorer, and total each group over its fields.
 
     A clinician reads one quantity at a time -- "how much neutron dose did the brainstem
@@ -155,6 +155,11 @@ def group_rows(rows: list) -> list:
     group totalled when two rows share a field number -- ``IfOutputFileAlreadyExists =
     "Increment"`` writes a second CSV for a re-run of the *same* field, and adding those
     together would double-count it.
+
+    ``expected_fields`` are the run's field numbers (:func:`results.run_fields`).  Given, a
+    group is totalled only when every one of them has a row: a field with no result at all --
+    still running, or a batch that never wrote -- would otherwise simply be left out of the
+    sum.  Such a group says which fields it lacks, in ``missing_fields``.
     """
     groups: dict = {}
     for row in rows:
@@ -169,9 +174,10 @@ def group_rows(rows: list) -> list:
 
         fields = [r["field"] for r in members]
         distinct_fields = None not in fields and len(set(fields)) == len(fields)
+        missing_fields = sorted(set(expected_fields) - set(fields)) if expected_fields else []
 
         total_sum = total_sd = None
-        if complete and distinct_fields and len(members) > 1:
+        if complete and distinct_fields and not missing_fields and len(members) > 1:
             total_sum = sum(r["sum"] for r in summable)
             sds = [r["sd"] for r in summable if r["sd"] is not None]
             total_sd = math.sqrt(sum(sd * sd for sd in sds)) if len(sds) == len(summable) else None
@@ -185,11 +191,47 @@ def group_rows(rows: list) -> list:
             # CSV report.
             "display_scorer": display_scorer_name(scorer, structure),
             "rows": members, "total_sum": total_sum, "total_sd": total_sd,
-            "n_fields": len(members),
+            "n_fields": len(members), "missing_fields": missing_fields,
         })
 
     out.sort(key=lambda g: (g["scorer"], g["structure"]))
     return out
+
+
+def uncertainty_notes(run_dir: Path) -> list[str]:
+    """How ``dose_uncertainty`` was computed, for each way the run's fields were laid out.
+
+    Sources mode estimates it from the spread of the batch results (batch means), and a single
+    batch has none; time-feature mode, and runs from before dicomexport 2.0, from the spread
+    of the per-history contributions.  See :meth:`results.ScorerResult.relative_uncertainty`.
+    """
+    layouts = set()
+    for number in sorted(results.run_fields(run_dir)):
+        scaling = results.parse_plan_scaling(Path(run_dir) / f"topas_field{number:02d}.txt")
+        if scaling is not None:
+            layouts.add((scaling.spot_mode, scaling.runs if scaling.spot_mode == "sources" else 0))
+    notes = []
+    for mode, runs in sorted(layouts):
+        if mode == "sources" and runs >= 2:
+            notes.append(f"dose_uncertainty is the 1-sigma Monte-Carlo statistical error from the spread "
+                         f"of the {runs} batch results (sqrt(B)*SD(batch sums)/Sum, B = {runs}, applied "
+                         f"to the scaled dose).")
+        elif mode == "sources":
+            notes.append("dose_uncertainty is empty: the fields ran as a single batch, which gives no "
+                         "statistical error.")
+        else:
+            notes.append(_PER_HISTORY_NOTE)
+    return notes or [_PER_HISTORY_NOTE]
+
+
+_PER_HISTORY_NOTE = ("dose_uncertainty is the 1-sigma Monte-Carlo statistical error "
+                     "(sqrt(N)*SD/Sum applied to the scaled dose; N = simulated histories).")
+
+
+def _no_total(group: dict) -> str:
+    """Why a group has no total: the fields with no result."""
+    missing = ", ".join(str(n) for n in group["missing_fields"])
+    return f"no total: no result for field {missing}"
 
 
 def _scaling_warning(scaling: results.PlanScaling) -> str | None:
@@ -204,12 +246,21 @@ def _scaling_warning(scaling: results.PlanScaling) -> str | None:
     return None
 
 
+def _finished_fields(run_dir: Path) -> set:
+    """The TOPAS inputs of the run's fields that have ended, completed or not."""
+    info = executor.read_run_metadata(run_dir)
+    if info is None:
+        return set()
+    return {f.topas_file for f in info.fields
+            if executor.field_status(run_dir, f.topas_file) not in (executor.RUNNING, executor.QUEUED)}
+
+
 def result_rows(run_dir: Path, study: str, root: str | Path):
     """Parsed, plan-scaled scorer rows for one run, ready for the results table.
 
     ``root`` is the studies root, needed only to find the study's RTPLAN for beam names.
     """
-    parsed, warnings = results.collect_results(run_dir)
+    parsed, warnings = results.collect_results(run_dir, finished=_finished_fields(run_dir))
     metrics, metric_warnings = structure_metrics.ensure_metrics(run_dir)
     warnings.extend(metric_warnings)
 
@@ -409,8 +460,8 @@ def build_report_csv(run_dir: Path, study: str, run_id: str, root: str | Path) -
     writer.writerow(["# Note", "Structure EnergyDeposit rows are mass-normalized; structure DoseToWater and "
                      "fluence rows are volume-normalized from the patient-box scorer volume to the structure volume "
                      "(issue #50)."])
-    writer.writerow(["# Note", "dose_uncertainty is the 1-sigma Monte-Carlo statistical error "
-                     "(sqrt(N)*SD/Sum applied to the scaled dose; N = simulated histories)."])
+    for note in uncertainty_notes(run_dir):
+        writer.writerow(["# Note", note])
     writer.writerow(["# Note", "field=ALL rows total a scorer over its fields; their uncertainties add in quadrature."])
     writer.writerow(["scorer", "structure", "quantity", "field", "field_name", "unit",
                      "dose", "dose_uncertainty", "simulated_histories", "scale_factor",
@@ -418,7 +469,7 @@ def build_report_csv(run_dir: Path, study: str, run_id: str, root: str | Path) -
                      "structure_average_density_g_cm3", "status"])
     writer.writerow(["units", "", "", "", "", "Gy or Sv", "Gy or Sv", "Gy or Sv", "1", "1",
                      "", "", "cm3", "g", "g/cm3", ""])
-    for group in group_rows(rows):
+    for group in group_rows(rows, results.run_fields(run_dir)):
         for r in group["rows"]:
             writer.writerow([
                 r["scorer"], r["structure"], r["display_quantity"],
@@ -445,5 +496,10 @@ def build_report_csv(run_dir: Path, study: str, run_id: str, root: str | Path) -
                 "" if group["total_sd"] is None else repr(group["total_sd"]),
                 "" if total_histories is None else total_histories,
                 "", "", "", "", "", "", f"sum over {group['n_fields']} fields",
+            ])
+        elif group["missing_fields"]:
+            writer.writerow([
+                group["scorer"], group["structure"], group["display_quantity"], "ALL", "", group["unit"],
+                "", "", "", "", "", "", "", "", "", _no_total(group),
             ])
     return buf.getvalue()
