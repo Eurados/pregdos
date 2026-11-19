@@ -151,6 +151,7 @@
       <small class="hint">Give a structure a material in place of the CT conversion, e.g. a metal
         implant or an artefact. Where structures overlap, the <strong>first row wins</strong>, so
         list implants before the body. An overridden structure need not be scored.</small>
+      <small class="hint">{{ override_scoring_note }}</small>
       {% if override_rows | selectattr("note") | list %}
       <small class="hint">The rows marked <em>Eclipse</em> are structures the RTSTRUCT overrides.
         Eclipse's value is for its own dose engine, not a material, so choose the material TOPAS

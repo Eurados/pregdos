@@ -785,6 +785,15 @@ def _setup_page(root, study_name, beam_model_name, material_table_name, form=Non
     )
 
 
+#: Shown at conversion when a run both scores structures and overrides materials, and as a hint
+#: on the setup page.  Only a structure an override lies inside is affected; the report names
+#: those once the structure masks exist (structure_metrics ``override_overlaps``).
+OVERRIDE_SCORING_NOTE = (
+    "With material overrides, a scored structure's dose (DoseToMedium) is approximate where an "
+    "override lies inside it: its mass is computed from the CT numbers, not from the override's "
+    "material. Affected structures are named with the results.")
+
+
 def _offered_materials() -> tuple[str | None, list[str], list[str]]:
     """``(materials_file, site, offered)``: the site's materials.txt, the names it defines, and
     every material an override may use."""
@@ -816,6 +825,7 @@ def _override_context(form, declared) -> dict:
         "geant4_materials": overrides.GEANT4_MATERIALS,
         "in_dropdown": set(site) | set(overrides.BUILTIN_MATERIALS),
         "other_value": overrides.OTHER,
+        "override_scoring_note": OVERRIDE_SCORING_NOTE,
         "override_rows": rows + [overrides.Row()],
     }
 
@@ -1144,7 +1154,9 @@ def convert():
     prepass = None
     if selected_structures:
         try:
-            prepass = structure_metrics.write_mask_prepass(run_dir / result.out_files[0], selected_structures)
+            prepass = structure_metrics.write_mask_prepass(
+                run_dir / result.out_files[0], selected_structures,
+                overridden=[roi for roi, _ in material_overrides])
         except Exception as err:
             shutil.rmtree(run_dir, ignore_errors=True)
             flash(f"Structure mask pre-pass setup failed: {err}")
@@ -1157,11 +1169,8 @@ def convert():
     for line in _without_shipped_defaults_note(result.stderr or "").splitlines():
         if line.strip():
             flash(f"dicomexport: {_in_pregdos_terms(line.strip())}")
-    for roi, material in material_overrides:
-        if roi in selected_structures:
-            flash(f"{roi} is both scored and given {material}: TOPAS uses {material}, but the "
-                  f"structure's mass, which some scorers are normalised by, is still computed "
-                  f"from the CT numbers.")
+    if material_overrides and selected_structures:
+        flash(OVERRIDE_SCORING_NOTE)
 
     # Only now is there a run directory that survived conversion, scorer injection and the
     # mask pre-pass.  Every failure above deletes it again.

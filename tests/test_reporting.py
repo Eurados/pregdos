@@ -279,3 +279,30 @@ def test_the_uncertainty_note_for_time_feature_is_per_history(tmp_path):
         "# SPOT_MODE: timefeature\n# SPOTS: 10\n# RUNS: 10\n")
     (note,) = reporting.uncertainty_notes(tmp_path)
     assert "N = simulated histories" in note
+
+
+def test_an_override_inside_a_scored_structure_is_warned_about():
+    metric = {"volume_cm3": 50.0, "override_overlaps": [
+        {"override": "Implant", "material": "G4_Ti", "voxel_count": 4, "volume_cm3": 2.0}]}
+    (warning,) = reporting._override_overlap_warnings("Uterus", metric)
+    assert warning.startswith("2 cm³ of Uterus (4 % of it) lie in Implant, overridden with G4_Ti.")
+    assert "comes from the CT numbers" in warning
+
+
+def test_a_structure_overridden_itself_is_warned_about():
+    metric = {"volume_cm3": 2.0, "override_overlaps": [
+        {"override": "Implant", "material": "G4_Ti", "voxel_count": 4, "volume_cm3": 2.0}]}
+    (warning,) = reporting._override_overlap_warnings("Implant", metric)
+    assert warning.startswith("Implant is itself overridden with G4_Ti.")
+
+
+def test_no_overlap_no_warning():
+    assert reporting._override_overlap_warnings("Uterus", {"volume_cm3": 50.0}) == []
+    assert reporting._override_overlap_warnings("Uterus", None) == []
+
+
+def test_an_edge_overlap_of_neighbouring_contours_is_not_warned_about():
+    """The head phantom's CTV shares 3 voxels (0.0013 %) with the brain stem."""
+    metric = {"volume_cm3": 121.4, "override_overlaps": [
+        {"override": "BrainStem", "material": "G4_Ti", "voxel_count": 3, "volume_cm3": 0.00154}]}
+    assert reporting._override_overlap_warnings("CTV", metric) == []

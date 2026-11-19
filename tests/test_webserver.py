@@ -2607,15 +2607,27 @@ def test_dicomexport_warnings_speak_the_setup_page_s_terms(line, shown):
     assert webserver._in_pregdos_terms(line) == shown
 
 
-def test_a_scored_and_overridden_structure_is_warned_about(client, tmp_path, mocker):
+def test_scoring_with_overrides_says_up_front_what_is_approximate(client, tmp_path, mocker):
+    """Not every structure is affected: only one an override lies inside.  The note says so
+    before the run; the report names the structures once the masks exist (#153)."""
     mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
     form = _study_with_structures(tmp_path)
-    form.update({"score_neutron": "Hip implant",
+    form.update({"score_neutron": "CTV",
                  "override_roi": ["Hip implant"], "override_material": ["Steel"]})
 
     body = client.post("/convert", data=form, follow_redirects=True).data.decode()
 
-    assert "Hip implant is both scored and given Steel" in body
+    assert "approximate where an override lies inside it" in body
+
+
+def test_scoring_without_overrides_gets_no_note(client, tmp_path, mocker):
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    form = _study_with_structures(tmp_path)
+    form.update({"score_neutron": "CTV"})
+
+    body = client.post("/convert", data=form, follow_redirects=True).data.decode()
+
+    assert "approximate where an override lies inside it" not in body
 
 
 def _config_dir_passed(mocker, tmp_path):

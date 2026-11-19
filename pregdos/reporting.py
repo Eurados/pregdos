@@ -228,6 +228,35 @@ _PER_HISTORY_NOTE = ("dose_uncertainty is the 1-sigma Monte-Carlo statistical er
                      "(sqrt(N)*SD/Sum applied to the scaled dose; N = simulated histories).")
 
 
+#: Overlaps smaller than this share of a structure's volume are not warned about.  Neighbouring
+#: contours share voxels along their edge (3 voxels, 0.0013 % of the head phantom's CTV, with
+#: its brain stem), and even steel at 8x tissue density changes the mass by under 1 % here.
+OVERLAP_WARNING_SHARE = 1e-3
+
+
+def _override_overlap_warnings(structure: str, metric: dict | None) -> list[str]:
+    """Why a structure's DoseToMedium is approximate: overrides inside it (#126).
+
+    Its EnergyDeposit is turned into Gy with a mass from the CT numbers, while TOPAS used the
+    override's material wherever one lies inside the structure.
+    """
+    out = []
+    volume = (metric or {}).get("volume_cm3") or 0.0
+    for overlap in (metric or {}).get("override_overlaps") or []:
+        if volume and overlap["volume_cm3"] < OVERLAP_WARNING_SHARE * volume:
+            continue
+        roi, material = overlap["override"], overlap["material"]
+        if roi == structure:
+            where = f"{structure} is itself overridden with {material}"
+        else:
+            share = f" ({100 * overlap['volume_cm3'] / volume:.2g} % of it)" if volume else ""
+            where = f"{overlap['volume_cm3']:.3g} cm³ of {structure}{share} lie in {roi}, overridden with {material}"
+        out.append(f"{where}. TOPAS used {material} there, but {structure}'s mass, which turns its "
+                   f"energy deposit into DoseToMedium, comes from the CT numbers, so that dose is "
+                   f"approximate.")
+    return out
+
+
 def _no_total(group: dict) -> str:
     """Why a group has no total: the fields with no result."""
     missing = ", ".join(str(n) for n in group["missing_fields"])
@@ -278,6 +307,7 @@ def result_rows(run_dir: Path, study: str, root: str | Path):
 
     rows = []
     warned_fields: set[str] = set()
+    warned_overlaps: set[str] = set()
     for r in parsed:
         scaling = results.scaling_for(r, run_dir)
         total, sd = r.scaled(scaling)
@@ -305,6 +335,9 @@ def result_rows(run_dir: Path, study: str, root: str | Path):
                     quantity = "DoseToMedium"
                     unit = "Gy"
                     mass_normalized = True
+                    if r.structure not in warned_overlaps:
+                        warned_overlaps.add(r.structure)
+                        warnings.extend(_override_overlap_warnings(r.structure, metric))
                 elif problem is None:
                     problem = "structure mass metrics are missing; cannot convert EnergyDeposit to Gy"
             elif r.quantity in _VOLUME_NORMALIZED and r.structure:
