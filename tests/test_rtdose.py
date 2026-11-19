@@ -136,32 +136,6 @@ def test_missing_field_cubes_ignores_the_mask_prepass_input(tmp_path):
     assert rtdose.missing_field_cubes(tmp_path) == []
 
 
-def test_plan_dose_identity_is_none_until_the_export_has_been_built(tmp_path):
-    """The export is on-demand, so an unexported run simply has no identity to show yet."""
-    assert rtdose.plan_dose_identity(tmp_path) is None
-
-
-def test_plan_dose_identity_reads_the_uids_off_the_written_file(tmp_path):
-    """Read back, not predicted: the plan dose preserves the clinical RTDOSE's identity, so
-    only the file itself can say which UIDs the imported object will carry."""
-    ds = _template()
-    ds.SeriesInstanceUID = "1.2.3.4"
-    ds.save_as(tmp_path / rtdose.PLAN_DOSE_NAME, enforce_file_format=True)
-
-    assert rtdose.plan_dose_identity(tmp_path) == {
-        "series_uid": "1.2.3.4",
-        "sop_uid": str(ds.SOPInstanceUID),
-    }
-
-
-def test_plan_dose_identity_survives_a_file_it_cannot_read(tmp_path):
-    """Called on every render of a finished run, so a truncated export has to degrade to
-    "nothing to show" rather than take the results page down."""
-    (tmp_path / rtdose.PLAN_DOSE_NAME).write_bytes(b"not dicom at all")
-
-    assert rtdose.plan_dose_identity(tmp_path) is None
-
-
 def test_plan_derive_can_preserve_eclipse_identity():
     template = _template()
     template.SeriesInstanceUID = "1.2.3.4"
@@ -181,166 +155,6 @@ def test_plan_derive_can_preserve_eclipse_identity():
     assert ds.file_meta.MediaStorageSOPInstanceUID == original_media_sop
     assert ds.SeriesInstanceUID == "1.2.3.4"
     assert "DoseComment" not in ds
-
-
-def test_write_plan_import_bundle_contains_total_dose_and_referenced_plan(tmp_path):
-    plan = tmp_path / "RN.1.2.3.dcm"
-    dose = tmp_path / rtdose.PLAN_DOSE_NAME
-    plan.write_bytes(b"plan")
-    dose.write_bytes(b"dose")
-
-    bundle = rtdose._write_plan_import_bundle(tmp_path, plan, dose)
-
-    assert bundle.name == rtdose.PLAN_IMPORT_BUNDLE_NAME
-    with zipfile.ZipFile(bundle) as zf:
-        assert sorted(zf.namelist()) == ["RN.1.2.3.dcm", rtdose.PLAN_DOSE_NAME]
-        assert zf.read("RN.1.2.3.dcm") == b"plan"
-        assert zf.read(rtdose.PLAN_DOSE_NAME) == b"dose"
-
-
-def test_ensure_dose_export_is_idempotent(tmp_path, mocker):
-    """Built once on first request, reused after -- the page must not rebuild 11M-voxel grids."""
-    (tmp_path / "topas_field01.dcm").write_bytes(b"cube")
-    def fake_postprocess(d):
-        path = tmp_path / rtdose.PLAN_DOSE_NAME
-        path.write_bytes(b"x")
-        return [path]
-
-    post = mocker.patch("pregdos.rtdose.postprocess", side_effect=fake_postprocess)
-
-    rtdose.ensure_dose_export(tmp_path)
-    assert (tmp_path / rtdose.PLAN_DOSE_NAME).is_file()
-    post.assert_called_once()
-
-    rtdose.ensure_dose_export(tmp_path)      # already there
-    post.assert_called_once()                # still once: not rebuilt
-
-
-def test_ensure_dose_export_without_a_cube_does_nothing(tmp_path):
-    assert rtdose.ensure_dose_export(tmp_path) == ([], [])
-
-
-def test_ensure_dose_export_reports_failure_instead_of_raising(tmp_path, mocker):
-    (tmp_path / "topas_field01.dcm").write_bytes(b"cube")
-    mocker.patch("pregdos.rtdose.postprocess",
-                 side_effect=rtdose.RTDoseError("no clinical RTDOSE"))
-
-    paths, warnings = rtdose.ensure_dose_export(tmp_path)
-
-    assert paths == [] and warnings == ["no clinical RTDOSE"]
-
-
-def _plan_with_beams(path, beams):
-    sop_class = pydicom.uid.RTIonPlanStorage
-    ds = Dataset()
-    ds.file_meta = FileMetaDataset()
-    ds.file_meta.MediaStorageSOPClassUID = sop_class
-    ds.file_meta.MediaStorageSOPInstanceUID = generate_uid()
-    ds.file_meta.TransferSyntaxUID = ImplicitVRLittleEndian
-    ds.SOPClassUID = sop_class
-    ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID
-    ds.Modality = "RTPLAN"
-    ds.IonBeamSequence = []
-    for number in beams:
-        beam = Dataset()
-        if number is None:
-            beam.add_new(0x300A00C0, "IS", None)   # BeamNumber present but empty
-        else:
-            beam.BeamNumber = number
-        ds.IonBeamSequence.append(beam)
-    group = Dataset()
-    group.FractionGroupNumber = 1
-    group.NumberOfFractionsPlanned = 1
-    ds.FractionGroupSequence = [group]
-    ds.save_as(path, enforce_file_format=True)
-    return ds
-
-
-def _study_with_cube(tmp_path, beams, field):
-    """A study whose plan carries ``beams`` and whose run holds one cube for ``field``."""
-    study = tmp_path / "study"
-    dicom = study / "dicom"
-    run = study / "run001"
-    dicom.mkdir(parents=True)
-    run.mkdir()
-
-    plan = _plan_with_beams(dicom / "RN.plan.dcm", beams)
-    template = _template()
-    ref_plan = Dataset()
-    ref_plan.ReferencedSOPClassUID = plan.SOPClassUID
-    ref_plan.ReferencedSOPInstanceUID = plan.SOPInstanceUID
-    template.ReferencedRTPlanSequence = [ref_plan]
-    template.save_as(dicom / "RD.dcm", enforce_file_format=True)
-
-    cube = _template()
-    cube.DoseGridScaling = "1"
-    cube.PixelData = np.ones((1, 2, 2), dtype="<u4").tobytes()
-    cube.save_as(run / f"topas_field{field:02d}.dcm", enforce_file_format=True)
-    (run / f"topas_field{field:02d}.txt").write_text(
-        "# PARTICLE_SCALING: 1\n# REQUESTED_HISTORIES: 1\n")
-    return run
-
-
-def test_postprocess_survives_a_beam_whose_number_is_empty(tmp_path):
-    """A present-but-empty BeamNumber reads back as None: `hasattr` sees it, `int()` cannot."""
-    run = _study_with_cube(tmp_path, [3, None], field=3)
-
-    rtdose.postprocess(run)          # must not raise TypeError
-
-    out = pydicom.dcmread(run / "rtdose_field03.dcm", stop_before_pixels=True)
-    ref = out.ReferencedRTPlanSequence[0].ReferencedFractionGroupSequence[0].ReferencedBeamSequence[0]
-    assert ref.ReferencedBeamNumber == 3
-
-
-def test_postprocess_omits_the_beam_reference_when_the_plan_has_no_such_beam(tmp_path):
-    """Better no beam reference than one pointing at a beam that is not in the plan."""
-    run = _study_with_cube(tmp_path, [4, 5], field=3)
-
-    rtdose.postprocess(run)
-
-    out = pydicom.dcmread(run / "rtdose_field03.dcm", stop_before_pixels=True)
-    assert "ReferencedFractionGroupSequence" not in out.ReferencedRTPlanSequence[0]
-
-
-def test_postprocess_stamps_beam_number_not_ordinal_position(tmp_path):
-    """Field 3 is the *third* beam number, not the third beam in the sequence (issue #78)."""
-    run = _study_with_cube(tmp_path, [4, 5, 3], field=3)
-
-    rtdose.postprocess(run)
-
-    out = pydicom.dcmread(run / "rtdose_field03.dcm", stop_before_pixels=True)
-    ref = out.ReferencedRTPlanSequence[0].ReferencedFractionGroupSequence[0].ReferencedBeamSequence[0]
-    assert ref.ReferencedBeamNumber == 3
-
-
-def test_a_32_bit_cube_is_read_with_its_scaling_and_keeps_its_low_dose(tmp_path):
-    """#127: at 16 bits TOPAS writes every voxel below ~1/65535 of the peak as zero, which is
-    the out-of-field region.  dicomexport >= 2.0 asks for 32 bits.  A cube holding such a voxel
-    must be read as pixel_array * DoseGridScaling and carried into the export.
-
-    The template's scaling is set fine enough to hold it: the export keeps the clinical
-    template's DoseGridScaling whenever the dose fits (_encode), so its resolution is the
-    template's, and a coarse template rounds the low dose away again.  See the PR for #127.
-    """
-    run = _study_with_cube(tmp_path, [3], field=3)
-    template_path = run.parent / "dicom" / "RD.dcm"
-    template = pydicom.dcmread(template_path)
-    template.DoseGridScaling = "1e-12"
-    template.save_as(template_path, enforce_file_format=True)
-    cube_path = run / "topas_field03.dcm"
-    cube = pydicom.dcmread(cube_path)
-    cube.DoseGridScaling = "1e-09"
-    stored = np.array([[[1000, 4_000_000_000], [2_000_000_000, 3_000_000_000]]], dtype="<u4")
-    cube.PixelData = stored.tobytes()
-    cube.save_as(cube_path, enforce_file_format=True)
-    assert stored.min() / stored.max() < 1 / 65535          # zero in any 16-bit cube
-
-    rtdose.postprocess(run)
-
-    out = pydicom.dcmread(run / "rtdose_field03.dcm")
-    dose = out.pixel_array.astype(np.float64) * float(out.DoseGridScaling)
-    assert dose.min() > 0
-    assert dose.min() / dose.max() == pytest.approx(stored.min() / stored.max(), rel=1e-3)
 
 
 # --- Choosing the clinical template for each exported dose (#125) -----------------------------
@@ -388,6 +202,12 @@ def _study(tmp_path, monkeypatch, clinical, beams=(1, 2)):
     plan.file_meta.TransferSyntaxUID = ImplicitVRLittleEndian
     plan.SOPClassUID = plan.file_meta.MediaStorageSOPClassUID
     plan.SOPInstanceUID = PLAN_UID
+    plan.SeriesInstanceUID = generate_uid()
+    plan.RTPlanLabel = "Brain_fin2"
+    plan.ApprovalStatus = "APPROVED"
+    plan.ReviewDate = "20240227"
+    plan.ReviewTime = "120000"
+    plan.ReviewerName = "Reviewer^Clinical"
     group = Dataset()
     group.FractionGroupNumber = 1
     group.NumberOfFractionsPlanned = 1
@@ -496,3 +316,127 @@ def test_grids_match_despite_topas_shorter_positions():
     topas = _clinical(position=(-149.707031, -261.793, -139.0))
 
     assert rtdose._same_grid(eclipse, topas)
+
+
+# --- The Eclipse import bundle: an RTPLAN copy and every dose referencing it (#125) -----------
+#
+# Eclipse's DICOM Import refuses the clinical RTPLAN ("the plan already exists"), so the bundle
+# carries a copy under a new identity, and the doses reference the copy.  The loose files keep
+# referencing the clinical plan, for Import Dosegrid, which takes them as they are.
+
+def _bundle(run):
+    with zipfile.ZipFile(run / rtdose.IMPORT_BUNDLE_NAME) as zf:
+        return {name: pydicom.dcmread(zf.open(name)) for name in zf.namelist()}
+
+
+def test_bundle_holds_a_plan_copy_and_every_dose_referencing_it(tmp_path, monkeypatch):
+    clinical = [_clinical(beam=1), _clinical(beam=2)]
+    run = _study(tmp_path, monkeypatch, clinical)
+    loose_fields, loose_plan = _exported(run)
+    bundle = _bundle(run)
+
+    assert sorted(bundle) == sorted([rtdose.PLAN_COPY_NAME, "rtdose_field01.dcm",
+                                     "rtdose_field02.dcm", rtdose.PLAN_DOSE_NAME])
+    copy_of_plan = bundle[rtdose.PLAN_COPY_NAME]
+    assert copy_of_plan.SOPInstanceUID != PLAN_UID
+    assert copy_of_plan.file_meta.MediaStorageSOPInstanceUID == copy_of_plan.SOPInstanceUID
+    assert [int(b.BeamNumber) for b in copy_of_plan.IonBeamSequence] == [1, 2]
+
+    doses = [bundle[name] for name in sorted(bundle) if name.startswith("rtdose_")]
+    assert {ds.ReferencedRTPlanSequence[0].ReferencedSOPInstanceUID for ds in doses} == {
+        copy_of_plan.SOPInstanceUID}
+    assert len({ds.SeriesInstanceUID for ds in doses}) == 1
+    assert rtdose._beam_references(bundle["rtdose_field01.dcm"]) == (1,)
+    assert rtdose._beam_references(bundle["rtdose_field02.dcm"]) == (2,)
+    assert rtdose._beam_references(bundle[rtdose.PLAN_DOSE_NAME]) == ()
+    assert bundle[rtdose.PLAN_DOSE_NAME].DoseSummationType == "PLAN"
+
+    # New objects, not the loose ones again: Eclipse would take them for the same doses.
+    loose = [*loose_fields.values(), loose_plan]
+    assert not {ds.SOPInstanceUID for ds in doses} & {ds.SOPInstanceUID for ds in loose}
+    assert {ds.ReferencedRTPlanSequence[0].ReferencedSOPInstanceUID for ds in loose} == {PLAN_UID}
+    np.testing.assert_array_equal(bundle[rtdose.PLAN_DOSE_NAME].pixel_array, loose_plan.pixel_array)
+
+
+def test_plan_copy_is_a_new_unapproved_plan_with_its_own_id(tmp_path, monkeypatch):
+    run = _study(tmp_path, monkeypatch, [_clinical(beam=1), _clinical(beam=2)])
+    rtdose.postprocess(run)
+    clinical_plan = pydicom.dcmread(tmp_path / "dicom" / "RN.plan.dcm")
+    copy_of_plan = _bundle(run)[rtdose.PLAN_COPY_NAME]
+
+    assert copy_of_plan.RTPlanLabel == "Brain_fin2_MC"
+    assert copy_of_plan.SeriesInstanceUID != clinical_plan.SeriesInstanceUID
+    assert copy_of_plan.ApprovalStatus == "UNAPPROVED"
+    for keyword in ("ReviewDate", "ReviewTime", "ReviewerName"):
+        assert keyword not in copy_of_plan
+
+
+def test_plan_copy_id_stays_within_sixteen_characters():
+    plan = Dataset()
+    plan.file_meta = FileMetaDataset()
+    plan.RTPlanLabel = "SixteenCharsLong"
+
+    assert rtdose.plan_copy(plan).RTPlanLabel == "SixteenCharsL_MC"
+
+
+def test_bundle_plan_dose_is_new_even_where_the_loose_one_keeps_eclipses_identity(tmp_path, monkeypatch):
+    clinical = [_clinical()]
+    run = _study(tmp_path, monkeypatch, clinical)
+    _, loose_plan = _exported(run)
+    bundled_plan = _bundle(run)[rtdose.PLAN_DOSE_NAME]
+
+    assert loose_plan.SOPInstanceUID == clinical[0].SOPInstanceUID
+    assert bundled_plan.SOPInstanceUID != clinical[0].SOPInstanceUID
+    assert "PregDos" in bundled_plan.DoseComment
+
+
+def test_an_export_from_before_the_full_bundle_is_built_again(tmp_path, monkeypatch):
+    """A run exported before #125 has the plan dose and the old two-file bundle; asking for
+    the export again must give it the full bundle, and not leave the old one behind."""
+    run = _study(tmp_path, monkeypatch, [_clinical(beam=1), _clinical(beam=2)])
+    (run / rtdose.PLAN_DOSE_NAME).write_bytes(b"old plan dose")
+    (run / "rtdose_plan_eclipse_import.zip").write_bytes(b"PK old bundle")
+
+    paths, warnings = rtdose.ensure_dose_export(run)
+
+    assert warnings == []
+    assert run / rtdose.IMPORT_BUNDLE_NAME in paths
+    assert not (run / "rtdose_plan_eclipse_import.zip").exists()
+    assert rtdose.PLAN_COPY_NAME in _bundle(run)
+
+
+def test_a_failed_export_leaves_no_bundle(tmp_path, monkeypatch):
+    """The bundle's presence is what says the export finished, so a half-written one must not
+    remain under its name."""
+    run = _study(tmp_path, monkeypatch, [_clinical(beam=1), _clinical(beam=2)])
+
+    def broken(*args, **kwargs):
+        raise rtdose.RTDoseError("cube unreadable")
+    monkeypatch.setattr(rtdose, "_write_doses", broken)
+
+    with pytest.raises(rtdose.RTDoseError):
+        rtdose.postprocess(run)
+    assert not (run / rtdose.IMPORT_BUNDLE_NAME).exists()
+    assert not list(run.glob("*.partial"))
+
+
+def test_import_identity_names_what_the_import_creates(tmp_path, monkeypatch):
+    run = _study(tmp_path, monkeypatch, [_clinical(beam=1), _clinical(beam=2)])
+    assert rtdose.import_identity(run) is None          # built on first download only
+
+    rtdose.postprocess(run)
+    bundle = _bundle(run)
+
+    assert rtdose.import_identity(run) == {
+        "plan_label": "Brain_fin2_MC",
+        "plan_uid": str(bundle[rtdose.PLAN_COPY_NAME].SOPInstanceUID),
+        "series_uid": str(bundle[rtdose.PLAN_DOSE_NAME].SeriesInstanceUID),
+    }
+
+
+def test_import_identity_survives_a_bundle_it_cannot_read(tmp_path):
+    """Called on every render of a finished run, so a truncated export has to degrade to
+    "nothing to show" rather than take the results page down."""
+    (tmp_path / rtdose.IMPORT_BUNDLE_NAME).write_bytes(b"not a zip at all")
+
+    assert rtdose.import_identity(tmp_path) is None

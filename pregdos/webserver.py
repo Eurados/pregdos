@@ -1516,11 +1516,11 @@ def _render_results(run_dir: Path, study: str, run_id: str, status: str):
         # A completed run can still be short a cube; the export would then sum what is there and
         # call it the whole course.  Say so next to the button, not only at download time.
         missing_cubes=rtdose.missing_field_cubes(run_dir) if can_export_dose else [],
-        dose_bundle_name=rtdose.PLAN_IMPORT_BUNDLE_NAME,
+        dose_bundle_name=rtdose.IMPORT_BUNDLE_NAME,
         # The UIDs are minted when the export is built, which happens on first download and
         # not here -- rewriting six 11M-voxel grids on a page render would stall it.  So they
         # are shown once they exist, and the page says so in the meantime.
-        dose_identity=rtdose.plan_dose_identity(run_dir) if can_export_dose else None,
+        dose_identity=rtdose.import_identity(run_dir) if can_export_dose else None,
     )
     return html, warnings
 
@@ -1963,7 +1963,7 @@ def download_full_run(study, run_id):
 
 @app.route("/studies/<study>/<run_id>/rtdose")
 def download_rtdose_bundle(study, run_id):
-    """Build (once) and serve the TPS import bundle: the PLAN dose plus the RTPLAN it needs.
+    """Build (once) and serve the Eclipse import bundle: an RTPLAN copy and every dose (#125).
 
     The cubes are built on demand rather than at render time.  Rewriting six 11M-voxel grids
     would stall the results page, and it is only worth doing for someone who actually wants to
@@ -1986,14 +1986,14 @@ def download_rtdose_bundle(study, run_id):
     for warning in warnings:
         flash(f"Could not build the RTDOSE export: {warning}")
 
-    if not (run_dir / rtdose.PLAN_IMPORT_BUNDLE_NAME).is_file():
+    if not (run_dir / rtdose.IMPORT_BUNDLE_NAME).is_file():
         if not warnings:
             flash("This run has no in-field dose cube to export. Re-convert with the in-field "
                   "dose scorer enabled.")
         return redirect(url_for("run_detail", study=study, run_id=run_id))
 
     audit.event("download.rtdose", study=study, run=run_id)
-    return send_from_directory(str(run_dir), rtdose.PLAN_IMPORT_BUNDLE_NAME, as_attachment=True)
+    return send_from_directory(str(run_dir), rtdose.IMPORT_BUNDLE_NAME, as_attachment=True)
 
 
 def main(argv: list[str] | None = None):

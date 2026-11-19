@@ -36,8 +36,10 @@ PregDos shows in its own web UI stays **physical**.
 from __future__ import annotations
 
 import copy
+import io
 import re
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -58,7 +60,15 @@ _INPUT_RE = re.compile(r"^topas_field(\d+)\.txt$")
 
 FIELD_DOSE_PREFIX = "rtdose_field"
 PLAN_DOSE_NAME = "rtdose_plan.dcm"
-PLAN_IMPORT_BUNDLE_NAME = "rtdose_plan_eclipse_import.zip"
+IMPORT_BUNDLE_NAME = "rtdose_eclipse_import.zip"
+#: The bundle's name before #125, when it held the original RTPLAN and the plan dose only.
+_OLD_BUNDLE_NAME = "rtdose_plan_eclipse_import.zip"
+#: The RTPLAN copy inside the bundle, which every dose in it references.
+PLAN_COPY_NAME = "rtplan_pregdos.dcm"
+#: Appended to the copy's Plan ID (``RTPlanLabel``, at most 16 characters), so Eclipse does not
+#: take it for the clinical plan.
+PLAN_LABEL_SUFFIX = "_MC"
+_DOSE_COMMENT = "PregDos/TOPAS: Gy(RBE)=physical x1.1, whole course"  # LO: max 64 chars
 
 #: Constant proton RBE.  Applied *only* on the way out to a TPS, so the cube overlays the
 #: clinical plan (which is Gy(RBE)).  PregDos itself never reports RBE-weighted dose.
@@ -299,38 +309,78 @@ def _derive(template: Dataset, series_uid: str, summation: str, description: Opt
     if description is not None:
         ds.SeriesDescription = description
     if not preserve_identity:
-        ds.DoseComment = "PregDos/TOPAS: Gy(RBE)=physical x1.1, whole course"  # LO: max 64 chars
+        ds.DoseComment = _DOSE_COMMENT
     return ds
 
 
-def _write_plan_import_bundle(run_dir: Path, plan_path: Path, dose_path: Path) -> Path:
-    """Bundle the generated PLAN dose with the RTPLAN Eclipse needs to connect it."""
-    out = run_dir / PLAN_IMPORT_BUNDLE_NAME
-    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.write(plan_path, arcname=plan_path.name)
-        zf.write(dose_path, arcname=dose_path.name)
-    return out
+def plan_copy(plan: Dataset) -> Dataset:
+    """The RTPLAN as a new plan, for Eclipse's DICOM Import of the bundle (#125).
+
+    Eclipse refuses the clinical RTPLAN itself: "the plan already exists".  The copy gets new
+    SOP Instance and Series UIDs and a Plan ID ending in :data:`PLAN_LABEL_SUFFIX`, in case
+    Eclipse matches on the ID rather than the UID.  It is set UNAPPROVED, so a Monte Carlo
+    recalculation never shows up as an approved plan; the review attributes, which only an
+    approved or reviewed plan carries, go with it.  Beams, fraction groups and references to
+    the CT and structure set are kept, so the doses attach to the same beams.
+    """
+    ds = copy.deepcopy(plan)
+    ds.SOPInstanceUID = generate_uid()
+    ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+    ds.SeriesInstanceUID = generate_uid()
+    label = str(getattr(plan, "RTPlanLabel", "") or "PLAN")
+    ds.RTPlanLabel = label[:16 - len(PLAN_LABEL_SUFFIX)] + PLAN_LABEL_SUFFIX
+    ds.SeriesDescription = "PregDos TOPAS plan copy"
+    ds.ApprovalStatus = "UNAPPROVED"
+    for keyword in ("ReviewDate", "ReviewTime", "ReviewerName"):
+        if keyword in ds:
+            delattr(ds, keyword)
+    now = datetime.now()
+    ds.InstanceCreationDate = now.strftime("%Y%m%d")
+    ds.InstanceCreationTime = now.strftime("%H%M%S")
+    return ds
 
 
-def plan_dose_identity(run_dir: str | Path) -> Optional[dict]:
-    """``{"series_uid": ..., "sop_uid": ...}`` of the exported PLAN dose, or None if unbuilt.
+def _for_plan_copy(ds: Dataset, copy_of_plan: Dataset, series_uid: str) -> Dataset:
+    """Turn an exported dose into the bundle's: a new object referencing the plan copy.
 
-    These are the two identifiers someone importing the cube into a TPS needs in order to find
-    the object again afterwards, so the results page shows them next to the download.
+    Mutates ``ds`` -- it has been written as a loose file already -- rather than copying a
+    cube of tens of MB.
+    """
+    ds.ReferencedRTPlanSequence[0].ReferencedSOPInstanceUID = copy_of_plan.SOPInstanceUID
+    ds.SOPInstanceUID = generate_uid()
+    ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+    ds.SeriesInstanceUID = series_uid
+    ds.DoseComment = _DOSE_COMMENT
+    return ds
 
-    Read back from the file rather than predicted: built from Eclipse's own plan dose, the
-    plan dose keeps that dose's UIDs (Eclipse is strict about reconnecting cloned doses); built
-    from a field dose, it gets new ones, like each per-field cube.  Only the written file can
-    say which.
+
+def _add_to_bundle(zf: zipfile.ZipFile, name: str, ds: Dataset) -> None:
+    buffer = io.BytesIO()
+    ds.save_as(buffer, enforce_file_format=True)
+    zf.writestr(name, buffer.getvalue())
+
+
+def import_identity(run_dir: str | Path) -> Optional[dict]:
+    """What the bundle's import creates in the TPS, or None if the bundle is not built.
+
+    ``{"plan_label", "plan_uid", "series_uid"}``: the plan copy's Plan ID and SOP Instance UID,
+    and the Series UID its doses share -- what someone needs to find them again after import,
+    so the results page shows them next to the download.  Read back from the bundle, since
+    the UIDs are minted when it is built.
 
     Never raises and never builds anything.  It is called at render time, where the export may
     simply not exist yet -- it is generated on first download -- and where a truncated or
     unreadable file has to read as "no identity to show" rather than as a 500.
     """
-    path = Path(run_dir) / PLAN_DOSE_NAME
+    path = Path(run_dir) / IMPORT_BUNDLE_NAME
     try:
-        ds = pydicom.dcmread(path, stop_before_pixels=True)
-        return {"series_uid": str(ds.SeriesInstanceUID), "sop_uid": str(ds.SOPInstanceUID)}
+        with zipfile.ZipFile(path) as zf:
+            with zf.open(PLAN_COPY_NAME) as f:
+                plan = pydicom.dcmread(f)
+            with zf.open(PLAN_DOSE_NAME) as f:
+                dose = pydicom.dcmread(f, stop_before_pixels=True)
+        return {"plan_label": str(plan.RTPlanLabel), "plan_uid": str(plan.SOPInstanceUID),
+                "series_uid": str(dose.SeriesInstanceUID)}
     except Exception:  # noqa: BLE001 - absent, truncated or not DICOM all mean the same here
         return None
 
@@ -339,7 +389,7 @@ def exported_files(run_dir: str | Path) -> List[Path]:
     """The importable RTDOSE files already generated for this run, in import order."""
     run_dir = Path(run_dir)
     out = sorted(run_dir.glob(f"{FIELD_DOSE_PREFIX}*.dcm"))
-    for name in (PLAN_DOSE_NAME, PLAN_IMPORT_BUNDLE_NAME):
+    for name in (PLAN_DOSE_NAME, IMPORT_BUNDLE_NAME):
         if (run_dir / name).is_file():
             out.append(run_dir / name)
     return out
@@ -359,23 +409,11 @@ def ensure_dose_export(run_dir: str | Path) -> Tuple[List[Path], List[str]]:
     """
     run_dir = Path(run_dir)
 
-    plan_dose = run_dir / PLAN_DOSE_NAME
-    bundle = run_dir / PLAN_IMPORT_BUNDLE_NAME
-
-    # Only consider the export "done" once the Eclipse import bundle exists too.
-    if plan_dose.is_file() and bundle.is_file():
+    # The bundle is written last, under a temporary name, so its presence means the whole
+    # export finished.  Anything less -- an interrupted export, or one from before #125 with
+    # the old bundle -- is built again.
+    if (run_dir / PLAN_DOSE_NAME).is_file() and (run_dir / IMPORT_BUNDLE_NAME).is_file():
         return exported_files(run_dir), []
-
-    # If the plan dose exists but the bundle doesn't, a previous export may have been interrupted.
-    if plan_dose.is_file() and not bundle.is_file():
-        plan_path = _rtplan_path(run_dir)
-        if plan_path is None:
-            return exported_files(run_dir), ["cannot build RTDOSE import bundle: RTPLAN not found"]
-        try:
-            _write_plan_import_bundle(run_dir, plan_path, plan_dose)
-            return exported_files(run_dir), []
-        except Exception as exc:  # noqa: BLE001 - must degrade to a warning, not a 500
-            return exported_files(run_dir), [str(exc)]
 
     if not field_cubes(run_dir):
         return [], []
@@ -390,6 +428,11 @@ def postprocess(run_dir: str | Path) -> List[Path]:
 
     Returns the paths written, with the plan dose and Eclipse import bundle last.  The raw
     TOPAS cubes are left untouched.
+
+    Two sets are written.  The loose ``rtdose_*.dcm`` files reference the clinical RTPLAN, for
+    Eclipse's Import Dosegrid, which takes them as they are.  The bundle, for its DICOM
+    Import, holds a copy of the RTPLAN under a new identity (:func:`plan_copy`) and the same
+    doses as new objects referencing it, each field dose its own beam (#125).
     """
     run_dir = Path(run_dir)
     cubes = field_cubes(run_dir)
@@ -429,6 +472,31 @@ def postprocess(run_dir: str | Path) -> List[Path]:
 
     series_uid = generate_uid()
     written: List[Path] = []
+
+    copy_of_plan = plan_copy(pydicom.dcmread(plan_path))
+    bundle_series_uid = generate_uid()
+    bundle_path = run_dir / IMPORT_BUNDLE_NAME
+    partial_bundle = run_dir / (IMPORT_BUNDLE_NAME + ".partial")
+    bundle = zipfile.ZipFile(partial_bundle, "w", compression=zipfile.ZIP_DEFLATED)
+    try:
+        _add_to_bundle(bundle, PLAN_COPY_NAME, copy_of_plan)
+        written += _write_doses(run_dir, cubes, templates, plan, beam_numbers, fractions,
+                                series_uid, copy_of_plan, bundle_series_uid, bundle)
+        bundle.close()
+        partial_bundle.replace(bundle_path)
+    finally:
+        bundle.close()
+        partial_bundle.unlink(missing_ok=True)
+    (run_dir / _OLD_BUNDLE_NAME).unlink(missing_ok=True)
+    written.append(bundle_path)
+    return written
+
+
+def _write_doses(run_dir: Path, cubes: List[Tuple[int, Path]], templates: List[Dataset],
+                 plan: Dataset, beam_numbers: set, fractions: int, series_uid: str,
+                 copy_of_plan: Dataset, bundle_series_uid: str, bundle: zipfile.ZipFile) -> List[Path]:
+    """Write each field dose and the plan dose, loose and into the bundle; the loose paths."""
+    written: List[Path] = []
     total: Optional[np.ndarray] = None
     cube: Optional[Dataset] = None
 
@@ -454,6 +522,7 @@ def postprocess(run_dir: str | Path) -> List[Path]:
         out = run_dir / f"{FIELD_DOSE_PREFIX}{field_number:02d}.dcm"
         ds.save_as(out, enforce_file_format=True)
         written.append(out)
+        _add_to_bundle(bundle, out.name, _for_plan_copy(ds, copy_of_plan, bundle_series_uid))
 
     # The summed cube: what clinical staff actually review, rather than field-by-field.
     assert total is not None and cube is not None
@@ -464,5 +533,5 @@ def postprocess(run_dir: str | Path) -> List[Path]:
     plan_out = run_dir / PLAN_DOSE_NAME
     ds.save_as(plan_out, enforce_file_format=True)
     written.append(plan_out)
-    written.append(_write_plan_import_bundle(run_dir, plan_path, plan_out))
+    _add_to_bundle(bundle, plan_out.name, _for_plan_copy(ds, copy_of_plan, bundle_series_uid))
     return written
