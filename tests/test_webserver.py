@@ -3199,11 +3199,13 @@ def test_a_refusal_keeps_the_ticked_scorers(client, tmp_path, mocker):
     assert ticked == {("neutron", "CTV"), ("gamma", "Hip implant")}
 
 
-def test_the_basename_rtdose_is_reserved_for_the_export(client, tmp_path, mocker):
-    """Its field cubes would be rtdose_field<nn>.dcm, which the RTDOSE export writes over."""
+@pytest.mark.parametrize("basename", ["rtdose", "RTDOSE", "RtDose"])
+def test_the_basename_rtdose_is_reserved_for_the_export(client, tmp_path, mocker, basename):
+    """Its field cubes would be rtdose_field<nn>.dcm, which the RTDOSE export writes over --
+    in any case, on a case-insensitive file system."""
     mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
     form = _study_with_structures(tmp_path)
-    form.update({"output_basename": "rtdose"})
+    form.update({"output_basename": basename})
 
     body = client.post("/convert", data=form, follow_redirects=True).data.decode()
 

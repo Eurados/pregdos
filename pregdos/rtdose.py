@@ -437,6 +437,20 @@ def ensure_dose_export(run_dir: str | Path) -> Tuple[List[Path], List[str]]:
             return [], [str(exc)]
 
 
+def _overwritten_inputs(run_dir: Path, cubes: list[tuple[int, Path]]) -> list[str]:
+    """The run's own files the export would write over, compared case-insensitively.
+
+    A run converted with the output basename ``rtdose`` -- refused at setup now, but older runs
+    may have it, and ``RTDOSE`` on a case-insensitive file system -- names its cubes
+    ``rtdose_field<nn>.dcm``.  The export would replace them with scaled doses, and a rebuild
+    would then scale those again (Codex review of #132).
+    """
+    outputs = {f"{FIELD_DOSE_PREFIX}{number:02d}.dcm".lower() for number, _ in cubes}
+    outputs |= {PLAN_DOSE_NAME.lower(), IMPORT_BUNDLE_NAME.lower(), (IMPORT_BUNDLE_NAME + ".partial").lower()}
+    own = [path.name for _, path in cubes] + [path.name for path in results.field_inputs(run_dir).values()]
+    return sorted({name for name in own if name.lower() in outputs})
+
+
 def postprocess(run_dir: str | Path) -> List[Path]:
     """Write importable per-field (BEAM) and summed (PLAN) RTDOSE files for a finished run.
 
@@ -462,6 +476,12 @@ def postprocess(run_dir: str | Path) -> List[Path]:
             f"field(s) {fields} produced no dose cube, so the plan dose would be the sum of the "
             f"remaining fields only while still describing itself as the whole course. Rerun the "
             f"missing field(s) before exporting."
+        )
+
+    if clash := _overwritten_inputs(run_dir, cubes):
+        raise RTDoseError(
+            f"this run's TOPAS files are named like the export's own ({', '.join(clash)}), so "
+            f"exporting would overwrite them. Convert the study again with another output basename."
         )
 
     plan_path = _rtplan_path(run_dir)
