@@ -3169,3 +3169,19 @@ def test_the_results_page_shows_no_total_for_a_field_without_results(client, tmp
 
     assert "No total: no result for field 3" in body
     assert "All 2 fields" not in body
+
+
+def test_a_refusal_keeps_the_ticked_scorers(client, tmp_path, mocker):
+    """Codex review of #132: the page came back with every scorer box cleared, so fixing the
+    override and resubmitting gave a run without out-of-field scoring."""
+    import re
+    mocker.patch("pregdos.webserver.subprocess.run", side_effect=_fake_dicomexport)
+    form = _study_with_structures(tmp_path)
+    form.update({"score_neutron": ["CTV"], "score_gamma": ["Hip implant"],
+                 "override_roi": ["Femur"], "override_material": ["Steel"]})
+
+    body = client.post("/convert", data=form, follow_redirects=True).data.decode()
+
+    assert "&#39;Femur&#39; is not a structure of this study" in body
+    ticked = set(re.findall(r'name="score_(\w+)" value="([^"]+)"\s*checked', body))
+    assert ticked == {("neutron", "CTV"), ("gamma", "Hip implant")}

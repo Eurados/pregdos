@@ -777,6 +777,10 @@ def _setup_page(root, study_name, beam_model_name, material_table_name, form=Non
         # Checked by default on a fresh setup page; on a refusal, whatever was submitted -- the
         # form has to show the state the message is complaining about.
         keep_infield=bool(form.get("keep_infield")) if form else True,
+        # The ticked structures per scorer.  Losing them on a refusal -- e.g. of an override --
+        # turned the corrected resubmission into a run without out-of-field scoring.
+        scored={sc["id"]: set(getattr(form, "getlist", lambda _: [])(f"score_{sc['id']}"))
+                for sc in SCORER_DEFS},
         **_override_context(form, get_declared_overrides(root, study_name)),
     )
 
@@ -1597,7 +1601,9 @@ def run_detail(study, run_id):
         return redirect(url_for("list_studies"))
     executor.start_next_local_run(studies_root())
 
-    files = [{"name": p.name, "size": p.stat().st_size} for p in sorted(run_dir.iterdir()) if p.is_file()]
+    # Dot-files are PregDos's own bookkeeping (the RTDOSE export lock), not results.
+    files = [{"name": p.name, "size": p.stat().st_size} for p in sorted(run_dir.iterdir())
+             if p.is_file() and not p.name.startswith(".")]
     info, status, etr, progress = _live_state(run_dir)
     results_html, warnings = _render_results(run_dir, study, run_id, status)
     for w in warnings:

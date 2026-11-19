@@ -132,7 +132,8 @@
               <td class="col-structure">{{ struct }}</td>
               {% for sc in scorer_defs %}
               <td class="col-scorer">
-                <input type="checkbox" name="score_{{ sc.id }}" value="{{ struct }}">
+                <input type="checkbox" name="score_{{ sc.id }}" value="{{ struct }}"
+                       {% if struct in scored[sc.id] %}checked{% endif %}>
               </td>
               {% endfor %}
             </tr>
