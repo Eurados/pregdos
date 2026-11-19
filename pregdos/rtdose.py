@@ -48,7 +48,7 @@ import pydicom
 from pydicom.dataset import Dataset
 from pydicom.uid import ExplicitVRLittleEndian, ImplicitVRLittleEndian, generate_uid
 
-from . import results
+from . import portable, results
 
 # The in-field cube is ``topas_field<nn>.dcm``, named like the input it came from
 # (``topas_field<nn>.txt``).  dicomexport before 2.0 wrote the cube unpadded
@@ -63,6 +63,9 @@ PLAN_DOSE_NAME = "rtdose_plan.dcm"
 IMPORT_BUNDLE_NAME = "rtdose_eclipse_import.zip"
 #: The bundle's name before #125, when it held the original RTPLAN and the plan dose only.
 _OLD_BUNDLE_NAME = "rtdose_plan_eclipse_import.zip"
+#: Serialises the export of one run (:func:`ensure_dose_export`); ``portable.lock_file`` adds
+#: ``.lock``.  A dot-file, so the run's file list does not show it.
+EXPORT_LOCK_NAME = ".rtdose_export"
 #: The RTPLAN copy inside the bundle, which every dose in it references.
 PLAN_COPY_NAME = "rtplan_pregdos.dcm"
 #: Appended to the copy's Plan ID (``RTPlanLabel``, at most 16 characters), so Eclipse does not
@@ -420,18 +423,23 @@ def ensure_dose_export(run_dir: str | Path) -> Tuple[List[Path], List[str]]:
     """
     run_dir = Path(run_dir)
 
-    # The bundle is written last, under a temporary name, so its presence means the whole
-    # export finished.  Anything less -- an interrupted export, or one from before #125 with
-    # the old bundle -- is built again.
-    if (run_dir / PLAN_DOSE_NAME).is_file() and (run_dir / IMPORT_BUNDLE_NAME).is_file():
-        return exported_files(run_dir), []
+    # One export per run at a time.  Two first downloads at once -- two tabs, or a double
+    # click; Gunicorn serves them on separate threads or workers -- would otherwise both write
+    # the same files, and the bundle came out corrupt (Codex review of #132).  The check is
+    # inside the lock, so the second waits and then finds the export done.
+    with portable.lock_file(run_dir / EXPORT_LOCK_NAME):
+        # The bundle is written last, under a temporary name, so its presence means the whole
+        # export finished.  Anything less -- an interrupted export, or one from before #125
+        # with the old bundle -- is built again.
+        if (run_dir / PLAN_DOSE_NAME).is_file() and (run_dir / IMPORT_BUNDLE_NAME).is_file():
+            return exported_files(run_dir), []
 
-    if not field_cubes(run_dir):
-        return [], []
-    try:
-        return postprocess(run_dir), []
-    except Exception as exc:  # noqa: BLE001 - a bad DICOM must not take down the results page
-        return [], [str(exc)]
+        if not field_cubes(run_dir):
+            return [], []
+        try:
+            return postprocess(run_dir), []
+        except Exception as exc:  # noqa: BLE001 - a bad DICOM must not take down the results page
+            return [], [str(exc)]
 
 
 def postprocess(run_dir: str | Path) -> List[Path]:

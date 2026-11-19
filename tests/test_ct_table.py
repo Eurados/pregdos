@@ -80,3 +80,47 @@ def test_a_table_that_is_not_utf8_is_refused():
     """dicomexport pastes the table with -S, which refuses anything but UTF-8."""
     (problem,) = ct_table.problems_in_bytes(_table().encode("utf-8") + b"# \xfc\n")
     assert "not UTF-8" in problem
+
+
+# --- Section order, as OpenTOPAS 4.3.0 checks it (Codex review of #132) ------------------------
+
+def _swap_two_interior_boundaries(text: str) -> str:
+    import re
+    m = re.search(r"(iv:Ge/Patient/SchneiderHounsfieldUnitSections\s*=\s*\d+\s+)(\S+)\s+(\S+)\s+(\S+)", text)
+    assert m
+    return text.replace(m.group(0), f"{m.group(1)}{m.group(2)} {m.group(4)} {m.group(3)}", 1)
+
+
+def test_hounsfield_sections_out_of_order_are_refused():
+    """The reproduction: two interior boundaries of the shipped table swapped.  TOPAS aborts
+    ("not monotonically increasing"); PregDos passed it."""
+    (problem,) = ct_table.problems(_swap_two_interior_boundaries(SHIPPED.read_text()))
+    assert problem == ("SchneiderHounsfieldUnitSections decrease at 15 -> -98; they must not "
+                       "decrease, or TOPAS aborts")
+
+
+def test_equal_neighbouring_sections_pass_as_in_topas():
+    """TOPAS only refuses a decrease."""
+    text = _table().replace("= 3 -1000 -998 -997", "= 3 -1000 -1000 -997")
+    assert ct_table.problems(text) == []
+
+
+def _with_material_sections(values):
+    return _table(extra=f"iv:Ge/Patient/SchneiderHUToMaterialSections = {len(values)} "
+                        + " ".join(map(str, values)) + "\n")
+
+
+def test_material_sections_matching_the_density_sections_pass():
+    assert ct_table.problems(_with_material_sections([-1000, -999, -997])) == []
+
+
+def test_material_sections_out_of_order_are_refused():
+    (problem,) = ct_table.problems(_with_material_sections([-1000, -998, -999, -997]))
+    assert "SchneiderHUToMaterialSections decrease at -998 -> -999" in problem
+
+
+@pytest.mark.parametrize("values, end", [([-999, -998, -997], "first"), ([-1000, -998, -990], "last")])
+def test_material_sections_must_share_the_ends(values, end):
+    (problem,) = ct_table.problems(_with_material_sections(values))
+    assert problem.startswith(f"SchneiderHUToMaterialSections' {end} value is")
+    assert "TOPAS aborts unless they match" in problem

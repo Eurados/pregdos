@@ -11,6 +11,8 @@ The rules, from OpenTOPAS 4.3.0's ``geometry/TsImagingToMaterialSchneider.cc``:
   (``sections`` is ``SchneiderHounsfieldUnitSections``).
 * A voxel value is clamped to ``[sections[0], sections[-1] - 1]`` and the correction read as
   ``DensityCorrection[value - MinImagingValue]``, ``MinImagingValue`` defaulting to -1000.
+* TOPAS aborts unless ``SchneiderHounsfieldUnitSections`` and ``SchneiderHUToMaterialSections``
+  never decrease, and unless the two start and end at the same values.  Equal neighbours pass.
 
 Together they leave exactly one valid setting: ``MinImagingValue == sections[0]``.  A table
 breaking it is refused, not clamped: a clamped index would replace an undefined density with a
@@ -40,6 +42,7 @@ FACTOR = _P + "SchneiderDensityFactor"
 FACTOR_OFFSET = _P + "SchneiderDensityFactorOffset"
 CORRECTION = _P + "DensityCorrection"
 MIN_IMAGING_VALUE = _P + "MinImagingValue"
+MATERIAL_SECTIONS = _P + "SchneiderHUToMaterialSections"
 
 # "<type>:<name> =".  The value runs until the next parameter, so a vector may continue over
 # several lines, as DensityCorrection does in OpenTOPAS's own HUtoMaterialSchneider.txt.
@@ -110,6 +113,12 @@ def _vector(params: Dict[str, List[str]], name: str, problems: List[str]) -> np.
     return np.asarray(values, dtype=float)
 
 
+def _first_decrease(values: np.ndarray) -> int | None:
+    """Index of the first value smaller than the one before it, or None."""
+    down = np.flatnonzero(np.diff(values) < 0)
+    return int(down[0]) + 1 if down.size else None
+
+
 def parse(text: str) -> SchneiderTable:
     """The table, checked.  Raises :class:`TableError` naming every problem and its fix."""
     params, twice = _parameters(text)
@@ -141,6 +150,23 @@ def parse(text: str) -> SchneiderTable:
             f"{len(sections)} SchneiderHounsfieldUnitSections need {len(sections) - 1} values each in "
             f"SchneiderDensityOffset, SchneiderDensityFactor and SchneiderDensityFactorOffset, which "
             f"have {len(offsets)}, {len(factors)} and {len(factor_offsets)}")
+    if (down := _first_decrease(sections)) is not None:
+        problems.append(
+            f"SchneiderHounsfieldUnitSections decrease at {int(sections[down - 1])} -> "
+            f"{int(sections[down])}; they must not decrease, or TOPAS aborts")
+    if MATERIAL_SECTIONS in params:
+        material_sections = _vector(params, MATERIAL_SECTIONS, problems)
+        if material_sections is not None and len(material_sections):
+            if (down := _first_decrease(material_sections)) is not None:
+                problems.append(
+                    f"SchneiderHUToMaterialSections decrease at {int(material_sections[down - 1])} -> "
+                    f"{int(material_sections[down])}; they must not decrease, or TOPAS aborts")
+            for end, here, there in (("first", material_sections[0], sections[0]),
+                                     ("last", material_sections[-1], sections[-1])):
+                if int(here) != int(there):
+                    problems.append(
+                        f"SchneiderHUToMaterialSections' {end} value is {int(here)}, but "
+                        f"SchneiderHounsfieldUnitSections' is {int(there)}; TOPAS aborts unless they match")
     first, last = int(sections[0]), int(sections[-1])
     if len(corrections) != last - first:
         problems.append(

@@ -457,3 +457,34 @@ def test_every_dose_shares_one_series_named_for_all_and_says_which_it_is(tmp_pat
 
 def test_dose_comment_fits_dicom_lo():
     assert len(rtdose._dose_comment("field 99")) <= 64
+
+
+def test_two_simultaneous_exports_build_once_and_leave_a_sound_bundle(tmp_path, monkeypatch):
+    """Two first downloads at once used to write the same files and corrupt the bundle (Codex
+    review of #132).  The second now waits for the first and finds the export done."""
+    import threading
+    import time
+
+    run = _study(tmp_path, monkeypatch, [_clinical(beam=1), _clinical(beam=2)])
+    calls = []
+    real = rtdose.postprocess
+
+    def slow_postprocess(run_dir):
+        calls.append(threading.get_ident())
+        time.sleep(0.2)                      # long enough for the other request to arrive
+        return real(run_dir)
+    monkeypatch.setattr(rtdose, "postprocess", slow_postprocess)
+
+    outcomes = []
+    threads = [threading.Thread(target=lambda: outcomes.append(rtdose.ensure_dose_export(run)))
+               for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(calls) == 1
+    assert [warnings for _, warnings in outcomes] == [[], []]
+    with zipfile.ZipFile(run / rtdose.IMPORT_BUNDLE_NAME) as zf:
+        assert zf.testzip() is None
+    assert not list(run.glob("*.partial"))
